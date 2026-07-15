@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NabzOps — Field Operations Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ AUTH SCREEN ============ -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="brand-pulse" aria-hidden="true">
+        <svg viewBox="0 0 200 40" class="pulse-svg"><polyline points="0,20 40,20 52,4 64,36 76,20 90,20 100,8 110,32 120,20 200,20"/></svg>
+      </div>
+      <h1>NabzOps</h1>
+      <p class="brand-sub">Home Sampling Field Operations</p>
+    </div>
+
+    <div id="auth-message" class="auth-message" style="display:none;"></div>
+
+    <form id="login-form" class="auth-form">
+      <h2>Sign in</h2>
+      <label>Email<input type="email" id="login-email" required autocomplete="username"></label>
+      <label>Password<input type="password" id="login-password" required autocomplete="current-password"></label>
+      <button type="submit" class="btn-primary">Sign in</button>
+      <p class="auth-switch">New team member? <a href="#" id="show-signup">Create an account</a></p>
+    </form>
+
+    <form id="signup-form" class="auth-form" style="display:none;">
+      <h2>Create account</h2>
+      <p class="hint">Your account will be <strong>pending</strong> until your Area Lead approves it and assigns your role and region.</p>
+      <label>Full name<input type="text" id="signup-name" required></label>
+      <label>Email<input type="email" id="signup-email" required autocomplete="username"></label>
+      <label>Phone<input type="tel" id="signup-phone" placeholder="03xx-xxxxxxx"></label>
+      <label>Employee ID (if you have one)<input type="text" id="signup-empid"></label>
+      <label>Password<input type="password" id="signup-password" required autocomplete="new-password" minlength="6"></label>
+      <button type="submit" class="btn-primary">Create account</button>
+      <p class="auth-switch">Already have an account? <a href="#" id="show-login">Sign in</a></p>
+    </form>
+  </div>
+</div>
+
+<!-- ============ PENDING APPROVAL SCREEN ============ -->
+<div id="pending-screen" class="auth-screen" style="display:none;">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="brand-pulse" aria-hidden="true">
+        <svg viewBox="0 0 200 40" class="pulse-svg"><polyline points="0,20 40,20 52,4 64,36 76,20 90,20 100,8 110,32 120,20 200,20"/></svg>
+      </div>
+      <h1>NabzOps</h1>
+    </div>
+    <div class="pending-box">
+      <h2>Account pending approval</h2>
+      <p>Your account has been created. An Area Lead or Regional POC needs to approve it and assign your role before you can access the portal.</p>
+      <button id="pending-refresh" class="btn-secondary">Check again</button>
+      <button id="pending-logout" class="btn-text">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MAIN APP SHELL ============ -->
+<div id="app-shell" class="app-shell" style="display:none;">
+
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <svg viewBox="0 0 200 40" class="pulse-svg small"><polyline points="0,20 40,20 52,4 64,36 76,20 90,20 100,8 110,32 120,20 200,20"/></svg>
+      <span>NabzOps</span>
+    </div>
+    <nav id="nav-links" class="nav-links"></nav>
+    <div class="sidebar-footer">
+      <div id="user-badge" class="user-badge"></div>
+      <button id="logout-btn" class="btn-text">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main-area">
+    <header class="topbar">
+      <h1 id="view-title">Dashboard</h1>
+      <div id="topbar-actions"></div>
+    </header>
+    <div id="main-content" class="main-content"></div>
+  </main>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
