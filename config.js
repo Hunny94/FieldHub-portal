@@ -3,5 +3,5 @@
 // Paste in the two values from your Supabase project:
 // Settings (gear icon) → API → "Project URL" and "anon public" key
 // =========================================================
-const SUPABASE_URL = "https://erdsdvitfvpwlhwiflco.supabase.co/rest/v1/";
+const SUPABASE_URL = "sb_publishable_sFa_CJc9cSC6CC2UmelGbw_oKW_w_8u";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVyZHNkdml0ZnZwd2xod2lmbGNvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxMjA2NDgsImV4cCI6MjA5OTY5NjY0OH0.5Jft6II64atshjB7tSf11bimwAxOopl1sgqTxYYqRZQ";
