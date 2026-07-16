@@ -26,7 +26,7 @@
 
     <form id="login-form" class="auth-form">
       <h2>Sign in</h2>
-      <label>Email<input type="email" id="login-email" required autocomplete="username"></label>
+      <label>Mobile Number<input type="tel" id="login-phone" required placeholder="03xx-xxxxxxx" autocomplete="username"></label>
       <label>Password<input type="password" id="login-password" required autocomplete="current-password"></label>
       <button type="submit" class="btn-primary">Sign in</button>
       <p class="auth-switch">New team member? <a href="#" id="show-signup">Create an account</a></p>
@@ -36,9 +36,10 @@
       <h2>Create account</h2>
       <p class="hint">Your account will be <strong>pending</strong> until your Area Lead approves it and assigns your role and region.</p>
       <label>Full name<input type="text" id="signup-name" required></label>
-      <label>Email<input type="email" id="signup-email" required autocomplete="username"></label>
-      <label>Phone<input type="tel" id="signup-phone" placeholder="03xx-xxxxxxx"></label>
-      <label>Employee ID (if you have one)<input type="text" id="signup-empid"></label>
+      <label>Employee ID<input type="text" id="signup-empid" required></label>
+      <label>Mobile Number<input type="tel" id="signup-phone" required placeholder="03xx-xxxxxxx" autocomplete="username"></label>
+      <label>Email (optional)<input type="email" id="signup-email"></label>
+      <label>Bike Number<input type="text" id="signup-bike" placeholder="e.g. LEA-1234"></label>
       <label>Password<input type="password" id="signup-password" required autocomplete="new-password" minlength="6"></label>
       <button type="submit" class="btn-primary">Create account</button>
       <p class="auth-switch">Already have an account? <a href="#" id="show-login">Sign in</a></p>
