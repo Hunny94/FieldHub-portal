@@ -9,6 +9,7 @@ const state = {
   user: null,
   profile: null,
   regions: [],
+  categories: [],
   profilesInScope: [],
   view: 'dashboard'
 };
@@ -18,17 +19,43 @@ const ROLE_LABEL = {
   regional_poc: 'Regional POC',
   team_lead: 'Team Lead',
   coordinator: 'Coordinator',
+  inventory_coordinator: 'Inventory Coordinator',
   rider: 'Rider'
 };
 
-const CATEGORY_OPTIONS = [
-  'Equipment - Thermometer','Equipment - Cooler Box','ID Card','Uniform',
-  'Bike / Vehicle','Slot / Schedule Issue','Other'
-];
 const ITEM_TYPE_OPTIONS = [
   'Thermometer Calibration','ID Card','Medical Fitness Certificate',
   'Training Certification','Vehicle Registration','Other'
 ];
+
+// Convert a Pakistani local number (03xx-xxxxxxx) to +92 E.164 format,
+// since Supabase Auth phone login needs international format.
+function toE164(raw){
+  const digits = (raw || '').replace(/[^0-9+]/g, '');
+  if (digits.startsWith('+')) return digits;
+  if (digits.startsWith('0')) return '+92' + digits.slice(1);
+  if (digits.startsWith('92')) return '+' + digits;
+  return '+92' + digits;
+}
+
+// Calls the Edge Function (bulk rider upload / WhatsApp). Fails quietly
+// if FUNCTIONS_URL hasn't been configured yet.
+async function callEdgeFunction(action, payload){
+  if (!FUNCTIONS_URL || FUNCTIONS_URL.includes('PASTE_YOUR')) {
+    return { skipped: true, reason: 'Edge Function not configured yet' };
+  }
+  const { data: { session } } = await sb.auth.getSession();
+  const res = await fetch(FUNCTIONS_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session?.access_token || ''}`,
+      'apikey': SUPABASE_ANON_KEY
+    },
+    body: JSON.stringify({ action, ...payload })
+  });
+  return res.json();
+}
 
 // ---------------------------------------------------------
 // INIT
@@ -69,6 +96,7 @@ async function afterLogin(user){
   document.getElementById('app-shell').style.display = 'flex';
 
   await loadRegions();
+  await loadCategories();
   renderNav();
   renderUserBadge();
   navigateTo('dashboard');
@@ -77,6 +105,10 @@ async function afterLogin(user){
 async function loadRegions(){
   const { data } = await sb.from('regions').select('*').order('name');
   state.regions = data || [];
+}
+async function loadCategories(){
+  const { data } = await sb.from('categories').select('*').eq('active', true).order('name');
+  state.categories = data || [];
 }
 
 // ---------------------------------------------------------
@@ -89,9 +121,9 @@ function bindAuthForms(){
   document.getElementById('login-form').onsubmit = async (e) => {
     e.preventDefault();
     clearAuthMessage();
-    const email = document.getElementById('login-email').value.trim();
+    const phone = toE164(document.getElementById('login-phone').value.trim());
     const password = document.getElementById('login-password').value;
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    const { data, error } = await sb.auth.signInWithPassword({ phone, password });
     if (error){ showAuthMessage(error.message); return; }
     await afterLogin(data.user);
   };
@@ -100,17 +132,17 @@ function bindAuthForms(){
     e.preventDefault();
     clearAuthMessage();
     const full_name = document.getElementById('signup-name').value.trim();
-    const email = document.getElementById('signup-email').value.trim();
-    const phone = document.getElementById('signup-phone').value.trim();
     const employee_id = document.getElementById('signup-empid').value.trim();
+    const phone = toE164(document.getElementById('signup-phone').value.trim());
+    const email = document.getElementById('signup-email').value.trim();
+    const bike_number = document.getElementById('signup-bike').value.trim();
     const password = document.getElementById('signup-password').value;
     const { data, error } = await sb.auth.signUp({
-      email, password, options: { data: { full_name } }
+      phone, password, options: { data: { full_name } }
     });
     if (error){ showAuthMessage(error.message); return; }
-    // fill in phone / employee id on the auto-created profile row
     if (data.user){
-      await sb.from('profiles').update({ phone, employee_id }).eq('id', data.user.id);
+      await sb.from('profiles').update({ email, employee_id, bike_number }).eq('id', data.user.id);
       await afterLogin(data.user);
     }
   };
@@ -146,15 +178,16 @@ async function doLogout(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  admin: ['dashboard','circulars','tasks','requests','expiries','team','regions'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','team','regions','categories'],
   regional_poc: ['dashboard','circulars','tasks','requests','expiries','team'],
   team_lead: ['dashboard','circulars','tasks','requests','expiries','team'],
   coordinator: ['dashboard','circulars','tasks','requests','expiries','team'],
+  inventory_coordinator: ['dashboard','circulars','requests','expiries'],
   rider: ['dashboard','circulars','tasks','requests','expiries']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
-  expiries:'Expiry Tracker', team:'Team', regions:'Regions'
+  expiries:'Expiry Tracker', team:'Team', regions:'Regions', categories:'Categories'
 };
 
 function renderNav(){
@@ -191,6 +224,7 @@ async function navigateTo(view){
     else if (view==='expiries') await renderExpiries();
     else if (view==='team') await renderTeam();
     else if (view==='regions') await renderRegions();
+    else if (view==='categories') await renderCategories();
   }catch(err){
     console.error(err);
     main.innerHTML = `<div class="empty-state">Something went wrong loading this page. Please refresh.</div>`;
@@ -273,7 +307,9 @@ async function renderCirculars(){
     if (isAdmin() || c.created_by === state.user.id){
       const audience = await countAudience(c.target_region_id, c.target_role);
       const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id);
-      ackInfo = `<div class="mono" style="margin-top:8px;">${ackCount ?? 0} / ${audience} acknowledged</div>`;
+      ackInfo = `<div class="mono" style="margin-top:8px;">${ackCount ?? 0} / ${audience} acknowledged</div>
+        <button class="btn small outline" style="margin-top:6px;" data-tracker="${c.id}">View tracker</button>
+        <div id="tracker-${c.id}"></div>`;
     }
     rowsHtml += `
       <div class="card">
@@ -289,6 +325,28 @@ async function renderCirculars(){
     `;
   }
   main.innerHTML = rowsHtml;
+  main.querySelectorAll('[data-tracker]').forEach(btn => {
+    btn.onclick = () => showCircularTracker(btn.dataset.tracker, circulars.find(c=>c.id===btn.dataset.tracker));
+  });
+}
+
+async function showCircularTracker(circularId, circular){
+  const el = document.getElementById('tracker-'+circularId);
+  if (!el) return;
+  el.innerHTML = '<div class="mono">Loading…</div>';
+  let q = sb.from('profiles').select('id, full_name, role').eq('status','active');
+  if (circular.target_region_id) q = q.eq('region_id', circular.target_region_id);
+  if (circular.target_role) q = q.eq('role', circular.target_role);
+  const { data: audience } = await q;
+  const { data: acks } = await sb.from('circular_acks').select('user_id, acknowledged_at').eq('circular_id', circularId);
+  const ackMap = new Map((acks||[]).map(a=>[a.user_id, a.acknowledged_at]));
+  el.innerHTML = `<table style="margin-top:8px;"><thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead><tbody>
+    ${(audience||[]).map(p=>{
+      const acked = ackMap.get(p.id);
+      return `<tr><td>${escapeHtml(p.full_name)}</td><td>${ROLE_LABEL[p.role]||p.role}</td>
+        <td>${acked ? `<span class="badge active">Acknowledged</span>` : `<span class="badge open">Pending</span>`}</td></tr>`;
+    }).join('')}
+  </tbody></table>`;
 }
 
 async function countAudience(targetRegionId, targetRole){
@@ -323,15 +381,30 @@ function openNewCircularModal(){
   `);
   document.getElementById('circular-form').onsubmit = async (e) => {
     e.preventDefault();
+    const title = document.getElementById('c-title').value.trim();
+    const targetRegionId = document.getElementById('c-region').value || null;
+    const targetRole = document.getElementById('c-role').value || null;
     const { error } = await sb.from('circulars').insert({
-      title: document.getElementById('c-title').value.trim(),
+      title,
       body: document.getElementById('c-body').value.trim(),
       created_by: state.user.id,
-      target_region_id: document.getElementById('c-region').value || null,
-      target_role: document.getElementById('c-role').value || null
+      target_region_id: targetRegionId,
+      target_role: targetRole
     });
     if (error){ toast('Could not post: ' + error.message); return; }
     closeModal(); toast('Circular posted'); renderCirculars();
+    // Best-effort WhatsApp broadcast to everyone targeted
+    let q = sb.from('profiles').select('phone').eq('status','active');
+    if (targetRegionId) q = q.eq('region_id', targetRegionId);
+    if (targetRole) q = q.eq('role', targetRole);
+    const { data: audience } = await q;
+    const phones = (audience || []).map(p=>p.phone).filter(Boolean);
+    if (phones.length){
+      callEdgeFunction('send_whatsapp', {
+        recipients: phones,
+        message: `FieldHub Circular: "${title}". Please open the portal to read and acknowledge.`
+      });
+    }
   };
 }
 
@@ -500,7 +573,7 @@ async function loadThread(requestId){
 }
 
 function openNewRequestModal(){
-  const options = CATEGORY_OPTIONS.map(c=>`<option value="${c}">${c}</option>`).join('');
+  const options = state.categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   openModal(`
     <h2>New request</h2>
     <form id="request-form">
@@ -511,13 +584,26 @@ function openNewRequestModal(){
   `);
   document.getElementById('request-form').onsubmit = async (e) => {
     e.preventDefault();
-    const { error } = await sb.from('requests').insert({
+    const categoryId = document.getElementById('r-category').value;
+    const category = state.categories.find(c=>c.id===categoryId);
+    const { data: inserted, error } = await sb.from('requests').insert({
       rider_id: state.user.id,
-      category: document.getElementById('r-category').value,
+      category: category?.name || 'Other',
+      category_id: categoryId,
       description: document.getElementById('r-desc').value.trim()
-    });
+    }).select('*').single();
     if (error){ toast('Could not submit: ' + error.message); return; }
     closeModal(); toast('Request submitted'); renderRequests();
+    // Best-effort WhatsApp alert to whoever it was routed to
+    if (inserted?.assigned_poc_id){
+      const { data: handler } = await sb.from('profiles').select('phone, full_name').eq('id', inserted.assigned_poc_id).single();
+      if (handler?.phone){
+        callEdgeFunction('send_whatsapp', {
+          recipients: [handler.phone],
+          message: `FieldHub: New "${category?.name || 'request'}" query from ${state.profile.full_name}. Please check the portal.`
+        });
+      }
+    }
   };
 }
 
@@ -586,6 +672,10 @@ async function openNewExpiryModal(){
 // ---------------------------------------------------------
 async function renderTeam(){
   const main = document.getElementById('main-content');
+  if (isAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="bulk-add-btn">+ Bulk Add Riders</button>`;
+    document.getElementById('bulk-add-btn').onclick = openBulkUploadModal;
+  }
   await loadScopedProfiles(true);
   const pending = state.profilesInScope.filter(p=>p.status==='pending');
   const active = state.profilesInScope.filter(p=>p.status!=='pending');
@@ -656,6 +746,47 @@ async function loadScopedProfiles(includeAll){
   state.profilesInScope = data || [];
 }
 
+function openBulkUploadModal(){
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  openModal(`
+    <h2>Bulk add riders</h2>
+    <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Password, Full Name (optional), Bike Number (optional)</strong> — one rider per line, comma-separated. All riders in this batch will be assigned to the region you pick below.</p>
+    <form id="bulk-form">
+      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required>${regionOptions}</select></div>
+      <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001, Pass@123, Ali Khan, LEA-1234
+03007654321, EMP1002, Pass@456"></textarea></div>
+      <button class="btn-primary" type="submit">Create logins</button>
+    </form>
+    <div id="bulk-results" style="margin-top:14px;"></div>
+  `);
+  document.getElementById('bulk-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const regionId = document.getElementById('bulk-region').value;
+    const lines = document.getElementById('bulk-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
+    const rows = lines.map(line => {
+      const parts = line.split(',').map(p=>p.trim());
+      return { phone: parts[0], employee_id: parts[1], password: parts[2], full_name: parts[3]||'', bike_number: parts[4]||'' };
+    });
+    if (!rows.length){ toast('Paste at least one rider row'); return; }
+    document.getElementById('bulk-results').innerHTML = '<div class="mono">Creating logins…</div>';
+    const resp = await callEdgeFunction('bulk_create_riders', { rows, region_id: regionId });
+    if (resp.skipped){
+      document.getElementById('bulk-results').innerHTML = `<div class="auth-message" style="display:block;">The Edge Function isn't deployed/configured yet — see SETUP_GUIDE_PART2.md for the one-time setup, then bulk upload will work.</div>`;
+      return;
+    }
+    if (resp.error){
+      document.getElementById('bulk-results').innerHTML = `<div class="auth-message" style="display:block;">${escapeHtml(resp.error)}</div>`;
+      return;
+    }
+    const results = resp.results || [];
+    document.getElementById('bulk-results').innerHTML = `<table><thead><tr><th>Mobile</th><th>Result</th></tr></thead><tbody>
+      ${results.map(r=>`<tr><td class="mono">${escapeHtml(r.phone)}</td><td>${r.ok ? '<span class="badge active">Created</span>' : `<span class="badge open">Failed: ${escapeHtml(r.error||'')}</span>`}</td></tr>`).join('')}
+    </tbody></table>`;
+    toast(`${results.filter(r=>r.ok).length} of ${results.length} logins created`);
+    renderTeam();
+  };
+}
+
 // ---------------------------------------------------------
 // REGIONS (admin only)
 // ---------------------------------------------------------
@@ -684,8 +815,58 @@ async function renderRegions(){
 }
 
 // ---------------------------------------------------------
-// SHARED UI HELPERS
+// CATEGORIES (admin only) — decides who a request category routes to
 // ---------------------------------------------------------
+async function renderCategories(){
+  const main = document.getElementById('main-content');
+  document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-category-btn">+ Add Category</button>`;
+  document.getElementById('new-category-btn').onclick = () => openCategoryModal(null);
+
+  const { data: cats } = await sb.from('categories').select('*').order('name');
+  main.innerHTML = `<table><thead><tr><th>Category</th><th>Routes to</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(cats||[]).map(c=>`<tr>
+      <td>${escapeHtml(c.name)}</td>
+      <td>${ROLE_LABEL[c.primary_role]||c.primary_role}</td>
+      <td><span class="badge ${c.active?'active':'closed'}">${c.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn small outline" data-edit-cat="${c.id}">Edit</button></td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  main.querySelectorAll('[data-edit-cat]').forEach(btn => {
+    btn.onclick = () => openCategoryModal(cats.find(c=>c.id===btn.dataset.editCat));
+  });
+}
+
+function openCategoryModal(cat){
+  const roleOptions = ['regional_poc','team_lead','inventory_coordinator']
+    .map(r=>`<option value="${r}" ${cat?.primary_role===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('');
+  openModal(`
+    <h2>${cat ? 'Edit' : 'Add'} category</h2>
+    <form id="category-form">
+      <div class="form-row"><label>Category name</label><input type="text" id="cat-name" value="${cat?escapeHtml(cat.name):''}" required></div>
+      <div class="form-row"><label>Routes to (who handles it)</label><select id="cat-role">${roleOptions}</select></div>
+      ${cat ? `<div class="form-row"><label>Status</label><select id="cat-active">
+        <option value="true" ${cat.active?'selected':''}>Active</option>
+        <option value="false" ${!cat.active?'selected':''}>Inactive</option>
+      </select></div>` : ''}
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  document.getElementById('category-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      name: document.getElementById('cat-name').value.trim(),
+      primary_role: document.getElementById('cat-role').value
+    };
+    if (cat) payload.active = document.getElementById('cat-active').value === 'true';
+    const { error } = cat
+      ? await sb.from('categories').update(payload).eq('id', cat.id)
+      : await sb.from('categories').insert(payload);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); await loadCategories(); renderCategories();
+  };
+}
+
+
 function openModal(innerHtml){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
