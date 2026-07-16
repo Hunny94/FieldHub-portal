@@ -65,6 +65,14 @@ a{ color: var(--sky); }
   border:1px solid var(--line); border-radius:8px; font-size:14px; background:#fff;
 }
 .auth-form input:focus{ outline:2px solid var(--sky); outline-offset:1px; border-color: var(--sky); }
+.password-field{ position:relative; }
+.password-field input{ padding-right:56px; }
+.password-toggle{
+  position:absolute; right:6px; top:50%; transform:translateY(-50%);
+  background:none; border:none; color:var(--sky); font-size:12px; font-weight:700;
+  padding:6px 8px; cursor:pointer; text-transform:uppercase; letter-spacing:0.03em;
+}
+.password-toggle:hover{ text-decoration:underline; }
 .hint{ font-size:13px; color:var(--muted); background:var(--paper); padding:10px 12px; border-radius:8px; margin-bottom:14px;}
 .auth-switch{ text-align:center; font-size:13px; color:var(--muted); margin-top:14px; }
 .auth-message{ background:#FDEDEA; color:var(--clay); border-radius:8px; padding:10px 12px; font-size:13px; margin-bottom:14px; }
