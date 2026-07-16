@@ -118,6 +118,24 @@ function bindAuthForms(){
   document.getElementById('show-signup').onclick = (e) => { e.preventDefault(); toggleAuthForms(true); };
   document.getElementById('show-login').onclick = (e) => { e.preventDefault(); toggleAuthForms(false); };
 
+  // Digits only in phone fields — no dashes, spaces, or letters
+  ['login-phone','signup-phone'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/[^0-9]/g, '').slice(0, 11);
+    });
+  });
+
+  // Show/Hide password toggles
+  document.querySelectorAll('.password-toggle').forEach(btn => {
+    btn.onclick = () => {
+      const target = document.getElementById(btn.dataset.target);
+      const isHidden = target.type === 'password';
+      target.type = isHidden ? 'text' : 'password';
+      btn.textContent = isHidden ? 'Hide' : 'Show';
+    };
+  });
+
   document.getElementById('login-form').onsubmit = async (e) => {
     e.preventDefault();
     clearAuthMessage();
