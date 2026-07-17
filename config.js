@@ -9,4 +9,4 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Only needed once you deploy the Edge Function (bulk rider upload +
 // WhatsApp alerts). Looks like: https://xxxxx.supabase.co/functions/v1/fieldhub-actions
 // Leave as-is until then — those features will just quietly do nothing.
-const FUNCTIONS_URL = "PASTE_YOUR_EDGE_FUNCTION_URL_HERE";
+const FUNCTIONS_URL = "https://erdsdvitfvpwlhwiflco.supabase.co/functions/v1/fieldhub-actions";
