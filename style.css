@@ -4,8 +4,9 @@
    deep teal ink, warm paper, amber caution, clay urgent, moss ok
    ========================================================= */
 :root{
-  --ink: #14337A;         /* royal blue: sidebar, headings, brand */
+  --ink: #14337A;         /* royal blue: buttons, headings, brand accents */
   --ink-soft: #1F4FAE;
+  --sidebar-bg: #0A1830;  /* deep near-navy-black for the sidebar itself */
   --paper: #F5F7FA;       /* cool near-white background */
   --card: #FFFFFF;
   --line: #DCE3ED;
@@ -93,10 +94,13 @@ a{ color: var(--sky); }
 /* ---------- app shell ---------- */
 .app-shell{ display:flex; min-height:100vh; }
 .sidebar{
-  width:230px; background:var(--ink); color:#fff; flex-shrink:0;
-  display:flex; flex-direction:column; padding:20px 14px; position:sticky; top:0; height:100vh;
+  width:230px; background:var(--sidebar-bg); color:#fff; flex-shrink:0;
+  display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh;
 }
-.sidebar-brand{ display:flex; align-items:center; gap:8px; font-family:var(--font-display); font-weight:700; font-size:18px; padding:0 8px 18px 8px; }
+.sidebar-brand{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:0 8px 22px 8px; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:14px; }
+.sidebar-logo{ max-width:64px; max-height:64px; object-fit:contain; margin-bottom:8px; }
+.sidebar-brand .brand-title{ font-family:var(--font-display); font-weight:700; font-size:17px; color:#fff; }
+.sidebar-brand .brand-subtitle{ font-size:11px; color:#9DB0D6; letter-spacing:0.02em; }
 .nav-links{ display:flex; flex-direction:column; gap:2px; flex:1; }
 .nav-link{
   display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px;
