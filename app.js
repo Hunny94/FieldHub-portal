@@ -64,6 +64,8 @@ window.addEventListener('DOMContentLoaded', init);
 
 async function init(){
   bindAuthForms();
+  bindForcePasswordForm();
+  bindForgotPasswordLink();
   const { data: { session } } = await sb.auth.getSession();
   if (session){ await afterLogin(session.user); } else { showAuthScreen(); }
 
@@ -75,6 +77,7 @@ async function init(){
 function showAuthScreen(){
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('pending-screen').style.display = 'none';
+  document.getElementById('force-password-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'none';
 }
 
@@ -91,8 +94,14 @@ async function afterLogin(user){
     return;
   }
 
+  if (profile.must_change_password){
+    showForcedPasswordChange();
+    return;
+  }
+
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('pending-screen').style.display = 'none';
+  document.getElementById('force-password-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'flex';
 
   await loadRegions();
@@ -192,20 +201,71 @@ async function doLogout(){
   showAuthScreen();
 }
 
+function showForcedPasswordChange(){
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('pending-screen').style.display = 'none';
+  document.getElementById('app-shell').style.display = 'none';
+  document.getElementById('force-password-screen').style.display = 'flex';
+}
+
+function bindForcePasswordForm(){
+  document.getElementById('force-password-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('force-new-password').value;
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error){ toast('Could not update password: ' + error.message); return; }
+    await sb.from('profiles').update({ must_change_password: false }).eq('id', state.user.id);
+    toast('Password updated');
+    const { data: { session } } = await sb.auth.getSession();
+    await afterLogin(session.user);
+  };
+  document.getElementById('force-password-toggle').onclick = () => {
+    const input = document.getElementById('force-new-password');
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    document.getElementById('force-password-toggle').textContent = isHidden ? 'Hide' : 'Show';
+  };
+}
+
+function bindForgotPasswordLink(){
+  document.getElementById('show-forgot').onclick = (e) => {
+    e.preventDefault();
+    openModal(`
+      <h2>Forgot password</h2>
+      <p class="hint">Submit your mobile number and your Area Lead / Regional POC will reset it for you and let you know your temporary password.</p>
+      <form id="forgot-form">
+        <div class="form-row"><label>Mobile Number</label><input type="tel" id="forgot-phone" required maxlength="11" placeholder="03124244131"></div>
+        <div class="form-row"><label>Note (optional)</label><textarea id="forgot-note" placeholder="Anything that helps us find your account"></textarea></div>
+        <button class="btn-primary" type="submit">Submit request</button>
+      </form>
+    `);
+    document.getElementById('forgot-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
+    document.getElementById('forgot-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const { error } = await sb.from('password_reset_requests').insert({
+        phone: toE164(document.getElementById('forgot-phone').value.trim()),
+        note: document.getElementById('forgot-note').value.trim()
+      });
+      if (error){ toast('Could not submit: ' + error.message); return; }
+      closeModal(); toast('Request submitted — your team will reach out to reset it.');
+    };
+  };
+}
+
 // ---------------------------------------------------------
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  admin: ['dashboard','circulars','tasks','requests','expiries','team','regions','categories'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','team'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','team'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','team'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','team','regions','categories','warnings'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
   inventory_coordinator: ['dashboard','circulars','requests','expiries'],
-  rider: ['dashboard','circulars','tasks','requests','expiries']
+  rider: ['dashboard','circulars','tasks','requests','expiries','warnings']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
-  expiries:'Expiry Tracker', team:'Team', regions:'Regions', categories:'Categories'
+  expiries:'Expiry Tracker', team:'Team', regions:'Regions', categories:'Categories', warnings:'Warnings'
 };
 
 function renderNav(){
@@ -243,6 +303,7 @@ async function navigateTo(view){
     else if (view==='team') await renderTeam();
     else if (view==='regions') await renderRegions();
     else if (view==='categories') await renderCategories();
+    else if (view==='warnings') await renderWarnings();
   }catch(err){
     console.error(err);
     main.innerHTML = `<div class="empty-state">Something went wrong loading this page. Please refresh.</div>`;
@@ -383,7 +444,10 @@ async function acknowledgeCircular(circularId){
 }
 
 function openNewCircularModal(){
-  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const isRegionLocked = ['regional_poc','team_lead','coordinator'].includes(state.profile.role);
+  const regionOptions = isRegionLocked
+    ? `<option value="${state.profile.region_id}" selected>${escapeHtml(state.regions.find(r=>r.id===state.profile.region_id)?.name || 'Your region')}</option>`
+    : `<option value="">All regions</option>` + state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   const roleOptions = Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   openModal(`
     <h2>New circular</h2>
@@ -391,7 +455,7 @@ function openNewCircularModal(){
       <div class="form-row"><label>Title</label><input type="text" id="c-title" required></div>
       <div class="form-row"><label>Message</label><textarea id="c-body" required></textarea></div>
       <div class="two-col">
-        <div class="form-row"><label>Target region</label><select id="c-region"><option value="">All regions</option>${regionOptions}</select></div>
+        <div class="form-row"><label>Target region</label><select id="c-region" ${isRegionLocked?'disabled':''}>${regionOptions}</select></div>
         <div class="form-row"><label>Target role</label><select id="c-role"><option value="">All roles</option>${roleOptions}</select></div>
       </div>
       <button class="btn-primary" type="submit">Post circular</button>
@@ -634,11 +698,12 @@ async function renderExpiries(){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-expiry-btn">+ Add Item</button>`;
     document.getElementById('new-expiry-btn').onclick = openNewExpiryModal;
   }
-  const { data: items } = await sb.from('expiry_items').select('*, profiles(full_name)').order('expiry_date');
+  const { data: items } = await sb.from('expiry_items').select('*, profiles(full_name, phone)').order('expiry_date');
   if (!items || items.length===0){ main.innerHTML = emptyState('No expiry items tracked yet.'); return; }
 
+  const canRemind = isAdmin() || state.profile.role === 'inventory_coordinator';
   const today = new Date();
-  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Item</th><th>Expiry date</th><th>Status</th></tr></thead><tbody>
+  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Item</th><th>Expiry date</th><th>Status</th>${canRemind?'<th></th>':''}</tr></thead><tbody>
     ${items.map(i=>{
       const d = new Date(i.expiry_date);
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
@@ -650,9 +715,23 @@ async function renderExpiries(){
         <td>${escapeHtml(i.item_type)}${i.item_label?' — '+escapeHtml(i.item_label):''}</td>
         <td class="mono">${i.expiry_date}</td>
         <td><span class="${badge}">${label}</span></td>
+        ${canRemind ? `<td>${daysLeft<=14 ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}</td>` : ''}
       </tr>`;
     }).join('')}
   </tbody></table>`;
+
+  main.querySelectorAll('[data-remind]').forEach(btn => {
+    btn.onclick = async () => {
+      const phone = btn.dataset.remindPhone;
+      if (!phone){ toast('This rider has no phone on file'); return; }
+      const resp = await callEdgeFunction('send_whatsapp', {
+        recipients: [phone],
+        message: `FieldHub reminder: your "${btn.dataset.remindItem}" is due/overdue. Please arrange the return/replacement as soon as possible.`
+      });
+      if (resp.skipped){ toast('WhatsApp not configured yet — see SETUP_GUIDE_PART2.md'); return; }
+      toast('Reminder sent');
+    };
+  });
 }
 
 async function openNewExpiryModal(){
@@ -690,7 +769,7 @@ async function openNewExpiryModal(){
 // ---------------------------------------------------------
 async function renderTeam(){
   const main = document.getElementById('main-content');
-  if (isAdmin()){
+  if (isAdmin() || ['regional_poc','team_lead'].includes(state.profile.role)){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="bulk-add-btn">+ Bulk Add Riders</button>`;
     document.getElementById('bulk-add-btn').onclick = openBulkUploadModal;
   }
@@ -710,13 +789,17 @@ async function renderTeam(){
   }
 
   html += `<div class="card"><h3>Team directory (${active.length})</h3>
-  <table><thead><tr><th>Name</th><th>Role</th><th>Region</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+  <table><thead><tr><th>Name</th><th>Role</th><th>Region</th><th>Status</th><th></th></tr></thead><tbody>
   ${active.map(p=>`<tr>
-    <td>${escapeHtml(p.full_name)}<div class="mono">${escapeHtml(p.email)}</div></td>
+    <td>${escapeHtml(p.full_name)}<div class="mono">${escapeHtml(p.email||p.phone||'')}</div></td>
     <td>${ROLE_LABEL[p.role]||'—'}</td>
     <td>${escapeHtml(state.regions.find(r=>r.id===p.region_id)?.name || '—')}</td>
     <td><span class="badge ${p.status}">${p.status}</span></td>
-    ${isAdmin() ? `<td><button class="btn small outline" data-edit="${p.id}">Edit</button></td>` : ''}
+    <td style="white-space:nowrap;">
+      ${isAdmin() ? `<button class="btn small outline" data-edit="${p.id}">Edit</button>` : ''}
+      ${canManage(p) ? `<button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
+      <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>` : ''}
+    </td>
   </tr>`).join('')}
   </tbody></table></div>`;
 
@@ -724,6 +807,52 @@ async function renderTeam(){
 
   main.querySelectorAll('[data-approve]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.approve));
   main.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.edit));
+  main.querySelectorAll('[data-toggle-status]').forEach(btn => btn.onclick = () => toggleMemberStatus(btn.dataset.toggleStatus));
+  main.querySelectorAll('[data-reset-pw]').forEach(btn => btn.onclick = () => openResetPasswordModal(btn.dataset.resetPw));
+}
+
+function canManage(p){
+  if (isAdmin()) return true;
+  if (['regional_poc','team_lead'].includes(state.profile.role)) return p.role === 'rider' && p.region_id === state.profile.region_id;
+  return false;
+}
+
+async function toggleMemberStatus(profileId){
+  const p = state.profilesInScope.find(x=>x.id===profileId);
+  const newStatus = p.status === 'disabled' ? 'active' : 'disabled';
+  if (isAdmin()){
+    const { error } = await sb.from('profiles').update({ status: newStatus }).eq('id', profileId);
+    if (error){ toast('Could not update: ' + error.message); return; }
+    toast(newStatus === 'disabled' ? 'Rider disabled' : 'Rider enabled');
+    renderTeam();
+  } else {
+    // Non-admin staff can't write role/status directly (RLS blocks it) — route through the Edge Function instead
+    const resp = await callEdgeFunction('set_rider_status', { user_id: profileId, status: newStatus });
+    if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
+    if (resp.error){ toast(resp.error); return; }
+    toast(newStatus === 'disabled' ? 'Rider disabled' : 'Rider enabled');
+    renderTeam();
+  }
+}
+
+function openResetPasswordModal(profileId){
+  const p = state.profilesInScope.find(x=>x.id===profileId);
+  openModal(`
+    <h2>Reset password</h2>
+    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.phone||'')}</p>
+    <form id="reset-pw-form">
+      <div class="form-row"><label>New temporary password</label><input type="text" id="reset-pw-value" value="Test@123" required></div>
+      <p class="hint">They'll be required to set their own password the next time they log in.</p>
+      <button class="btn-primary" type="submit">Reset password</button>
+    </form>
+  `);
+  document.getElementById('reset-pw-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const resp = await callEdgeFunction('reset_password', { user_id: profileId, new_password: document.getElementById('reset-pw-value').value });
+    if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
+    if (resp.error){ toast(resp.error); return; }
+    closeModal(); toast('Password reset');
+  };
 }
 
 function openApproveModal(profileId){
@@ -765,25 +894,28 @@ async function loadScopedProfiles(includeAll){
 }
 
 function openBulkUploadModal(){
-  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const isFullAdmin = isAdmin();
+  const regionOptions = isFullAdmin
+    ? state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')
+    : `<option value="${state.profile.region_id}" selected>${escapeHtml(state.regions.find(r=>r.id===state.profile.region_id)?.name || 'Your region')}</option>`;
   openModal(`
     <h2>Bulk add riders</h2>
-    <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Password, Full Name (optional), Bike Number (optional)</strong> — one rider per line, comma-separated. All riders in this batch will be assigned to the region you pick below.</p>
+    <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Password (optional), Full Name (optional), Bike Number (optional)</strong> — one rider per line, comma-separated. Leave password blank to default everyone to <strong>Test@123</strong> (they'll be required to change it on first login).</p>
     <form id="bulk-form">
-      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required>${regionOptions}</select></div>
-      <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001, Pass@123, Ali Khan, LEA-1234
-03007654321, EMP1002, Pass@456"></textarea></div>
+      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required ${isFullAdmin?'':'disabled'}>${regionOptions}</select></div>
+      <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001
+03007654321, EMP1002, , Ali Khan, LEA-1234"></textarea></div>
       <button class="btn-primary" type="submit">Create logins</button>
     </form>
     <div id="bulk-results" style="margin-top:14px;"></div>
   `);
   document.getElementById('bulk-form').onsubmit = async (e) => {
     e.preventDefault();
-    const regionId = document.getElementById('bulk-region').value;
+    const regionId = isFullAdmin ? document.getElementById('bulk-region').value : state.profile.region_id;
     const lines = document.getElementById('bulk-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
     const rows = lines.map(line => {
       const parts = line.split(',').map(p=>p.trim());
-      return { phone: parts[0], employee_id: parts[1], password: parts[2], full_name: parts[3]||'', bike_number: parts[4]||'' };
+      return { phone: parts[0], employee_id: parts[1], password: parts[2]||'', full_name: parts[3]||'', bike_number: parts[4]||'' };
     });
     if (!rows.length){ toast('Paste at least one rider row'); return; }
     document.getElementById('bulk-results').innerHTML = '<div class="mono">Creating logins…</div>';
@@ -881,6 +1013,61 @@ function openCategoryModal(cat){
       : await sb.from('categories').insert(payload);
     if (error){ toast('Could not save: ' + error.message); return; }
     closeModal(); toast('Saved'); await loadCategories(); renderCategories();
+  };
+}
+
+// ---------------------------------------------------------
+// WARNINGS / DISCIPLINARY LOG
+// ---------------------------------------------------------
+async function renderWarnings(){
+  const main = document.getElementById('main-content');
+  if (isStaff()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-warning-btn">+ Add Warning</button>`;
+    document.getElementById('new-warning-btn').onclick = openNewWarningModal;
+  }
+  const { data: warnings } = await sb.from('disciplinary_actions')
+    .select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)')
+    .order('created_at', {ascending:false});
+
+  if (!warnings || warnings.length===0){ main.innerHTML = emptyState('No warnings recorded.'); return; }
+
+  main.innerHTML = warnings.map(w => `
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <h3>${escapeHtml(w.action_type)}${state.profile.role!=='rider' ? ' — '+escapeHtml(w.rider?.full_name||'') : ''}</h3>
+        <span class="mono">${formatDate(w.created_at)}</span>
+      </div>
+      <p style="font-size:13.5px;">${escapeHtml(w.description)}</p>
+      <div class="mono">Recorded by ${escapeHtml(w.recorder?.full_name||'—')}</div>
+    </div>
+  `).join('');
+}
+
+async function openNewWarningModal(){
+  await loadScopedProfiles();
+  const riders = state.profilesInScope.filter(p=>p.role==='rider');
+  const options = riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)} ${p.employee_id?'('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
+  openModal(`
+    <h2>Add warning</h2>
+    <form id="warning-form">
+      <div class="form-row"><label>Rider</label><select id="w-rider" required>${options}</select></div>
+      <div class="form-row"><label>Type</label><select id="w-type">
+        <option>Verbal Warning</option><option>Written Explanation</option><option>Termination Notice</option><option>Other</option>
+      </select></div>
+      <div class="form-row"><label>Details</label><textarea id="w-desc" required placeholder="What happened, what was discussed, any outcome…"></textarea></div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  document.getElementById('warning-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('disciplinary_actions').insert({
+      rider_id: document.getElementById('w-rider').value,
+      action_type: document.getElementById('w-type').value,
+      description: document.getElementById('w-desc').value.trim(),
+      recorded_by: state.user.id
+    });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Warning recorded'); renderWarnings();
   };
 }
 
