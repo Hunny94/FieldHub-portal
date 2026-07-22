@@ -35,6 +35,7 @@
       </label>
       <button type="submit" class="btn-primary">Sign in</button>
       <p class="auth-switch">New team member? <a href="#" id="show-signup">Create an account</a></p>
+      <p class="auth-switch"><a href="#" id="show-forgot">Forgot password?</a></p>
     </form>
 
     <form id="signup-form" class="auth-form" style="display:none;">
@@ -76,13 +77,35 @@
   </div>
 </div>
 
+<!-- ============ FORCED PASSWORD CHANGE SCREEN ============ -->
+<div id="force-password-screen" class="auth-screen" style="display:none;">
+  <div class="auth-card">
+    <div class="brand">
+      <img src="logo.png" alt="Chughtai Lab" class="brand-logo" onerror="this.style.display='none'">
+      <h1>FieldHub</h1>
+    </div>
+    <form id="force-password-form" class="auth-form">
+      <h2>Set a new password</h2>
+      <p class="hint">For security, please set your own password before continuing.</p>
+      <label>New password
+        <div class="password-field">
+          <input type="password" id="force-new-password" required minlength="6" autocomplete="new-password">
+          <button type="button" class="password-toggle" id="force-password-toggle">Show</button>
+        </div>
+      </label>
+      <button type="submit" class="btn-primary">Save and continue</button>
+    </form>
+  </div>
+</div>
+
 <!-- ============ MAIN APP SHELL ============ -->
 <div id="app-shell" class="app-shell" style="display:none;">
 
   <aside class="sidebar">
     <div class="sidebar-brand">
       <img src="logo.png" alt="Chughtai Lab" class="sidebar-logo" onerror="this.style.display='none'">
-      <span>FieldHub</span>
+      <span class="brand-title">FieldHub</span>
+      <span class="brand-subtitle">Home Sampling Operations</span>
     </div>
     <nav id="nav-links" class="nav-links"></nav>
     <div class="sidebar-footer">
