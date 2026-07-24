@@ -82,7 +82,7 @@ function showAuthScreen(){
 
 async function afterLogin(user){
   state.user = user;
-  const { data: profile, error } = await sb.from('profiles').select('*, regions(name)').eq('id', user.id).single();
+  const { data: profile, error } = await sb.from('profiles').select('*, regions!profiles_region_id_fkey(name)').eq('id', user.id).single();
   if (error || !profile){ toast('Could not load your profile. Try refreshing.'); return; }
   state.profile = profile;
 
