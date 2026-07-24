@@ -10,6 +10,10 @@ const state = {
   profile: null,
   regions: [],
   categories: [],
+  warningTypes: [],
+  expiryItemTypes: [],
+  complianceItemTypes: [],
+  myRegionIds: [],
   profilesInScope: [],
   view: 'dashboard'
 };
@@ -17,16 +21,11 @@ const state = {
 const ROLE_LABEL = {
   admin: 'Area Lead / Admin',
   regional_poc: 'Regional POC',
-  team_lead: 'Team Lead',
+  team_lead: 'Area Incharge',
   coordinator: 'Coordinator',
   inventory_coordinator: 'Inventory Coordinator',
   rider: 'Rider'
 };
-
-const ITEM_TYPE_OPTIONS = [
-  'Thermometer Calibration','ID Card','Medical Fitness Certificate',
-  'Training Certification','Vehicle Registration','Other'
-];
 
 // Convert a Pakistani local number (03xx-xxxxxxx) to +92 E.164 format,
 // since Supabase Auth phone login needs international format.
@@ -106,6 +105,7 @@ async function afterLogin(user){
 
   await loadRegions();
   await loadCategories();
+  await loadReferenceData();
   renderNav();
   renderUserBadge();
   navigateTo('dashboard');
@@ -118,6 +118,20 @@ async function loadRegions(){
 async function loadCategories(){
   const { data } = await sb.from('categories').select('*').eq('active', true).order('name');
   state.categories = data || [];
+}
+async function loadReferenceData(){
+  const [wt, et, ct, myRegions] = await Promise.all([
+    sb.from('warning_types').select('*').eq('active', true).order('name'),
+    sb.from('expiry_item_types').select('*').eq('active', true).order('name'),
+    sb.from('compliance_item_types').select('*').eq('active', true).order('name'),
+    sb.from('profile_regions').select('region_id').eq('profile_id', state.user.id)
+  ]);
+  state.warningTypes = wt.data || [];
+  state.expiryItemTypes = et.data || [];
+  state.complianceItemTypes = ct.data || [];
+  state.myRegionIds = (myRegions.data && myRegions.data.length)
+    ? myRegions.data.map(r=>r.region_id)
+    : (state.profile.region_id ? [state.profile.region_id] : []);
 }
 
 // ---------------------------------------------------------
@@ -256,16 +270,17 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  admin: ['dashboard','circulars','tasks','requests','expiries','team','regions','categories','warnings'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','team','warnings'],
-  inventory_coordinator: ['dashboard','circulars','requests','expiries'],
-  rider: ['dashboard','circulars','tasks','requests','expiries','warnings']
+  admin: ['dashboard','circulars','tasks','requests','expiries','warnings','team','regions','settings','knowledgebase','reports','compliance'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
+  inventory_coordinator: ['dashboard','circulars','requests','expiries','knowledgebase'],
+  rider: ['dashboard','circulars','tasks','requests','expiries','warnings','knowledgebase']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
-  expiries:'Expiry Tracker', team:'Team', regions:'Regions', categories:'Categories', warnings:'Warnings'
+  expiries:'Expiry Tracker', team:'Team', regions:'Regions', settings:'Settings',
+  warnings:'Warnings', knowledgebase:'Knowledge Base', reports:'Reports', compliance:'Compliance Tracker'
 };
 
 function renderNav(){
@@ -302,8 +317,11 @@ async function navigateTo(view){
     else if (view==='expiries') await renderExpiries();
     else if (view==='team') await renderTeam();
     else if (view==='regions') await renderRegions();
-    else if (view==='categories') await renderCategories();
+    else if (view==='settings') await renderSettings();
     else if (view==='warnings') await renderWarnings();
+    else if (view==='knowledgebase') await renderKnowledgeBase();
+    else if (view==='reports') await renderReports();
+    else if (view==='compliance') await renderCompliance();
   }catch(err){
     console.error(err);
     main.innerHTML = `<div class="empty-state">Something went wrong loading this page. Please refresh.</div>`;
@@ -320,12 +338,13 @@ async function renderDashboard(){
   const main = document.getElementById('main-content');
   const uid = state.user.id;
 
-  const [openReq, myTasks, circularsRes, expiring, pendingApprovals] = await Promise.all([
+  const [openReq, myTasks, circularsRes, expiring, pendingApprovals, notices] = await Promise.all([
     sb.from('requests').select('id', {count:'exact', head:true}).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
     sb.from('circulars').select('id'),
     sb.from('expiry_items').select('id, expiry_date'),
-    isStaff() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0})
+    isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
+    sb.from('home_notices').select('*').eq('active', true).order('created_at', {ascending:false})
   ]);
 
   let unacked = 0;
@@ -337,17 +356,18 @@ async function renderDashboard(){
   }
 
   const today = new Date();
-  const soonCutoff = new Date(); soonCutoff.setDate(today.getDate()+14);
+  const soonCutoff = new Date(); soonCutoff.setDate(today.getDate()+30);
   const expiringSoon = (expiring.data||[]).filter(i => new Date(i.expiry_date) <= soonCutoff).length;
 
   main.innerHTML = `
+    ${(notices.data||[]).map(n => `<div class="card" style="border-left:4px solid var(--amber); background:#FFF8EC;"><strong>📌 ${escapeHtml(n.message)}</strong></div>`).join('')}
     <div class="grid grid-4">
       <div class="card stat-card clay"><div class="stat-number">${openReq.count ?? 0}</div><div class="stat-label">Open requests</div></div>
       <div class="card stat-card sky"><div class="stat-number">${myTasks.count ?? 0}</div><div class="stat-label">My pending tasks</div></div>
       <div class="card stat-card amber"><div class="stat-number">${unacked}</div><div class="stat-label">Unread circulars</div></div>
-      <div class="card stat-card amber"><div class="stat-number">${expiringSoon}</div><div class="stat-label">Expiring within 14 days</div></div>
+      <div class="card stat-card amber"><div class="stat-number">${expiringSoon}</div><div class="stat-label">Expiring within 30 days</div></div>
     </div>
-    ${isStaff() ? `
+    ${isAdmin() ? `
     <div class="card">
       <h3>Pending approvals</h3>
       <p style="color:var(--muted); font-size:13.5px;">${pendingApprovals.count ?? 0} account(s) waiting for role/region assignment.</p>
@@ -381,11 +401,12 @@ async function renderCirculars(){
 
   let rowsHtml = '';
   for (const c of circulars){
+    const isCreator = c.created_by === state.user.id;
     const acked = ackedSet.has(c.id);
     let ackInfo = '';
-    if (isAdmin() || c.created_by === state.user.id){
-      const audience = await countAudience(c.target_region_id, c.target_role);
-      const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id);
+    if (isAdmin() || isCreator){
+      const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
+      const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
       ackInfo = `<div class="mono" style="margin-top:8px;">${ackCount ?? 0} / ${audience} acknowledged</div>
         <button class="btn small outline" style="margin-top:6px;" data-tracker="${c.id}">View tracker</button>
         <div id="tracker-${c.id}"></div>`;
@@ -394,12 +415,12 @@ async function renderCirculars(){
       <div class="card">
         <div style="display:flex; justify-content:space-between; align-items:flex-start;">
           <h3>${escapeHtml(c.title)}</h3>
-          ${acked ? '<span class="badge active">Acknowledged</span>' : ''}
+          ${(acked && !isCreator) ? '<span class="badge active">Acknowledged</span>' : ''}
         </div>
         <p style="font-size:13.5px; white-space:pre-wrap;">${escapeHtml(c.body)}</p>
-        <div class="mono">By ${escapeHtml(c.profiles?.full_name || 'Staff')} · ${formatDate(c.created_at)}</div>
+        <div class="mono">By ${escapeHtml(c.profiles?.full_name || 'Staff')} · ${formatDateTime(c.created_at)}</div>
         ${ackInfo}
-        ${!acked ? `<button class="btn small" style="margin-top:10px;" onclick="acknowledgeCircular('${c.id}')">Acknowledge</button>` : ''}
+        ${(!acked && !isCreator) ? `<button class="btn small" style="margin-top:10px;" onclick="acknowledgeCircular('${c.id}')">Acknowledge</button>` : ''}
       </div>
     `;
   }
@@ -413,25 +434,29 @@ async function showCircularTracker(circularId, circular){
   const el = document.getElementById('tracker-'+circularId);
   if (!el) return;
   el.innerHTML = '<div class="mono">Loading…</div>';
-  let q = sb.from('profiles').select('id, full_name, role').eq('status','active');
+  let q = sb.from('profiles').select('id, full_name, role').eq('status','active').neq('id', circular.created_by);
   if (circular.target_region_id) q = q.eq('region_id', circular.target_region_id);
   if (circular.target_role) q = q.eq('role', circular.target_role);
   const { data: audience } = await q;
   const { data: acks } = await sb.from('circular_acks').select('user_id, acknowledged_at').eq('circular_id', circularId);
   const ackMap = new Map((acks||[]).map(a=>[a.user_id, a.acknowledged_at]));
-  el.innerHTML = `<table style="margin-top:8px;"><thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead><tbody>
+  const ackedCount = (audience||[]).filter(p=>ackMap.has(p.id)).length;
+  el.innerHTML = `<div class="mono" style="margin:8px 0;">Posted ${formatDateTime(circular.created_at)} · ${ackedCount} acknowledged, ${(audience||[]).length - ackedCount} pending</div>
+  <table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>When</th></tr></thead><tbody>
     ${(audience||[]).map(p=>{
-      const acked = ackMap.get(p.id);
+      const ackedAt = ackMap.get(p.id);
       return `<tr><td>${escapeHtml(p.full_name)}</td><td>${ROLE_LABEL[p.role]||p.role}</td>
-        <td>${acked ? `<span class="badge active">Acknowledged</span>` : `<span class="badge open">Pending</span>`}</td></tr>`;
+        <td>${ackedAt ? `<span class="badge active">Acknowledged</span>` : `<span class="badge open">Pending</span>`}</td>
+        <td class="mono">${ackedAt ? formatDateTime(ackedAt) : '—'}</td></tr>`;
     }).join('')}
   </tbody></table>`;
 }
 
-async function countAudience(targetRegionId, targetRole){
+async function countAudience(targetRegionId, targetRole, excludeId){
   let q = sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','active');
   if (targetRegionId) q = q.eq('region_id', targetRegionId);
   if (targetRole) q = q.eq('role', targetRole);
+  if (excludeId) q = q.neq('id', excludeId);
   const { count } = await q;
   return count ?? 0;
 }
@@ -573,6 +598,7 @@ async function openNewTaskModal(){
 // ---------------------------------------------------------
 // REQUESTS
 // ---------------------------------------------------------
+let currentRequestsList = [];
 async function renderRequests(){
   const main = document.getElementById('main-content');
   if (state.profile.role === 'rider'){
@@ -584,6 +610,7 @@ async function renderRequests(){
     .select('*, rider:profiles!requests_rider_id_fkey(full_name), poc:profiles!requests_assigned_poc_id_fkey(full_name)')
     .order('created_at', {ascending:false});
 
+  currentRequestsList = requests || [];
   if (!requests || requests.length===0){ main.innerHTML = emptyState('No requests yet.'); return; }
 
   main.innerHTML = requests.map(r => `
@@ -591,7 +618,7 @@ async function renderRequests(){
       <div style="display:flex; justify-content:space-between; align-items:flex-start;">
         <div>
           <h3>${escapeHtml(r.category)}</h3>
-          <div class="mono">Rider: ${escapeHtml(r.rider?.full_name||'—')} · POC: ${escapeHtml(r.poc?.full_name||'Unassigned')} · ${formatDate(r.created_at)}</div>
+          <div class="mono">Rider: ${escapeHtml(r.rider?.full_name||'—')} · Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')} · ${formatDateTime(r.created_at)}</div>
         </div>
         <span class="badge ${r.status}">${r.status.replace('_',' ')}</span>
       </div>
@@ -601,7 +628,7 @@ async function renderRequests(){
         ${requestActionControls(r)}
       </div>
       <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed'].includes(r.status)?'none':'flex'}; gap:8px;">
-        <input type="text" placeholder="Write a reply…" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
+        <input type="text" placeholder="Short remark (max 25 words)…" maxlength="180" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
         <button class="btn small" type="submit">Send</button>
       </form>
     </div>
@@ -612,30 +639,49 @@ async function renderRequests(){
     f.onsubmit = async (e) => {
       e.preventDefault();
       const input = f.querySelector('input');
-      if (!input.value.trim()) return;
-      await sb.from('request_updates').insert({ request_id: f.dataset.requestId, message: input.value.trim(), created_by: state.user.id });
+      const text = input.value.trim();
+      if (!text) return;
+      if (countWords(text) > 25){ toast('Please keep remarks under 25 words'); return; }
+      await sb.from('request_updates').insert({ request_id: f.dataset.requestId, message: text, created_by: state.user.id });
       input.value='';
       loadThread(f.dataset.requestId);
     };
   });
   main.querySelectorAll('[data-req-status]').forEach(btn => {
-    btn.onclick = async () => {
-      const payload = { status: btn.dataset.reqStatus };
-      if (btn.dataset.reqStatus === 'closed') payload.closed_at = new Date().toISOString();
-      await sb.from('requests').update(payload).eq('id', btn.dataset.reqId);
-      renderRequests();
-    };
+    btn.onclick = () => changeRequestStatus(btn.dataset.reqId, btn.dataset.reqStatus);
   });
+}
+
+function countWords(str){ return (str.trim().match(/\S+/g)||[]).length; }
+
+async function changeRequestStatus(requestId, newStatus){
+  const remark = window.prompt(`Add a short remark (max 25 words) for marking this as "${newStatus.replace('_',' ')}":`);
+  if (remark === null) return;
+  if (!remark.trim()){ toast('A remark is required'); return; }
+  if (countWords(remark) > 25){ toast('Please keep remarks under 25 words'); return; }
+
+  const payload = { status: newStatus };
+  if (newStatus === 'in_progress') payload.in_progress_at = new Date().toISOString();
+  if (newStatus === 'resolved') payload.resolved_at = new Date().toISOString();
+  if (newStatus === 'closed') payload.closed_at = new Date().toISOString();
+
+  const { error } = await sb.from('requests').update(payload).eq('id', requestId);
+  if (error){ toast('Could not update: ' + error.message); return; }
+  await sb.from('request_updates').insert({ request_id: requestId, message: remark.trim(), created_by: state.user.id });
+  toast('Updated');
+  renderRequests();
 }
 
 function requestActionControls(r){
   const isRider = r.rider_id === state.user.id;
-  const isAssignedPoc = r.assigned_poc_id === state.user.id;
+  const isHandler = r.assigned_poc_id === state.user.id;
+  const isRegionStaff = isStaff() && state.myRegionIds.includes(r.region_id);
+  const canAct = isHandler || isAdmin() || isRegionStaff;
   let html = '';
-  if ((isAssignedPoc || isAdmin()) && r.status==='open'){
+  if (canAct && r.status==='open'){
     html += `<button class="btn small" data-req-id="${r.id}" data-req-status="in_progress">Mark In Progress</button>`;
   }
-  if ((isAssignedPoc || isAdmin()) && ['open','in_progress'].includes(r.status)){
+  if (canAct && ['open','in_progress'].includes(r.status)){
     html += `<button class="btn small success" data-req-id="${r.id}" data-req-status="resolved">Mark Resolved</button>`;
   }
   if (isRider && r.status==='resolved'){
@@ -650,7 +696,7 @@ async function loadThread(requestId){
   if (!el) return;
   if (!updates || updates.length===0){ el.innerHTML = '<div style="font-size:12.5px; color:var(--muted);">No replies yet.</div>'; return; }
   el.innerHTML = updates.map(u => `
-    <div class="thread-msg">${escapeHtml(u.message)}<div class="meta">${escapeHtml(u.profiles?.full_name||'—')} · ${formatDate(u.created_at)}</div></div>
+    <div class="thread-msg">${escapeHtml(u.message)}<div class="meta">${escapeHtml(u.profiles?.full_name||'—')} · ${formatDateTime(u.created_at)}</div></div>
   `).join('');
 }
 
@@ -709,13 +755,13 @@ async function renderExpiries(){
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
       let badge = 'badge active', label='OK';
       if (daysLeft < 0){ badge='badge open'; label='Overdue'; }
-      else if (daysLeft <= 14){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
+      else if (daysLeft <= 30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
       return `<tr>
         <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
         <td>${escapeHtml(i.item_type)}${i.item_label?' — '+escapeHtml(i.item_label):''}</td>
         <td class="mono">${i.expiry_date}</td>
         <td><span class="${badge}">${label}</span></td>
-        ${canRemind ? `<td>${daysLeft<=14 ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}</td>` : ''}
+        ${canRemind ? `<td>${daysLeft<=30 ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}</td>` : ''}
       </tr>`;
     }).join('')}
   </tbody></table>`;
@@ -737,7 +783,7 @@ async function renderExpiries(){
 async function openNewExpiryModal(){
   await loadScopedProfiles();
   const options = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
-  const typeOptions = ITEM_TYPE_OPTIONS.map(t=>`<option value="${t}">${t}</option>`).join('');
+  const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Track expiry item</h2>
     <form id="expiry-form">
@@ -752,10 +798,14 @@ async function openNewExpiryModal(){
     e.preventDefault();
     const riderId = document.getElementById('e-rider').value;
     const rider = state.profilesInScope.find(p=>p.id===riderId);
+    const typeSelect = document.getElementById('e-type');
+    const typeId = typeSelect.value;
+    const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || 'Other';
     const { error } = await sb.from('expiry_items').insert({
       rider_id: riderId,
       region_id: rider?.region_id,
-      item_type: document.getElementById('e-type').value,
+      item_type_id: typeId,
+      item_type: typeName,
       item_label: document.getElementById('e-label').value.trim(),
       expiry_date: document.getElementById('e-date').value
     });
@@ -765,11 +815,12 @@ async function openNewExpiryModal(){
 }
 
 // ---------------------------------------------------------
-// TEAM (pending approvals + directory)
+// TEAM (pending approvals + directory) — view for all staff,
+// but add/approve/disable/reset actions are Admin-only
 // ---------------------------------------------------------
 async function renderTeam(){
   const main = document.getElementById('main-content');
-  if (isAdmin() || ['regional_poc','team_lead'].includes(state.profile.role)){
+  if (isAdmin()){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="bulk-add-btn">+ Bulk Add Riders</button>`;
     document.getElementById('bulk-add-btn').onclick = openBulkUploadModal;
   }
@@ -778,7 +829,7 @@ async function renderTeam(){
   const active = state.profilesInScope.filter(p=>p.status!=='pending');
 
   let html = '';
-  if (pending.length){
+  if (pending.length && isAdmin()){
     html += `<div class="card"><h3>Pending approvals (${pending.length})</h3>
     <table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>
     ${pending.map(p=>`<tr>
@@ -789,17 +840,17 @@ async function renderTeam(){
   }
 
   html += `<div class="card"><h3>Team directory (${active.length})</h3>
-  <table><thead><tr><th>Name</th><th>Role</th><th>Region</th><th>Status</th><th></th></tr></thead><tbody>
+  <table><thead><tr><th>Name</th><th>Role</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
   ${active.map(p=>`<tr>
     <td>${escapeHtml(p.full_name)}<div class="mono">${escapeHtml(p.email||p.phone||'')}</div></td>
     <td>${ROLE_LABEL[p.role]||'—'}</td>
-    <td>${escapeHtml(state.regions.find(r=>r.id===p.region_id)?.name || '—')}</td>
+    <td>${escapeHtml(regionNamesFor(p))}</td>
     <td><span class="badge ${p.status}">${p.status}</span></td>
-    <td style="white-space:nowrap;">
-      ${isAdmin() ? `<button class="btn small outline" data-edit="${p.id}">Edit</button>` : ''}
-      ${canManage(p) ? `<button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
-      <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>` : ''}
-    </td>
+    ${isAdmin() ? `<td style="white-space:nowrap;">
+      <button class="btn small outline" data-edit="${p.id}">Edit</button>
+      <button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
+      <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>
+    </td>` : ''}
   </tr>`).join('')}
   </tbody></table></div>`;
 
@@ -811,28 +862,21 @@ async function renderTeam(){
   main.querySelectorAll('[data-reset-pw]').forEach(btn => btn.onclick = () => openResetPasswordModal(btn.dataset.resetPw));
 }
 
-function canManage(p){
-  if (isAdmin()) return true;
-  if (['regional_poc','team_lead'].includes(state.profile.role)) return p.role === 'rider' && p.region_id === state.profile.region_id;
-  return false;
+function regionNamesFor(p){
+  if (p.role !== 'rider' && p._regionIds && p._regionIds.length){
+    return p._regionIds.map(id => state.regions.find(r=>r.id===id)?.name).filter(Boolean).join(', ') || '—';
+  }
+  if (p.role === 'inventory_coordinator') return 'All regions';
+  return state.regions.find(r=>r.id===p.region_id)?.name || '—';
 }
 
 async function toggleMemberStatus(profileId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
   const newStatus = p.status === 'disabled' ? 'active' : 'disabled';
-  if (isAdmin()){
-    const { error } = await sb.from('profiles').update({ status: newStatus }).eq('id', profileId);
-    if (error){ toast('Could not update: ' + error.message); return; }
-    toast(newStatus === 'disabled' ? 'Rider disabled' : 'Rider enabled');
-    renderTeam();
-  } else {
-    // Non-admin staff can't write role/status directly (RLS blocks it) — route through the Edge Function instead
-    const resp = await callEdgeFunction('set_rider_status', { user_id: profileId, status: newStatus });
-    if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
-    if (resp.error){ toast(resp.error); return; }
-    toast(newStatus === 'disabled' ? 'Rider disabled' : 'Rider enabled');
-    renderTeam();
-  }
+  const { error } = await sb.from('profiles').update({ status: newStatus }).eq('id', profileId);
+  if (error){ toast('Could not update: ' + error.message); return; }
+  toast(newStatus === 'disabled' ? 'Account disabled' : 'Account enabled');
+  renderTeam();
 }
 
 function openResetPasswordModal(profileId){
@@ -855,18 +899,37 @@ function openResetPasswordModal(profileId){
   };
 }
 
-function openApproveModal(profileId){
+async function openApproveModal(profileId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
-  const regionOptions = state.regions.map(r=>`<option value="${r.id}" ${p.region_id===r.id?'selected':''}>${escapeHtml(r.name)}</option>`).join('');
+  const isMultiRegionRole = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(p.role);
+  const { data: existingRegions } = await sb.from('profile_regions').select('region_id').eq('profile_id', profileId);
+  const selectedIds = new Set((existingRegions||[]).map(r=>r.region_id));
+  if (!selectedIds.size && p.region_id) selectedIds.add(p.region_id);
+
   const roleOptions = Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}" ${p.role===k?'selected':''}>${v}</option>`).join('');
+  const regionChecks = state.regions.map(r=>`
+    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:4px;">
+      <input type="checkbox" class="ap-region-check" value="${r.id}" ${selectedIds.has(r.id)?'checked':''}> ${escapeHtml(r.name)}
+    </label>`).join('');
+  const singleRegionOptions = state.regions.map(r=>`<option value="${r.id}" ${p.region_id===r.id?'selected':''}>${escapeHtml(r.name)}</option>`).join('');
+
   openModal(`
     <h2>${p.status==='pending'?'Approve':'Edit'} team member</h2>
-    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.email)}</p>
+    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.email||p.phone||'')}</p>
     <form id="approve-form">
-      <div class="form-row"><label>Role</label><select id="ap-role" ${isAdmin()?'':'disabled'}>${roleOptions}</select></div>
-      <div class="form-row"><label>Region</label><select id="ap-region" ${isAdmin()?'':'disabled'}>${regionOptions}</select></div>
+      <div class="form-row"><label>Role</label><select id="ap-role">${roleOptions}</select></div>
+      <div class="form-row" id="ap-region-wrap">
+        <label>Region(s)</label>
+        <div id="ap-region-single" style="${isMultiRegionRole?'display:none;':''}">
+          <select id="ap-region">${singleRegionOptions}</select>
+        </div>
+        <div id="ap-region-multi" style="${isMultiRegionRole?'':'display:none;'}">
+          <button type="button" class="btn small outline" id="ap-select-all-regions" style="margin-bottom:8px;">Select All Regions</button>
+          <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${regionChecks}</div>
+        </div>
+      </div>
       <div class="form-row"><label>Status</label>
-        <select id="ap-status" ${isAdmin()?'':'disabled'}>
+        <select id="ap-status">
           <option value="active" ${p.status==='active'?'selected':''}>Active</option>
           <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
           <option value="disabled" ${p.status==='disabled'?'selected':''}>Disabled</option>
@@ -875,34 +938,59 @@ function openApproveModal(profileId){
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+
+  document.getElementById('ap-role').onchange = (e) => {
+    const multi = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(e.target.value);
+    document.getElementById('ap-region-single').style.display = multi ? 'none' : 'block';
+    document.getElementById('ap-region-multi').style.display = multi ? 'block' : 'none';
+  };
+  document.getElementById('ap-select-all-regions').onclick = () => {
+    document.querySelectorAll('.ap-region-check').forEach(cb => cb.checked = true);
+  };
+
   document.getElementById('approve-form').onsubmit = async (e) => {
     e.preventDefault();
-    const { error } = await sb.from('profiles').update({
-      role: document.getElementById('ap-role').value,
-      region_id: document.getElementById('ap-region').value,
-      status: document.getElementById('ap-status').value
-    }).eq('id', profileId);
+    const role = document.getElementById('ap-role').value;
+    const status = document.getElementById('ap-status').value;
+    const isMulti = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(role);
+    const singleRegionId = document.getElementById('ap-region').value || null;
+
+    const { error } = await sb.from('profiles').update({ role, status, region_id: singleRegionId }).eq('id', profileId);
     if (error){ toast('Could not save: ' + error.message); return; }
+
+    if (isMulti){
+      const checked = Array.from(document.querySelectorAll('.ap-region-check:checked')).map(cb=>cb.value);
+      await sb.from('profile_regions').delete().eq('profile_id', profileId);
+      if (checked.length){
+        await sb.from('profile_regions').insert(checked.map(region_id => ({ profile_id: profileId, region_id })));
+      }
+    } else {
+      await sb.from('profile_regions').delete().eq('profile_id', profileId);
+    }
     closeModal(); toast('Saved'); renderTeam();
   };
 }
 
 async function loadScopedProfiles(includeAll){
-  let q = sb.from('profiles').select('*').order('full_name');
-  const { data } = await q;
+  const { data } = await sb.from('profiles').select('*').order('full_name');
   state.profilesInScope = data || [];
+  // Attach each staff member's multi-region list for display purposes
+  const staffIds = state.profilesInScope.filter(p=>p.role!=='rider').map(p=>p.id);
+  if (staffIds.length){
+    const { data: regionRows } = await sb.from('profile_regions').select('profile_id, region_id').in('profile_id', staffIds);
+    const byProfile = {};
+    (regionRows||[]).forEach(r => { (byProfile[r.profile_id] ||= []).push(r.region_id); });
+    state.profilesInScope.forEach(p => { p._regionIds = byProfile[p.id] || []; });
+  }
 }
 
 function openBulkUploadModal(){
-  const isFullAdmin = isAdmin();
-  const regionOptions = isFullAdmin
-    ? state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')
-    : `<option value="${state.profile.region_id}" selected>${escapeHtml(state.regions.find(r=>r.id===state.profile.region_id)?.name || 'Your region')}</option>`;
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   openModal(`
     <h2>Bulk add riders</h2>
     <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Password (optional), Full Name (optional), Bike Number (optional)</strong> — one rider per line, comma-separated. Leave password blank to default everyone to <strong>Test@123</strong> (they'll be required to change it on first login).</p>
     <form id="bulk-form">
-      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required ${isFullAdmin?'':'disabled'}>${regionOptions}</select></div>
+      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required>${regionOptions}</select></div>
       <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001
 03007654321, EMP1002, , Ali Khan, LEA-1234"></textarea></div>
       <button class="btn-primary" type="submit">Create logins</button>
@@ -911,7 +999,7 @@ function openBulkUploadModal(){
   `);
   document.getElementById('bulk-form').onsubmit = async (e) => {
     e.preventDefault();
-    const regionId = isFullAdmin ? document.getElementById('bulk-region').value : state.profile.region_id;
+    const regionId = document.getElementById('bulk-region').value;
     const lines = document.getElementById('bulk-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
     const rows = lines.map(line => {
       const parts = line.split(',').map(p=>p.trim());
@@ -965,23 +1053,48 @@ async function renderRegions(){
 }
 
 // ---------------------------------------------------------
-// CATEGORIES (admin only) — decides who a request category routes to
+// SETTINGS (admin only) — Categories, Warning Types, Expiry Types,
+// Compliance Items, Home Notice — everything configurable lives here
 // ---------------------------------------------------------
-async function renderCategories(){
+let settingsTab = 'categories';
+async function renderSettings(){
   const main = document.getElementById('main-content');
-  document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-category-btn">+ Add Category</button>`;
-  document.getElementById('new-category-btn').onclick = () => openCategoryModal(null);
+  document.getElementById('topbar-actions').innerHTML = '';
+  const tabs = [
+    ['categories','Request Categories'],
+    ['warningtypes','Warning Types'],
+    ['expirytypes','Expiry Item Types'],
+    ['compliancetypes','Compliance Items'],
+    ['notice','Home Notice']
+  ];
+  main.innerHTML = `<div class="tabs">
+    ${tabs.map(([k,label]) => `<button class="tab ${settingsTab===k?'active':''}" data-settings-tab="${k}">${label}</button>`).join('')}
+  </div><div id="settings-body"></div>`;
+  main.querySelectorAll('[data-settings-tab]').forEach(btn => {
+    btn.onclick = () => { settingsTab = btn.dataset.settingsTab; renderSettings(); };
+  });
+  const body = document.getElementById('settings-body');
+  if (settingsTab === 'categories') await renderCategoriesInto(body);
+  else if (settingsTab === 'warningtypes') await renderSimpleTypeList(body, 'warning_types', 'Warning Type');
+  else if (settingsTab === 'expirytypes') await renderSimpleTypeList(body, 'expiry_item_types', 'Expiry Item Type');
+  else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
+  else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
+}
 
+async function renderCategoriesInto(body){
+  const addBtnHtml = `<button class="btn small" id="new-category-btn" style="margin-bottom:14px;">+ Add Category</button>`;
   const { data: cats } = await sb.from('categories').select('*').order('name');
-  main.innerHTML = `<table><thead><tr><th>Category</th><th>Routes to</th><th>Status</th><th></th></tr></thead><tbody>
+  body.innerHTML = addBtnHtml + `<table><thead><tr><th>Category</th><th>Routes to</th><th>TAT (hrs)</th><th>Status</th><th></th></tr></thead><tbody>
     ${(cats||[]).map(c=>`<tr>
       <td>${escapeHtml(c.name)}</td>
       <td>${ROLE_LABEL[c.primary_role]||c.primary_role}</td>
+      <td class="mono">${c.tat_hours ?? '—'}</td>
       <td><span class="badge ${c.active?'active':'closed'}">${c.active?'Active':'Inactive'}</span></td>
       <td><button class="btn small outline" data-edit-cat="${c.id}">Edit</button></td>
     </tr>`).join('')}
   </tbody></table>`;
-  main.querySelectorAll('[data-edit-cat]').forEach(btn => {
+  document.getElementById('new-category-btn').onclick = () => openCategoryModal(null);
+  body.querySelectorAll('[data-edit-cat]').forEach(btn => {
     btn.onclick = () => openCategoryModal(cats.find(c=>c.id===btn.dataset.editCat));
   });
 }
@@ -994,6 +1107,7 @@ function openCategoryModal(cat){
     <form id="category-form">
       <div class="form-row"><label>Category name</label><input type="text" id="cat-name" value="${cat?escapeHtml(cat.name):''}" required></div>
       <div class="form-row"><label>Routes to (who handles it)</label><select id="cat-role">${roleOptions}</select></div>
+      <div class="form-row"><label>TAT — Turn Around Time (hours)</label><input type="number" id="cat-tat" min="1" value="${cat?.tat_hours ?? ''}" placeholder="e.g. 24"></div>
       ${cat ? `<div class="form-row"><label>Status</label><select id="cat-active">
         <option value="true" ${cat.active?'selected':''}>Active</option>
         <option value="false" ${!cat.active?'selected':''}>Inactive</option>
@@ -1003,17 +1117,112 @@ function openCategoryModal(cat){
   `);
   document.getElementById('category-form').onsubmit = async (e) => {
     e.preventDefault();
+    const tatVal = document.getElementById('cat-tat').value;
     const payload = {
       name: document.getElementById('cat-name').value.trim(),
-      primary_role: document.getElementById('cat-role').value
+      primary_role: document.getElementById('cat-role').value,
+      tat_hours: tatVal ? parseInt(tatVal, 10) : null
     };
     if (cat) payload.active = document.getElementById('cat-active').value === 'true';
     const { error } = cat
       ? await sb.from('categories').update(payload).eq('id', cat.id)
       : await sb.from('categories').insert(payload);
     if (error){ toast('Could not save: ' + error.message); return; }
-    closeModal(); toast('Saved'); await loadCategories(); renderCategories();
+    closeModal(); toast('Saved'); await loadCategories(); renderSettings();
   };
+}
+
+// Generic add/enable/disable list for simple "type" tables (name + active)
+async function renderSimpleTypeList(body, table, label){
+  const { data: rows } = await sb.from(table).select('*').order('name');
+  body.innerHTML = `<button class="btn small" id="new-type-btn" style="margin-bottom:14px;">+ Add ${label}</button>
+  <table><thead><tr><th>${label}</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(rows||[]).map(r=>`<tr>
+      <td>${escapeHtml(r.name)}</td>
+      <td><span class="badge ${r.active?'active':'closed'}">${r.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn small outline" data-toggle-type="${r.id}" data-active="${r.active}">${r.active?'Disable':'Enable'}</button>
+        <button class="btn small outline" data-delete-type="${r.id}">Remove</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>
+  <div class="hint" style="margin-top:14px;">Paste multiple at once, one per line:</div>
+  <textarea id="bulk-type-rows" rows="4" style="width:100%; margin-top:8px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" placeholder="One name per line"></textarea>
+  <button class="btn small" id="bulk-type-add" style="margin-top:8px;">Add All</button>`;
+
+  document.getElementById('new-type-btn').onclick = () => {
+    const name = prompt(`New ${label} name:`);
+    if (name && name.trim()){
+      sb.from(table).insert({ name: name.trim() }).then(({error}) => {
+        if (error){ toast('Could not add: ' + error.message); return; }
+        toast('Added'); refreshReferenceAndRerender(table);
+      });
+    }
+  };
+  document.getElementById('bulk-type-add').onclick = async () => {
+    const names = document.getElementById('bulk-type-rows').value.split('\n').map(n=>n.trim()).filter(Boolean);
+    if (!names.length) return;
+    const { error } = await sb.from(table).insert(names.map(name => ({ name })));
+    if (error){ toast('Could not add: ' + error.message); return; }
+    toast(`${names.length} added`); refreshReferenceAndRerender(table);
+  };
+  body.querySelectorAll('[data-toggle-type]').forEach(btn => {
+    btn.onclick = async () => {
+      const newActive = btn.dataset.active !== 'true';
+      const { error } = await sb.from(table).update({ active: newActive }).eq('id', btn.dataset.toggleType);
+      if (error){ toast('Could not update: ' + error.message); return; }
+      refreshReferenceAndRerender(table);
+    };
+  });
+  body.querySelectorAll('[data-delete-type]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this permanently?')) return;
+      const { error } = await sb.from(table).delete().eq('id', btn.dataset.deleteType);
+      if (error){ toast('Could not remove (it may be in use): ' + error.message); return; }
+      refreshReferenceAndRerender(table);
+    };
+  });
+}
+async function refreshReferenceAndRerender(table){
+  await loadReferenceData();
+  renderSettings();
+}
+
+async function renderHomeNoticeSettings(body){
+  const { data: notices } = await sb.from('home_notices').select('*').order('created_at', {ascending:false});
+  body.innerHTML = `<button class="btn small" id="new-notice-btn" style="margin-bottom:14px;">+ Add Notice</button>
+  <table><thead><tr><th>Message</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(notices||[]).map(n=>`<tr>
+      <td>${escapeHtml(n.message)}</td>
+      <td><span class="badge ${n.active?'active':'closed'}">${n.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn small outline" data-toggle-notice="${n.id}" data-active="${n.active}">${n.active?'Disable':'Enable'}</button>
+        <button class="btn small outline" data-delete-notice="${n.id}">Remove</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  document.getElementById('new-notice-btn').onclick = () => {
+    const message = prompt('Notice text to highlight on everyone\'s Dashboard:');
+    if (message && message.trim()){
+      sb.from('home_notices').insert({ message: message.trim(), created_by: state.user.id }).then(({error}) => {
+        if (error){ toast('Could not add: ' + error.message); return; }
+        toast('Notice added'); renderSettings();
+      });
+    }
+  };
+  body.querySelectorAll('[data-toggle-notice]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('home_notices').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleNotice);
+      renderSettings();
+    };
+  });
+  body.querySelectorAll('[data-delete-notice]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this notice?')) return;
+      await sb.from('home_notices').delete().eq('id', btn.dataset.deleteNotice);
+      renderSettings();
+    };
+  });
 }
 
 // ---------------------------------------------------------
@@ -1026,7 +1235,7 @@ async function renderWarnings(){
     document.getElementById('new-warning-btn').onclick = openNewWarningModal;
   }
   const { data: warnings } = await sb.from('disciplinary_actions')
-    .select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)')
+    .select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name, employee_id, region_id), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)')
     .order('created_at', {ascending:false});
 
   if (!warnings || warnings.length===0){ main.innerHTML = emptyState('No warnings recorded.'); return; }
@@ -1034,9 +1243,12 @@ async function renderWarnings(){
   main.innerHTML = warnings.map(w => `
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-        <h3>${escapeHtml(w.action_type)}${state.profile.role!=='rider' ? ' — '+escapeHtml(w.rider?.full_name||'') : ''}</h3>
+        <h3>${escapeHtml(w.action_type)}</h3>
         <span class="mono">${formatDate(w.created_at)}</span>
       </div>
+      ${state.profile.role!=='rider' ? `<div class="mono" style="margin-bottom:8px;">
+        Rider: ${escapeHtml(w.rider?.full_name||'—')} · Employee ID: ${escapeHtml(w.rider?.employee_id||'—')} · Region: ${escapeHtml(state.regions.find(r=>r.id===w.rider?.region_id)?.name||'—')}
+      </div>` : ''}
       <p style="font-size:13.5px;">${escapeHtml(w.description)}</p>
       <div class="mono">Recorded by ${escapeHtml(w.recorder?.full_name||'—')}</div>
     </div>
@@ -1046,23 +1258,37 @@ async function renderWarnings(){
 async function openNewWarningModal(){
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider');
-  const options = riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)} ${p.employee_id?'('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
+  const options = riders.map(p=>`<option value="${p.id}" data-empid="${escapeHtml(p.employee_id||'—')}" data-region="${escapeHtml(state.regions.find(r=>r.id===p.region_id)?.name||'—')}">${escapeHtml(p.full_name)} ${p.employee_id?'('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
+  const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Add warning</h2>
     <form id="warning-form">
       <div class="form-row"><label>Rider</label><select id="w-rider" required>${options}</select></div>
-      <div class="form-row"><label>Type</label><select id="w-type">
-        <option>Verbal Warning</option><option>Written Explanation</option><option>Termination Notice</option><option>Other</option>
-      </select></div>
+      <div class="form-row two-col" style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+        <div><label style="font-size:13px; font-weight:600; color:var(--ink-soft);">Employee ID</label><input type="text" id="w-empid" disabled></div>
+        <div><label style="font-size:13px; font-weight:600; color:var(--ink-soft);">Region</label><input type="text" id="w-region" disabled></div>
+      </div>
+      <div class="form-row"><label>Type</label><select id="w-type">${typeOptions}</select></div>
       <div class="form-row"><label>Details</label><textarea id="w-desc" required placeholder="What happened, what was discussed, any outcome…"></textarea></div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+  const updateReadOnly = () => {
+    const sel = document.getElementById('w-rider');
+    const opt = sel.options[sel.selectedIndex];
+    document.getElementById('w-empid').value = opt?.dataset.empid || '';
+    document.getElementById('w-region').value = opt?.dataset.region || '';
+  };
+  document.getElementById('w-rider').onchange = updateReadOnly;
+  updateReadOnly();
   document.getElementById('warning-form').onsubmit = async (e) => {
     e.preventDefault();
+    const typeId = document.getElementById('w-type').value;
+    const typeName = state.warningTypes.find(t=>t.id===typeId)?.name || 'Other';
     const { error } = await sb.from('disciplinary_actions').insert({
       rider_id: document.getElementById('w-rider').value,
-      action_type: document.getElementById('w-type').value,
+      warning_type_id: typeId,
+      action_type: typeName,
       description: document.getElementById('w-desc').value.trim(),
       recorded_by: state.user.id
     });
@@ -1071,6 +1297,214 @@ async function openNewWarningModal(){
   };
 }
 
+
+// ---------------------------------------------------------
+// KNOWLEDGE BASE — auto-built from circulars, plus admin-authored entries
+// ---------------------------------------------------------
+async function renderKnowledgeBase(){
+  const main = document.getElementById('main-content');
+  if (isAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-kb-btn">+ Add Article</button>`;
+    document.getElementById('new-kb-btn').onclick = openNewKbModal;
+  }
+  const [circularsRes, articlesRes] = await Promise.all([
+    sb.from('circulars').select('id, title, body, created_at').order('created_at', {ascending:false}),
+    sb.from('knowledge_base_articles').select('*, profiles(full_name)').order('created_at', {ascending:false})
+  ]);
+  const combined = [
+    ...(circularsRes.data||[]).map(c => ({ type:'Circular', title:c.title, body:c.body, created_at:c.created_at })),
+    ...(articlesRes.data||[]).map(a => ({ type:'Article', title:a.title, body:a.body, created_at:a.created_at, author:a.profiles?.full_name }))
+  ].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+
+  if (!combined.length){ main.innerHTML = emptyState('No knowledge base entries yet.'); return; }
+
+  main.innerHTML = `<div class="form-row"><input type="text" id="kb-search" placeholder="Search knowledge base…"></div>` +
+    `<div id="kb-list">` + combined.map(e => `
+    <div class="card kb-entry" data-search="${escapeHtml((e.title+' '+e.body).toLowerCase())}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <h3>${escapeHtml(e.title)}</h3>
+        <span class="badge ${e.type==='Circular'?'in_progress':'active'}">${e.type}</span>
+      </div>
+      <p style="font-size:13.5px; white-space:pre-wrap;">${escapeHtml(e.body)}</p>
+      <div class="mono">${e.author?escapeHtml(e.author)+' · ':''}${formatDateTime(e.created_at)}</div>
+    </div>`).join('') + `</div>`;
+
+  document.getElementById('kb-search').oninput = (e) => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('.kb-entry').forEach(el => {
+      el.style.display = el.dataset.search.includes(q) ? '' : 'none';
+    });
+  };
+}
+
+function openNewKbModal(){
+  openModal(`
+    <h2>Add knowledge base article</h2>
+    <form id="kb-form">
+      <div class="form-row"><label>Title</label><input type="text" id="kb-title" required></div>
+      <div class="form-row"><label>Content</label><textarea id="kb-body" rows="6" required></textarea></div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  document.getElementById('kb-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('knowledge_base_articles').insert({
+      title: document.getElementById('kb-title').value.trim(),
+      body: document.getElementById('kb-body').value.trim(),
+      created_by: state.user.id
+    });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Article added'); renderKnowledgeBase();
+  };
+}
+
+// ---------------------------------------------------------
+// COMPLIANCE TRACKER — monthly Temperature/Inventory sheet submissions
+// ---------------------------------------------------------
+function currentPeriod(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+
+async function renderCompliance(){
+  const main = document.getElementById('main-content');
+  const period = currentPeriod();
+  if (state.profile.role === 'rider'){
+    const { data: mySubs } = await sb.from('compliance_submissions').select('*').eq('rider_id', state.user.id).eq('period', period);
+    const submittedIds = new Set((mySubs||[]).map(s=>s.item_type_id));
+    main.innerHTML = `<div class="card"><h3>This month (${period})</h3>
+      <table><thead><tr><th>Item</th><th>Status</th><th></th></tr></thead><tbody>
+      ${state.complianceItemTypes.map(t => `<tr>
+        <td>${escapeHtml(t.name)}</td>
+        <td>${submittedIds.has(t.id) ? '<span class="badge active">Submitted</span>' : '<span class="badge open">Pending</span>'}</td>
+        <td>${!submittedIds.has(t.id) ? `<button class="btn small" data-submit-compliance="${t.id}">Mark Submitted</button>` : ''}</td>
+      </tr>`).join('')}
+      </tbody></table></div>`;
+    main.querySelectorAll('[data-submit-compliance]').forEach(btn => {
+      btn.onclick = async () => {
+        const { error } = await sb.from('compliance_submissions').insert({
+          rider_id: state.user.id, region_id: state.profile.region_id,
+          item_type_id: btn.dataset.submitCompliance, period
+        });
+        if (error){ toast('Could not submit: ' + error.message); return; }
+        toast('Marked as submitted'); renderCompliance();
+      };
+    });
+    return;
+  }
+
+  // Staff/Admin view: who has/hasn't submitted this month, in their scope
+  await loadScopedProfiles();
+  const riders = state.profilesInScope.filter(p=>p.role==='rider');
+  const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
+  const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
+
+  main.innerHTML = `<div class="card"><h3>Compliance for ${period}</h3>
+    <table><thead><tr><th>Rider</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
+    ${riders.map(r => `<tr>
+      <td>${escapeHtml(r.full_name)}</td>
+      <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
+      ${state.complianceItemTypes.map(t => {
+        const submitted = subMap.get(r.id+'|'+t.id);
+        return `<td>${submitted ? `<span class="badge active">✓ ${formatDate(submitted)}</span>` : '<span class="badge open">Pending</span>'}</td>`;
+      }).join('')}
+    </tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+// ---------------------------------------------------------
+// REPORTS — CSV export for any date range (Admin)
+// ---------------------------------------------------------
+async function renderReports(){
+  const main = document.getElementById('main-content');
+  const today = new Date().toISOString().slice(0,10);
+  const monthAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
+  main.innerHTML = `
+    <div class="card">
+      <h3>Download a report</h3>
+      <div class="two-col">
+        <div class="form-row"><label>Report type</label><select id="rep-type">
+          <option value="requests">Requests (with TAT)</option>
+          <option value="tasks">Tasks</option>
+          <option value="circulars">Circulars &amp; Acknowledgments</option>
+          <option value="expiry">Expiry Items</option>
+          <option value="warnings">Warnings</option>
+        </select></div>
+        <div></div>
+        <div class="form-row"><label>From</label><input type="date" id="rep-from" value="${monthAgo}"></div>
+        <div class="form-row"><label>To</label><input type="date" id="rep-to" value="${today}"></div>
+      </div>
+      <button class="btn-primary" id="rep-download-btn" style="width:auto; padding:10px 20px;">Download CSV</button>
+      <div id="rep-status" class="mono" style="margin-top:10px;"></div>
+    </div>
+  `;
+  document.getElementById('rep-download-btn').onclick = generateReport;
+}
+
+function toCSV(rows){
+  if (!rows.length) return '';
+  const headers = Object.keys(rows[0]);
+  const escape = (v) => `"${String(v ?? '').replace(/"/g,'""')}"`;
+  return [headers.join(','), ...rows.map(r => headers.map(h=>escape(r[h])).join(','))].join('\n');
+}
+function downloadCSV(filename, csv){
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function generateReport(){
+  const type = document.getElementById('rep-type').value;
+  const from = document.getElementById('rep-from').value;
+  const to = document.getElementById('rep-to').value + 'T23:59:59';
+  const statusEl = document.getElementById('rep-status');
+  statusEl.textContent = 'Generating…';
+
+  let rows = [];
+  if (type === 'requests'){
+    const { data } = await sb.from('requests')
+      .select('*, rider:profiles!requests_rider_id_fkey(full_name, employee_id), poc:profiles!requests_assigned_poc_id_fkey(full_name), categories(name, tat_hours)')
+      .gte('created_at', from).lte('created_at', to);
+    rows = (data||[]).map(r => {
+      const hoursToResolve = r.resolved_at ? ((new Date(r.resolved_at) - new Date(r.created_at))/3600000).toFixed(1) : '';
+      const hoursToClose = r.closed_at ? ((new Date(r.closed_at) - new Date(r.created_at))/3600000).toFixed(1) : '';
+      return {
+        Category: r.category, Rider: r.rider?.full_name, 'Employee ID': r.rider?.employee_id,
+        Handler: r.poc?.full_name, Status: r.status,
+        'Created At': r.created_at, 'In Progress At': r.in_progress_at||'', 'Resolved At': r.resolved_at||'', 'Closed At': r.closed_at||'',
+        'TAT Target (hrs)': r.categories?.tat_hours ?? '', 'Hours To Resolve': hoursToResolve, 'Hours To Close': hoursToClose
+      };
+    });
+  } else if (type === 'tasks'){
+    const { data } = await sb.from('tasks')
+      .select('*, assignee:profiles!tasks_assigned_to_fkey(full_name), assigner:profiles!tasks_assigned_by_fkey(full_name)')
+      .gte('created_at', from).lte('created_at', to);
+    rows = (data||[]).map(t => ({
+      Title: t.title, 'Assigned To': t.assignee?.full_name, 'Assigned By': t.assigner?.full_name,
+      Status: t.status, 'Due Date': t.due_date||'', 'Created At': t.created_at
+    }));
+  } else if (type === 'circulars'){
+    const { data } = await sb.from('circulars').select('*, profiles!circulars_created_by_fkey(full_name)').gte('created_at', from).lte('created_at', to);
+    for (const c of (data||[])){
+      const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
+      const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
+      rows.push({ Title: c.title, 'Posted By': c.profiles?.full_name, 'Posted At': c.created_at, Audience: audience, Acknowledged: ackCount ?? 0, Pending: audience - (ackCount??0) });
+    }
+  } else if (type === 'expiry'){
+    const { data } = await sb.from('expiry_items').select('*, profiles(full_name)').gte('created_at', from).lte('created_at', to);
+    rows = (data||[]).map(i => ({ Rider: i.profiles?.full_name, Item: i.item_type, Label: i.item_label||'', 'Expiry Date': i.expiry_date, 'Added At': i.created_at }));
+  } else if (type === 'warnings'){
+    const { data } = await sb.from('disciplinary_actions').select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name, employee_id), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)').gte('created_at', from).lte('created_at', to);
+    rows = (data||[]).map(w => ({ Rider: w.rider?.full_name, 'Employee ID': w.rider?.employee_id, Type: w.action_type, Description: w.description, 'Recorded By': w.recorder?.full_name, 'Created At': w.created_at }));
+  }
+
+  if (!rows.length){ statusEl.textContent = 'No records found for that range.'; return; }
+  downloadCSV(`fieldhub-${type}-${from}-to-${to.slice(0,10)}.csv`, toCSV(rows));
+  statusEl.textContent = `Downloaded ${rows.length} rows.`;
+}
 
 function openModal(innerHtml){
   const overlay = document.createElement('div');
@@ -1099,6 +1533,10 @@ function emptyState(msg){
 function formatDate(iso){
   const d = new Date(iso);
   return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
+}
+function formatDateTime(iso){
+  const d = new Date(iso);
+  return d.toLocaleString('en-GB', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
 }
 function escapeHtml(str){
   if (str === null || str === undefined) return '';
