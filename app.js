@@ -15,6 +15,7 @@ const state = {
   complianceItemTypes: [],
   myRegionIds: [],
   profilesInScope: [],
+  branding: null,
   view: 'dashboard'
 };
 
@@ -67,12 +68,26 @@ async function init(){
   bindForcePasswordForm();
   bindForgotPasswordLink();
   bindProfileMenu();
+  await applyBrandingSettings();
   const { data: { session } } = await sb.auth.getSession();
   if (session){ await afterLogin(session.user); } else { showAuthScreen(); }
 
   sb.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT'){ showAuthScreen(); }
   });
+}
+
+async function applyBrandingSettings(){
+  try{
+    const { data } = await sb.from('branding_settings').select('*').eq('id', 1).single();
+    if (!data) return;
+    state.branding = data;
+    const setText = (id, val) => { const el = document.getElementById(id); if (el && val) el.textContent = val; };
+    setText('auth-tagline', data.tagline);
+    setText('auth-subtitle', data.subtitle);
+    setText('login-title-text', data.login_title);
+    setText('login-subtitle-text', data.login_subtitle);
+  }catch(_e){ /* table may not exist yet if migration_6 hasn't run — fall back to defaults already in HTML */ }
 }
 
 function showAuthScreen(){
@@ -338,11 +353,12 @@ function renderNav(){
       html += visible.map(key => `<button class="nav-link" data-view="${key}">${NAV_LABEL[key]}</button>`).join('');
     } else {
       const groupId = 'grp-' + group.label.replace(/\s+/g,'-').toLowerCase();
+      const isOpen = visible.includes(state.view);
       html += `
-        <button class="nav-group-header" data-group-toggle="${groupId}">
+        <button class="nav-group-header ${isOpen?'':'collapsed'}" data-group-toggle="${groupId}">
           <span>${group.label}</span><span class="nav-group-arrow">▾</span>
         </button>
-        <div class="nav-group-items" id="${groupId}">
+        <div class="nav-group-items ${isOpen?'':'collapsed'}" id="${groupId}">
           ${visible.map(key => `<button class="nav-link" data-view="${key}">${NAV_LABEL[key]}</button>`).join('')}
         </div>`;
     }
@@ -358,29 +374,13 @@ function renderNav(){
   });
 }
 function renderUserBadge(){
-  const regionName = state.profile.regions?.name || regionNamesFor(state.profile) || '—';
-  const nameEl = document.getElementById('profile-menu-name');
-  if (nameEl) nameEl.textContent = state.profile.full_name || state.profile.email || 'Account';
-  const infoEl = document.getElementById('profile-menu-info');
-  if (infoEl){
-    infoEl.innerHTML = `
-      <div style="font-weight:700;">${escapeHtml(state.profile.full_name)}</div>
-      <div class="role-pill">${ROLE_LABEL[state.profile.role] || state.profile.role}</div>
-      <div style="color:var(--muted); font-size:12px; margin-top:3px;">${escapeHtml(regionName)}</div>
-    `;
-  }
-  document.getElementById('profile-menu-reports').style.display = isAdmin() ? 'block' : 'none';
-  document.getElementById('profile-menu-settings').style.display = isAdmin() ? 'block' : 'none';
+  const nameEl = document.getElementById('ribbon-profile-name');
+  if (nameEl) nameEl.textContent = state.profile.full_name || state.profile.email || 'Profile';
 }
 
 function bindProfileMenu(){
-  const btn = document.getElementById('profile-menu-btn');
-  const dropdown = document.getElementById('profile-menu-dropdown');
-  btn.onclick = (e) => { e.stopPropagation(); dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none'; };
-  document.addEventListener('click', () => { dropdown.style.display = 'none'; });
-  document.getElementById('profile-menu-profile').onclick = () => { dropdown.style.display='none'; navigateTo('myprofile'); };
-  document.getElementById('profile-menu-reports').onclick = () => { dropdown.style.display='none'; navigateTo('reports'); };
-  document.getElementById('profile-menu-settings').onclick = () => { dropdown.style.display='none'; navigateTo('settings'); };
+  const btn = document.getElementById('ribbon-profile-btn');
+  if (btn) btn.onclick = () => navigateTo('myprofile');
 }
 
 async function navigateTo(view){
@@ -1237,7 +1237,8 @@ async function renderSettings(){
     ['expirytypes','Expiry Item Types'],
     ['tooltypes','Tool Types'],
     ['compliancetypes','Compliance Items'],
-    ['notice','Home Notice']
+    ['notice','Home Notice'],
+    ...(isSuperAdmin() ? [['branding','Login Page Branding']] : [])
   ];
   main.innerHTML = `<div class="tabs">
     ${tabs.map(([k,label]) => `<button class="tab ${settingsTab===k?'active':''}" data-settings-tab="${k}">${label}</button>`).join('')}
@@ -1252,6 +1253,7 @@ async function renderSettings(){
   else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
   else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
+  else if (settingsTab === 'branding') await renderBrandingSettings(body);
 }
 
 async function renderCategoriesInto(body){
@@ -1386,6 +1388,30 @@ async function renderSimpleTypeList(body, table, label){
 async function refreshReferenceAndRerender(table){
   await loadReferenceData();
   renderSettings();
+}
+
+async function renderBrandingSettings(body){
+  const { data } = await sb.from('branding_settings').select('*').eq('id', 1).single();
+  const b = data || {};
+  body.innerHTML = `
+    <div class="hint" style="margin-bottom:14px;">This controls the text shown on the sign-in page. To change the logo or background images, replace the image files (logo.jpg, sidebar-bg.webp, banner-riders.jpg) directly on GitHub — the same way you updated the logo before.</div>
+    <div class="form-row"><label>Left-panel tagline</label><input type="text" id="brand-tagline" value="${escapeHtml(b.tagline||'')}"></div>
+    <div class="form-row"><label>Left-panel subtitle</label><input type="text" id="brand-subtitle" value="${escapeHtml(b.subtitle||'')}"></div>
+    <div class="form-row"><label>Sign-in form title</label><input type="text" id="brand-login-title" value="${escapeHtml(b.login_title||'')}"></div>
+    <div class="form-row"><label>Sign-in form subtitle</label><input type="text" id="brand-login-subtitle" value="${escapeHtml(b.login_subtitle||'')}"></div>
+    <button class="btn" id="brand-save-btn">Save</button>
+  `;
+  document.getElementById('brand-save-btn').onclick = async () => {
+    const { error } = await sb.from('branding_settings').update({
+      tagline: document.getElementById('brand-tagline').value.trim(),
+      subtitle: document.getElementById('brand-subtitle').value.trim(),
+      login_title: document.getElementById('brand-login-title').value.trim(),
+      login_subtitle: document.getElementById('brand-login-subtitle').value.trim(),
+      updated_by: state.user.id
+    }).eq('id', 1);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    toast('Saved — sign-out and back in (or refresh) to see it on the login page.');
+  };
 }
 
 async function renderHomeNoticeSettings(body){
