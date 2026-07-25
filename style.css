@@ -95,13 +95,24 @@ a{ color: var(--sky); }
 .app-shell{ display:flex; min-height:100vh; }
 .sidebar{
   width:230px; background:var(--sidebar-bg); color:#fff; flex-shrink:0;
-  display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh;
+  display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh; overflow:hidden;
 }
-.sidebar-brand{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:0 8px 22px 8px; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:14px; }
+.sidebar-brand{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:0 8px 22px 8px; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:8px; flex-shrink:0; }
 .sidebar-logo{ max-width:64px; max-height:64px; object-fit:contain; margin-bottom:8px; }
 .sidebar-brand .brand-title{ font-family:var(--font-display); font-weight:700; font-size:17px; color:#fff; }
 .sidebar-brand .brand-subtitle{ font-size:11px; color:#9DB0D6; letter-spacing:0.02em; }
-.nav-links{ display:flex; flex-direction:column; gap:2px; flex:1; }
+.nav-links{ display:flex; flex-direction:column; gap:2px; flex:1; overflow-y:auto; padding-right:2px; }
+.nav-links::-webkit-scrollbar{ width:6px; }
+.nav-links::-webkit-scrollbar-thumb{ background:rgba(255,255,255,0.15); border-radius:4px; }
+.nav-group-header{
+  display:flex; align-items:center; justify-content:space-between; width:100%;
+  background:none; border:none; color:#8FA3C9; font-size:11px; font-weight:700; text-transform:uppercase;
+  letter-spacing:0.05em; padding:14px 12px 6px 12px; cursor:pointer;
+}
+.nav-group-arrow{ transition:transform 0.15s; }
+.nav-group-header.collapsed .nav-group-arrow{ transform:rotate(-90deg); }
+.nav-group-items{ display:flex; flex-direction:column; gap:2px; overflow:hidden; max-height:600px; transition:max-height 0.2s ease; }
+.nav-group-items.collapsed{ max-height:0; }
 .nav-link{
   display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px;
   color:#CFE0DB; text-decoration:none; font-size:14px; font-weight:500; cursor:pointer; border:none; background:none; text-align:left; width:100%;
@@ -109,17 +120,33 @@ a{ color: var(--sky); }
 .nav-link:hover{ background: rgba(255,255,255,0.06); color:#fff; }
 .nav-link.active{ background: rgba(226,163,61,0.16); color:#fff; }
 .nav-badge{ margin-left:auto; background:var(--clay); color:#fff; font-size:11px; padding:1px 7px; border-radius:10px; font-weight:700; }
-.sidebar-footer{ border-top:1px solid rgba(255,255,255,0.12); padding-top:12px; margin-top:12px; }
-.user-badge{ font-size:13px; margin-bottom:6px; }
-.user-badge .role-pill{ display:inline-block; background:rgba(226,163,61,0.2); color:var(--amber); font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:0.03em; margin-top:3px;}
-.sidebar-footer .btn-text{ color:#CFE0DB; padding:4px 0; }
-
-.main-area{ flex:1; min-width:0; }
+.main-area{ flex:1; min-width:0; height:100vh; overflow-y:auto; }
+.main-area::-webkit-scrollbar{ width:10px; }
+.main-area::-webkit-scrollbar-thumb{ background:#C7CFD6; border-radius:6px; }
+.main-area::-webkit-scrollbar-track{ background:var(--paper); }
 .topbar{
   display:flex; align-items:center; justify-content:space-between;
-  padding:22px 32px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;
+  padding:16px 32px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;
 }
 .topbar h1{ font-size:22px; }
+.topbar-right{ display:flex; align-items:center; gap:14px; }
+.profile-menu-wrap{ position:relative; }
+.profile-menu-btn{
+  display:flex; align-items:center; gap:6px; background:var(--paper); border:1px solid var(--line); border-radius:8px;
+  padding:9px 14px; font-size:13.5px; font-weight:600; color:var(--ink); cursor:pointer;
+}
+.profile-menu-dropdown{
+  position:absolute; right:0; top:calc(100% + 8px); background:#fff; border:1px solid var(--line); border-radius:10px;
+  box-shadow:var(--shadow); width:220px; z-index:20; overflow:hidden;
+}
+.profile-menu-info{ padding:14px 16px; border-bottom:1px solid var(--line); font-size:13px; }
+.role-pill{ display:inline-block; background:rgba(20,51,122,0.1); color:var(--ink); font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:0.03em; margin-top:3px;}
+.profile-menu-item{
+  display:block; width:100%; text-align:left; background:none; border:none; padding:11px 16px; font-size:13.5px;
+  color:var(--ink); cursor:pointer;
+}
+.profile-menu-item:hover{ background:var(--paper); }
+.profile-menu-signout{ color:var(--clay); font-weight:600; border-top:1px solid var(--line); }
 .main-content{ padding:28px 32px; max-width:1100px; }
 
 /* ---------- generic components ---------- */
