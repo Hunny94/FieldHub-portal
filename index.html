@@ -108,21 +108,33 @@
       <span class="brand-subtitle">Home Sampling Operations</span>
     </div>
     <nav id="nav-links" class="nav-links"></nav>
-    <div class="sidebar-footer">
-      <div id="user-badge" class="user-badge"></div>
-      <button id="logout-btn" class="btn-text">Sign out</button>
-    </div>
   </aside>
 
   <main class="main-area">
     <header class="topbar">
       <h1 id="view-title">Dashboard</h1>
-      <div id="topbar-actions"></div>
+      <div class="topbar-right">
+        <div id="topbar-actions"></div>
+        <div class="profile-menu-wrap">
+          <button id="profile-menu-btn" class="profile-menu-btn">
+            <span id="profile-menu-name">Account</span>
+            <span class="profile-menu-arrow">▾</span>
+          </button>
+          <div id="profile-menu-dropdown" class="profile-menu-dropdown" style="display:none;">
+            <div id="profile-menu-info" class="profile-menu-info"></div>
+            <button class="profile-menu-item" id="profile-menu-profile">My Profile</button>
+            <button class="profile-menu-item" id="profile-menu-reports" style="display:none;">Download Reports</button>
+            <button class="profile-menu-item" id="profile-menu-settings" style="display:none;">Settings</button>
+            <button class="profile-menu-item profile-menu-signout" id="logout-btn">Sign out</button>
+          </div>
+        </div>
+      </div>
     </header>
     <div id="main-content" class="main-content"></div>
   </main>
 
 </div>
+
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
