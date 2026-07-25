@@ -829,6 +829,30 @@ async function renderTeam(){
   const active = state.profilesInScope.filter(p=>p.status!=='pending');
 
   let html = '';
+
+  if (isAdmin()){
+    const { data: resetRequests } = await sb.from('password_reset_requests').select('*').eq('status','pending').order('created_at', {ascending:false});
+    if (resetRequests && resetRequests.length){
+      html += `<div class="card"><h3>Password reset requests (${resetRequests.length})</h3>
+      <table><thead><tr><th>Phone</th><th>Note</th><th>Submitted</th><th></th></tr></thead><tbody>
+      ${resetRequests.map(r => {
+        const match = state.profilesInScope.find(p => p.phone === r.phone);
+        return `<tr>
+          <td class="mono">${escapeHtml(r.phone)}</td>
+          <td>${escapeHtml(r.note||'—')}</td>
+          <td class="mono">${formatDateTime(r.created_at)}</td>
+          <td>
+            ${match
+              ? `<button class="btn small" data-resolve-reset="${r.id}" data-resolve-profile="${match.id}">Reset for ${escapeHtml(match.full_name)}</button>`
+              : `<span class="mono" style="color:var(--clay);">No matching account found</span>`}
+            <button class="btn small outline" data-dismiss-reset="${r.id}">Dismiss</button>
+          </td>
+        </tr>`;
+      }).join('')}
+      </tbody></table></div>`;
+    }
+  }
+
   if (pending.length && isAdmin()){
     html += `<div class="card"><h3>Pending approvals (${pending.length})</h3>
     <table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>
@@ -856,6 +880,15 @@ async function renderTeam(){
 
   main.innerHTML = html || emptyState('No team members yet.');
 
+  main.querySelectorAll('[data-resolve-reset]').forEach(btn => {
+    btn.onclick = () => openResetPasswordModal(btn.dataset.resolveProfile, btn.dataset.resolveReset);
+  });
+  main.querySelectorAll('[data-dismiss-reset]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('password_reset_requests').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', btn.dataset.dismissReset);
+      toast('Dismissed'); renderTeam();
+    };
+  });
   main.querySelectorAll('[data-approve]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.approve));
   main.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.edit));
   main.querySelectorAll('[data-toggle-status]').forEach(btn => btn.onclick = () => toggleMemberStatus(btn.dataset.toggleStatus));
@@ -879,7 +912,7 @@ async function toggleMemberStatus(profileId){
   renderTeam();
 }
 
-function openResetPasswordModal(profileId){
+function openResetPasswordModal(profileId, resetRequestId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
   openModal(`
     <h2>Reset password</h2>
@@ -895,7 +928,10 @@ function openResetPasswordModal(profileId){
     const resp = await callEdgeFunction('reset_password', { user_id: profileId, new_password: document.getElementById('reset-pw-value').value });
     if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
     if (resp.error){ toast(resp.error); return; }
-    closeModal(); toast('Password reset');
+    if (resetRequestId){
+      await sb.from('password_reset_requests').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', resetRequestId);
+    }
+    closeModal(); toast('Password reset'); renderTeam();
   };
 }
 
