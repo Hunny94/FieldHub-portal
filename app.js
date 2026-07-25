@@ -19,7 +19,8 @@ const state = {
 };
 
 const ROLE_LABEL = {
-  admin: 'Area Lead / Admin',
+  super_admin: 'Super Admin',
+  admin: 'Admin',
   regional_poc: 'Regional POC',
   team_lead: 'Area Incharge',
   coordinator: 'Coordinator',
@@ -65,6 +66,7 @@ async function init(){
   bindAuthForms();
   bindForcePasswordForm();
   bindForgotPasswordLink();
+  bindProfileMenu();
   const { data: { session } } = await sb.auth.getSession();
   if (session){ await afterLogin(session.user); } else { showAuthScreen(); }
 
@@ -109,6 +111,38 @@ async function afterLogin(user){
   renderNav();
   renderUserBadge();
   navigateTo('dashboard');
+  showLatestUnackedCircularPopup();
+  showPendingRemindersBanner();
+}
+
+async function showLatestUnackedCircularPopup(){
+  const { data: circulars } = await sb.from('circulars').select('*').order('created_at', {ascending:false}).limit(1);
+  if (!circulars || !circulars.length) return;
+  const c = circulars[0];
+  if (c.created_by === state.user.id) return;
+  const { data: ack } = await sb.from('circular_acks').select('id').eq('circular_id', c.id).eq('user_id', state.user.id).maybeSingle();
+  if (ack) return;
+  openModal(`
+    <h2>📢 ${escapeHtml(c.title)}</h2>
+    <div class="mono" style="margin-bottom:10px;">${formatDateTime(c.created_at)}</div>
+    <p style="font-size:14px; white-space:pre-wrap;">${escapeHtml(c.body)}</p>
+    <button class="btn-primary" id="popup-ack-btn">Acknowledge</button>
+  `);
+  document.getElementById('popup-ack-btn').onclick = async () => {
+    await sb.from('circular_acks').insert({ circular_id: c.id, user_id: state.user.id });
+    closeModal(); toast('Acknowledged');
+  };
+}
+
+async function showPendingRemindersBanner(){
+  if (!['inventory_coordinator','regional_poc','team_lead','coordinator','admin','super_admin'].includes(state.profile.role)) return;
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate()+30);
+  const cutoffStr = cutoff.toISOString().slice(0,10);
+  let expiryQ = sb.from('expiry_items').select('id', {count:'exact', head:true}).lte('expiry_date', cutoffStr);
+  let toolQ = sb.from('tool_issuances').select('id', {count:'exact', head:true}).lte('next_due_date', cutoffStr);
+  const [{count: expCount}, {count: toolCount}] = await Promise.all([expiryQ, toolQ]);
+  const total = (expCount||0) + (toolCount||0);
+  if (total > 0) toast(`⚠️ ${total} item(s) due/overdue for renewal — check Expiry Tracker / Tool Issuance`);
 }
 
 async function loadRegions(){
@@ -270,42 +304,89 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  admin: ['dashboard','circulars','tasks','requests','expiries','warnings','team','regions','settings','knowledgebase','reports','compliance'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','warnings','team','knowledgebase','compliance'],
-  inventory_coordinator: ['dashboard','circulars','requests','expiries','knowledgebase'],
-  rider: ['dashboard','circulars','tasks','requests','expiries','warnings','knowledgebase']
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','reports','compliance'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','reports','compliance'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
+  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','knowledgebase'],
+  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','knowledgebase']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
-  expiries:'Expiry Tracker', team:'Team', regions:'Regions', settings:'Settings',
+  expiries:'Expiry Tracker', tools:'Tool Issuance', team:'Team', regions:'Regions', settings:'Settings',
   warnings:'Warnings', knowledgebase:'Knowledge Base', reports:'Reports', compliance:'Compliance Tracker'
 };
+// Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
+const NAV_GROUPS = [
+  { label: null, items: ['dashboard'] },
+  { label: 'Operations', items: ['circulars','tasks','requests'] },
+  { label: 'Inventory', items: ['expiries','tools'] },
+  { label: 'People', items: ['team','warnings','compliance'] },
+  { label: 'Knowledge', items: ['knowledgebase'] },
+  { label: 'Admin', items: ['regions','settings','reports'] }
+];
 
 function renderNav(){
   const items = NAV_BY_ROLE[state.profile.role] || ['dashboard'];
   const nav = document.getElementById('nav-links');
-  nav.innerHTML = items.map(key =>
-    `<button class="nav-link" data-view="${key}">${NAV_LABEL[key]}</button>`
-  ).join('');
-  nav.querySelectorAll('.nav-link').forEach(btn => {
-    btn.onclick = () => navigateTo(btn.dataset.view);
+  let html = '';
+  NAV_GROUPS.forEach(group => {
+    const visible = group.items.filter(k => items.includes(k));
+    if (!visible.length) return;
+    if (!group.label){
+      html += visible.map(key => `<button class="nav-link" data-view="${key}">${NAV_LABEL[key]}</button>`).join('');
+    } else {
+      const groupId = 'grp-' + group.label.replace(/\s+/g,'-').toLowerCase();
+      html += `
+        <button class="nav-group-header" data-group-toggle="${groupId}">
+          <span>${group.label}</span><span class="nav-group-arrow">▾</span>
+        </button>
+        <div class="nav-group-items" id="${groupId}">
+          ${visible.map(key => `<button class="nav-link" data-view="${key}">${NAV_LABEL[key]}</button>`).join('')}
+        </div>`;
+    }
+  });
+  nav.innerHTML = html;
+  nav.querySelectorAll('.nav-link').forEach(btn => { btn.onclick = () => navigateTo(btn.dataset.view); });
+  nav.querySelectorAll('[data-group-toggle]').forEach(btn => {
+    btn.onclick = () => {
+      const el = document.getElementById(btn.dataset.groupToggle);
+      el.classList.toggle('collapsed');
+      btn.classList.toggle('collapsed');
+    };
   });
 }
 function renderUserBadge(){
-  const regionName = state.profile.regions?.name || '—';
-  document.getElementById('user-badge').innerHTML = `
-    <div>${escapeHtml(state.profile.full_name || state.profile.email)}</div>
-    <div class="role-pill">${ROLE_LABEL[state.profile.role] || state.profile.role}</div>
-    <div style="color:#9DB6B0; font-size:12px; margin-top:2px;">${escapeHtml(regionName)}</div>
-  `;
+  const regionName = state.profile.regions?.name || regionNamesFor(state.profile) || '—';
+  const nameEl = document.getElementById('profile-menu-name');
+  if (nameEl) nameEl.textContent = state.profile.full_name || state.profile.email || 'Account';
+  const infoEl = document.getElementById('profile-menu-info');
+  if (infoEl){
+    infoEl.innerHTML = `
+      <div style="font-weight:700;">${escapeHtml(state.profile.full_name)}</div>
+      <div class="role-pill">${ROLE_LABEL[state.profile.role] || state.profile.role}</div>
+      <div style="color:var(--muted); font-size:12px; margin-top:3px;">${escapeHtml(regionName)}</div>
+    `;
+  }
+  document.getElementById('profile-menu-reports').style.display = isAdmin() ? 'block' : 'none';
+  document.getElementById('profile-menu-settings').style.display = isAdmin() ? 'block' : 'none';
+}
+
+function bindProfileMenu(){
+  const btn = document.getElementById('profile-menu-btn');
+  const dropdown = document.getElementById('profile-menu-dropdown');
+  btn.onclick = (e) => { e.stopPropagation(); dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none'; };
+  document.addEventListener('click', () => { dropdown.style.display = 'none'; });
+  document.getElementById('profile-menu-profile').onclick = () => { dropdown.style.display='none'; navigateTo('myprofile'); };
+  document.getElementById('profile-menu-reports').onclick = () => { dropdown.style.display='none'; navigateTo('reports'); };
+  document.getElementById('profile-menu-settings').onclick = () => { dropdown.style.display='none'; navigateTo('settings'); };
 }
 
 async function navigateTo(view){
   state.view = view;
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  document.getElementById('view-title').textContent = NAV_LABEL[view];
+  document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
   document.getElementById('topbar-actions').innerHTML = '';
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="empty-state">Loading…</div>`;
@@ -315,6 +396,7 @@ async function navigateTo(view){
     else if (view==='tasks') await renderTasks();
     else if (view==='requests') await renderRequests();
     else if (view==='expiries') await renderExpiries();
+    else if (view==='tools') await renderTools();
     else if (view==='team') await renderTeam();
     else if (view==='regions') await renderRegions();
     else if (view==='settings') await renderSettings();
@@ -322,14 +404,16 @@ async function navigateTo(view){
     else if (view==='knowledgebase') await renderKnowledgeBase();
     else if (view==='reports') await renderReports();
     else if (view==='compliance') await renderCompliance();
+    else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
     main.innerHTML = `<div class="empty-state">Something went wrong loading this page. Please refresh.</div>`;
   }
 }
 
-function isStaff(){ return ['admin','regional_poc','team_lead','coordinator'].includes(state.profile.role); }
-function isAdmin(){ return state.profile.role === 'admin'; }
+function isStaff(){ return ['admin','super_admin','regional_poc','team_lead','coordinator','inventory_coordinator'].includes(state.profile.role); }
+function isAdmin(){ return ['admin','super_admin'].includes(state.profile.role); }
+function isSuperAdmin(){ return state.profile.role === 'super_admin'; }
 
 // ---------------------------------------------------------
 // DASHBOARD
@@ -399,40 +483,61 @@ async function renderCirculars(){
     return;
   }
 
-  let rowsHtml = '';
-  for (const c of circulars){
+  main.innerHTML = circulars.map(c => {
     const isCreator = c.created_by === state.user.id;
     const acked = ackedSet.has(c.id);
-    let ackInfo = '';
-    if (isAdmin() || isCreator){
-      const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
-      const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
-      ackInfo = `<div class="mono" style="margin-top:8px;">${ackCount ?? 0} / ${audience} acknowledged</div>
-        <button class="btn small outline" style="margin-top:6px;" data-tracker="${c.id}">View tracker</button>
-        <div id="tracker-${c.id}"></div>`;
-    }
-    rowsHtml += `
-      <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-          <h3>${escapeHtml(c.title)}</h3>
-          ${(acked && !isCreator) ? '<span class="badge active">Acknowledged</span>' : ''}
+    return `
+      <div class="card" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" data-open-circular="${c.id}">
+        <div>
+          <h3 style="margin-bottom:2px;">${escapeHtml(c.title)}</h3>
+          <div class="mono">By ${escapeHtml(c.profiles?.full_name || 'Staff')} · ${formatDateTime(c.created_at)}</div>
         </div>
-        <p style="font-size:13.5px; white-space:pre-wrap;">${escapeHtml(c.body)}</p>
-        <div class="mono">By ${escapeHtml(c.profiles?.full_name || 'Staff')} · ${formatDateTime(c.created_at)}</div>
-        ${ackInfo}
-        ${(!acked && !isCreator) ? `<button class="btn small" style="margin-top:10px;" onclick="acknowledgeCircular('${c.id}')">Acknowledge</button>` : ''}
+        <div style="display:flex; align-items:center; gap:8px;">
+          ${(acked && !isCreator) ? '<span class="badge active">Acknowledged</span>' : (!isCreator ? '<span class="badge open">Unread</span>' : '')}
+          <span class="mono">›</span>
+        </div>
       </div>
     `;
-  }
-  main.innerHTML = rowsHtml;
-  main.querySelectorAll('[data-tracker]').forEach(btn => {
-    btn.onclick = () => showCircularTracker(btn.dataset.tracker, circulars.find(c=>c.id===btn.dataset.tracker));
+  }).join('');
+
+  main.querySelectorAll('[data-open-circular]').forEach(el => {
+    el.onclick = () => openCircularPopup(circulars.find(c=>c.id===el.dataset.openCircular), ackedSet.has(el.dataset.openCircular));
   });
 }
 
-async function showCircularTracker(circularId, circular){
-  const el = document.getElementById('tracker-'+circularId);
-  if (!el) return;
+function openCircularPopup(c, acked){
+  const isCreator = c.created_by === state.user.id;
+  openModal(`
+    <h2>${escapeHtml(c.title)}</h2>
+    <div class="mono" style="margin-bottom:10px;">By ${escapeHtml(c.profiles?.full_name||'Staff')} · ${formatDateTime(c.created_at)}</div>
+    <p style="font-size:14px; white-space:pre-wrap;">${escapeHtml(c.body)}</p>
+    <div id="circular-popup-actions" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+      ${(!acked && !isCreator) ? `<button class="btn" id="popup-ack-btn2">Acknowledge</button>` : ''}
+      ${(isAdmin() || isCreator) ? `<button class="btn outline" id="popup-tracker-btn">View Tracker</button>` : ''}
+      ${isSuperAdmin() ? `<button class="btn danger" id="popup-delete-btn">Delete Permanently</button>` : ''}
+    </div>
+    <div id="popup-tracker-area" style="margin-top:14px;"></div>
+  `);
+  if (!acked && !isCreator){
+    document.getElementById('popup-ack-btn2').onclick = async () => {
+      await sb.from('circular_acks').insert({ circular_id: c.id, user_id: state.user.id });
+      toast('Acknowledged'); closeModal(); renderCirculars();
+    };
+  }
+  if (isAdmin() || isCreator){
+    document.getElementById('popup-tracker-btn').onclick = () => showCircularTracker(c.id, c, document.getElementById('popup-tracker-area'));
+  }
+  if (isSuperAdmin()){
+    document.getElementById('popup-delete-btn').onclick = async () => {
+      if (!confirm('Permanently delete this circular? This cannot be undone.')) return;
+      const { error } = await sb.from('circulars').delete().eq('id', c.id);
+      if (error){ toast('Could not delete: ' + error.message); return; }
+      closeModal(); toast('Circular deleted'); renderCirculars();
+    };
+  }
+}
+
+async function showCircularTracker(circularId, circular, el){
   el.innerHTML = '<div class="mono">Loading…</div>';
   let q = sb.from('profiles').select('id, full_name, role').eq('status','active').neq('id', circular.created_by);
   if (circular.target_region_id) q = q.eq('region_id', circular.target_region_id);
@@ -441,7 +546,8 @@ async function showCircularTracker(circularId, circular){
   const { data: acks } = await sb.from('circular_acks').select('user_id, acknowledged_at').eq('circular_id', circularId);
   const ackMap = new Map((acks||[]).map(a=>[a.user_id, a.acknowledged_at]));
   const ackedCount = (audience||[]).filter(p=>ackMap.has(p.id)).length;
-  el.innerHTML = `<div class="mono" style="margin:8px 0;">Posted ${formatDateTime(circular.created_at)} · ${ackedCount} acknowledged, ${(audience||[]).length - ackedCount} pending</div>
+  el.innerHTML = `<div class="mono" style="margin:8px 0;">Posted ${formatDateTime(circular.created_at)} · ${ackedCount} acknowledged, ${(audience||[]).length - ackedCount} pending
+    <button class="btn small outline" id="tracker-csv-btn" style="margin-left:8px;">Export CSV</button></div>
   <table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>When</th></tr></thead><tbody>
     ${(audience||[]).map(p=>{
       const ackedAt = ackMap.get(p.id);
@@ -450,6 +556,14 @@ async function showCircularTracker(circularId, circular){
         <td class="mono">${ackedAt ? formatDateTime(ackedAt) : '—'}</td></tr>`;
     }).join('')}
   </tbody></table>`;
+  document.getElementById('tracker-csv-btn').onclick = () => {
+    const rows = (audience||[]).map(p => ({
+      Name: p.full_name, Role: ROLE_LABEL[p.role]||p.role,
+      Status: ackMap.has(p.id) ? 'Acknowledged' : 'Pending',
+      'Acknowledged At': ackMap.get(p.id) || ''
+    }));
+    downloadCSV(`circular-tracker-${circular.title.replace(/[^a-z0-9]/gi,'-')}.csv`, toCSV(rows));
+  };
 }
 
 async function countAudience(targetRegionId, targetRole, excludeId){
@@ -667,8 +781,12 @@ async function changeRequestStatus(requestId, newStatus){
 
   const { error } = await sb.from('requests').update(payload).eq('id', requestId);
   if (error){ toast('Could not update: ' + error.message); return; }
-  await sb.from('request_updates').insert({ request_id: requestId, message: remark.trim(), created_by: state.user.id });
-  toast('Updated');
+
+  const { error: remarkErr } = await sb.from('request_updates').insert({
+    request_id: requestId, message: remark.trim(), created_by: state.user.id, new_status: newStatus
+  });
+  if (remarkErr){ toast('Status changed, but the remark could not be saved: ' + remarkErr.message); }
+  else { toast('Updated'); }
   renderRequests();
 }
 
@@ -690,13 +808,19 @@ function requestActionControls(r){
   return html;
 }
 
+const STATUS_ICON = { in_progress:'🔵', resolved:'🟢', closed:'⚪', open:'🔴' };
 async function loadThread(requestId){
-  const { data: updates } = await sb.from('request_updates').select('*, profiles(full_name)').eq('request_id', requestId).order('created_at');
+  const { data: updates, error } = await sb.from('request_updates').select('*, profiles(full_name)').eq('request_id', requestId).order('created_at');
   const el = document.getElementById('thread-'+requestId);
   if (!el) return;
+  if (error){ el.innerHTML = `<div style="font-size:12.5px; color:var(--clay);">Could not load history: ${escapeHtml(error.message)}</div>`; return; }
   if (!updates || updates.length===0){ el.innerHTML = '<div style="font-size:12.5px; color:var(--muted);">No replies yet.</div>'; return; }
   el.innerHTML = updates.map(u => `
-    <div class="thread-msg">${escapeHtml(u.message)}<div class="meta">${escapeHtml(u.profiles?.full_name||'—')} · ${formatDateTime(u.created_at)}</div></div>
+    <div class="thread-msg">
+      ${u.new_status ? `<div style="font-weight:700; margin-bottom:3px;">${STATUS_ICON[u.new_status]||''} Status → ${u.new_status.replace('_',' ')}</div>` : ''}
+      ${escapeHtml(u.message)}
+      <div class="meta">${escapeHtml(u.profiles?.full_name||'—')} · ${formatDateTime(u.created_at)}</div>
+    </div>
   `).join('');
 }
 
@@ -874,6 +998,7 @@ async function renderTeam(){
       <button class="btn small outline" data-edit="${p.id}">Edit</button>
       <button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
       <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>
+      ${isSuperAdmin() ? `<button class="btn small danger" data-delete-member="${p.id}">Delete</button>` : ''}
     </td>` : ''}
   </tr>`).join('')}
   </tbody></table></div>`;
@@ -893,6 +1018,16 @@ async function renderTeam(){
   main.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.edit));
   main.querySelectorAll('[data-toggle-status]').forEach(btn => btn.onclick = () => toggleMemberStatus(btn.dataset.toggleStatus));
   main.querySelectorAll('[data-reset-pw]').forEach(btn => btn.onclick = () => openResetPasswordModal(btn.dataset.resetPw));
+  main.querySelectorAll('[data-delete-member]').forEach(btn => {
+    btn.onclick = async () => {
+      const p = state.profilesInScope.find(x=>x.id===btn.dataset.deleteMember);
+      if (!confirm(`Permanently delete ${p.full_name}'s account and login? This cannot be undone.`)) return;
+      const resp = await callEdgeFunction('delete_user', { user_id: btn.dataset.deleteMember });
+      if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
+      if (resp.error){ toast(resp.error); return; }
+      toast('Account deleted'); renderTeam();
+    };
+  });
 }
 
 function regionNamesFor(p){
@@ -1100,6 +1235,7 @@ async function renderSettings(){
     ['categories','Request Categories'],
     ['warningtypes','Warning Types'],
     ['expirytypes','Expiry Item Types'],
+    ['tooltypes','Tool Types'],
     ['compliancetypes','Compliance Items'],
     ['notice','Home Notice']
   ];
@@ -1113,6 +1249,7 @@ async function renderSettings(){
   if (settingsTab === 'categories') await renderCategoriesInto(body);
   else if (settingsTab === 'warningtypes') await renderSimpleTypeList(body, 'warning_types', 'Warning Type');
   else if (settingsTab === 'expirytypes') await renderSimpleTypeList(body, 'expiry_item_types', 'Expiry Item Type');
+  else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
   else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
 }
@@ -1135,19 +1272,38 @@ async function renderCategoriesInto(body){
   });
 }
 
-function openCategoryModal(cat){
+async function openCategoryModal(cat){
   const roleOptions = ['regional_poc','team_lead','inventory_coordinator']
     .map(r=>`<option value="${r}" ${cat?.primary_role===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('');
+  let existingOverrides = {};
+  if (cat){
+    const { data } = await sb.from('category_region_overrides').select('*').eq('category_id', cat.id);
+    (data||[]).forEach(o => { existingOverrides[o.region_id] = o.role; });
+  }
+  const overrideRows = state.regions.map(r => `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+      <div style="width:110px; font-size:13px;">${escapeHtml(r.name)}</div>
+      <select class="cat-override-role" data-region="${r.id}" style="flex:1; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+        <option value="">Use default (${cat ? ROLE_LABEL[cat.primary_role] : '—'})</option>
+        <option value="regional_poc" ${existingOverrides[r.id]==='regional_poc'?'selected':''}>${ROLE_LABEL.regional_poc}</option>
+        <option value="team_lead" ${existingOverrides[r.id]==='team_lead'?'selected':''}>${ROLE_LABEL.team_lead}</option>
+        <option value="inventory_coordinator" ${existingOverrides[r.id]==='inventory_coordinator'?'selected':''}>${ROLE_LABEL.inventory_coordinator}</option>
+      </select>
+    </div>`).join('');
   openModal(`
     <h2>${cat ? 'Edit' : 'Add'} category</h2>
     <form id="category-form">
       <div class="form-row"><label>Category name</label><input type="text" id="cat-name" value="${cat?escapeHtml(cat.name):''}" required></div>
-      <div class="form-row"><label>Routes to (who handles it)</label><select id="cat-role">${roleOptions}</select></div>
+      <div class="form-row"><label>Default routes to</label><select id="cat-role">${roleOptions}</select></div>
       <div class="form-row"><label>TAT — Turn Around Time (hours)</label><input type="number" id="cat-tat" min="1" value="${cat?.tat_hours ?? ''}" placeholder="e.g. 24"></div>
       ${cat ? `<div class="form-row"><label>Status</label><select id="cat-active">
         <option value="true" ${cat.active?'selected':''}>Active</option>
         <option value="false" ${!cat.active?'selected':''}>Inactive</option>
       </select></div>` : ''}
+      ${cat ? `<div class="form-row"><label>Per-region overrides (optional)</label>
+        <p class="hint" style="margin-bottom:8px;">e.g. this category routes to Area Incharge in Lahore, but Regional POC everywhere else.</p>
+        ${overrideRows}
+      </div>` : `<p class="hint">Save the category first, then edit it again to set per-region overrides.</p>`}
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
@@ -1164,6 +1320,14 @@ function openCategoryModal(cat){
       ? await sb.from('categories').update(payload).eq('id', cat.id)
       : await sb.from('categories').insert(payload);
     if (error){ toast('Could not save: ' + error.message); return; }
+
+    if (cat){
+      await sb.from('category_region_overrides').delete().eq('category_id', cat.id);
+      const overrides = Array.from(document.querySelectorAll('.cat-override-role'))
+        .filter(sel => sel.value)
+        .map(sel => ({ category_id: cat.id, region_id: sel.dataset.region, role: sel.value }));
+      if (overrides.length) await sb.from('category_region_overrides').insert(overrides);
+    }
     closeModal(); toast('Saved'); await loadCategories(); renderSettings();
   };
 }
@@ -1355,14 +1519,16 @@ async function renderKnowledgeBase(){
   if (!combined.length){ main.innerHTML = emptyState('No knowledge base entries yet.'); return; }
 
   main.innerHTML = `<div class="form-row"><input type="text" id="kb-search" placeholder="Search knowledge base…"></div>` +
-    `<div id="kb-list">` + combined.map(e => `
-    <div class="card kb-entry" data-search="${escapeHtml((e.title+' '+e.body).toLowerCase())}">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-        <h3>${escapeHtml(e.title)}</h3>
-        <span class="badge ${e.type==='Circular'?'in_progress':'active'}">${e.type}</span>
+    `<div id="kb-list">` + combined.map((e,i) => `
+    <div class="card kb-entry" data-search="${escapeHtml((e.title+' '+e.body).toLowerCase())}" data-kb-index="${i}" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(e.title)}</h3>
+        <div class="mono">${e.author?escapeHtml(e.author)+' · ':''}${formatDateTime(e.created_at)}</div>
       </div>
-      <p style="font-size:13.5px; white-space:pre-wrap;">${escapeHtml(e.body)}</p>
-      <div class="mono">${e.author?escapeHtml(e.author)+' · ':''}${formatDateTime(e.created_at)}</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="badge ${e.type==='Circular'?'in_progress':'active'}">${e.type}</span>
+        <span class="mono">›</span>
+      </div>
     </div>`).join('') + `</div>`;
 
   document.getElementById('kb-search').oninput = (e) => {
@@ -1371,6 +1537,16 @@ async function renderKnowledgeBase(){
       el.style.display = el.dataset.search.includes(q) ? '' : 'none';
     });
   };
+  document.querySelectorAll('.kb-entry').forEach(el => {
+    el.onclick = () => {
+      const e = combined[el.dataset.kbIndex];
+      openModal(`
+        <h2>${escapeHtml(e.title)}</h2>
+        <div class="mono" style="margin-bottom:10px;">${e.author?escapeHtml(e.author)+' · ':''}${formatDateTime(e.created_at)}</div>
+        <p style="font-size:14px; white-space:pre-wrap;">${escapeHtml(e.body)}</p>
+      `);
+    };
+  });
 }
 
 function openNewKbModal(){
@@ -1429,23 +1605,39 @@ async function renderCompliance(){
     return;
   }
 
-  // Staff/Admin view: who has/hasn't submitted this month, in their scope
+  // Staff/Admin view: who has/hasn't submitted this month, in their scope.
+  // Regional POC / Area Incharge / Admin can click a Pending cell to mark it Received.
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider');
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
 
   main.innerHTML = `<div class="card"><h3>Compliance for ${period}</h3>
+    <p class="hint">Click a "Pending" cell to mark that item as received from the rider.</p>
     <table><thead><tr><th>Rider</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
     ${riders.map(r => `<tr>
       <td>${escapeHtml(r.full_name)}</td>
       <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
       ${state.complianceItemTypes.map(t => {
         const submitted = subMap.get(r.id+'|'+t.id);
-        return `<td>${submitted ? `<span class="badge active">✓ ${formatDate(submitted)}</span>` : '<span class="badge open">Pending</span>'}</td>`;
+        return `<td>${submitted
+          ? `<span class="badge active">✓ ${formatDate(submitted)}</span>`
+          : `<button class="btn small outline" data-mark-received="${r.id}|${t.id}">Mark Received</button>`}</td>`;
       }).join('')}
     </tr>`).join('')}
     </tbody></table></div>`;
+
+  main.querySelectorAll('[data-mark-received]').forEach(btn => {
+    btn.onclick = async () => {
+      const [riderId, itemTypeId] = btn.dataset.markReceived.split('|');
+      const rider = riders.find(r=>r.id===riderId);
+      const { error } = await sb.from('compliance_submissions').insert({
+        rider_id: riderId, region_id: rider?.region_id, item_type_id: itemTypeId, period
+      });
+      if (error){ toast('Could not mark: ' + error.message); return; }
+      toast('Marked as received'); renderCompliance();
+    };
+  });
 }
 
 // ---------------------------------------------------------
@@ -1540,6 +1732,159 @@ async function generateReport(){
   if (!rows.length){ statusEl.textContent = 'No records found for that range.'; return; }
   downloadCSV(`fieldhub-${type}-${from}-to-${to.slice(0,10)}.csv`, toCSV(rows));
   statusEl.textContent = `Downloaded ${rows.length} rows.`;
+}
+
+async function renderToolTypesSettings(body){
+  const { data: rows } = await sb.from('tool_types').select('*').order('name');
+  body.innerHTML = `<button class="btn small" id="new-tool-type-btn" style="margin-bottom:14px;">+ Add Tool Type</button>
+  <table><thead><tr><th>Tool</th><th>Reissue every</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(rows||[]).map(r=>`<tr>
+      <td>${escapeHtml(r.name)}</td>
+      <td class="mono">${r.interval_months} months</td>
+      <td><span class="badge ${r.active?'active':'closed'}">${r.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn small outline" data-toggle-tool="${r.id}" data-active="${r.active}">${r.active?'Disable':'Enable'}</button>
+        <button class="btn small outline" data-delete-tool="${r.id}">Remove</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  document.getElementById('new-tool-type-btn').onclick = () => {
+    const name = prompt('Tool name (e.g. Raincoat):');
+    if (!name || !name.trim()) return;
+    const months = prompt('Reissue interval, in months (e.g. 24 for raincoat, 4 for uniform, 12 for helmet):');
+    if (!months || isNaN(parseInt(months))) { toast('Enter a valid number of months'); return; }
+    sb.from('tool_types').insert({ name: name.trim(), interval_months: parseInt(months,10) }).then(({error}) => {
+      if (error){ toast('Could not add: ' + error.message); return; }
+      toast('Added'); renderSettings();
+    });
+  };
+  body.querySelectorAll('[data-toggle-tool]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('tool_types').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleTool);
+      renderSettings();
+    };
+  });
+  body.querySelectorAll('[data-delete-tool]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this tool type permanently?')) return;
+      const { error } = await sb.from('tool_types').delete().eq('id', btn.dataset.deleteTool);
+      if (error){ toast('Could not remove (it may be in use): ' + error.message); return; }
+      renderSettings();
+    };
+  });
+}
+
+// ---------------------------------------------------------
+// TOOL ISSUANCE & REISSUANCE (raincoats, uniforms, helmets, etc.)
+// ---------------------------------------------------------
+async function renderTools(){
+  const main = document.getElementById('main-content');
+  const canIssue = state.profile.role === 'inventory_coordinator' || isAdmin();
+  if (canIssue){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-tool-issuance-btn">+ Issue Tool</button>`;
+    document.getElementById('new-tool-issuance-btn').onclick = openNewToolIssuanceModal;
+  }
+  const { data: issuances } = await sb.from('tool_issuances').select('*, profiles(full_name), tool_types(name)').order('next_due_date');
+  if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
+
+  const today = new Date();
+  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th></tr></thead><tbody>
+    ${issuances.map(i => {
+      const due = new Date(i.next_due_date);
+      const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
+      let badge='badge active', label='OK';
+      if (daysLeft<0){ badge='badge open'; label='Overdue for reissue'; }
+      else if (daysLeft<=30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
+      return `<tr>
+        <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
+        <td>${escapeHtml(i.tool_types?.name||'—')}</td>
+        <td class="mono">${i.issued_date}</td>
+        <td class="mono">${i.next_due_date}</td>
+        <td><span class="${badge}">${label}</span></td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+
+async function openNewToolIssuanceModal(){
+  await loadScopedProfiles();
+  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
+  const { data: toolTypes } = await sb.from('tool_types').select('*').eq('active', true).order('name');
+  const toolOptions = (toolTypes||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)} (every ${t.interval_months}mo)</option>`).join('');
+  openModal(`
+    <h2>Issue tool</h2>
+    <form id="tool-issuance-form">
+      <div class="form-row"><label>Rider</label><select id="ti-rider" required>${riderOptions}</select></div>
+      <div class="form-row"><label>Tool</label><select id="ti-tool" required>${toolOptions}</select></div>
+      <div class="form-row"><label>Issued date</label><input type="date" id="ti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  document.getElementById('tool-issuance-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const riderId = document.getElementById('ti-rider').value;
+    const rider = state.profilesInScope.find(p=>p.id===riderId);
+    const { error } = await sb.from('tool_issuances').insert({
+      rider_id: riderId, region_id: rider?.region_id,
+      tool_type_id: document.getElementById('ti-tool').value,
+      issued_date: document.getElementById('ti-date').value,
+      recorded_by: state.user.id
+    });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Tool issued'); renderTools();
+  };
+}
+
+
+async function renderMyProfile(){
+  const main = document.getElementById('main-content');
+  const p = state.profile;
+  main.innerHTML = `
+    <div class="card">
+      <h3>Your details</h3>
+      <div class="form-row"><label>Full name</label><input type="text" id="mp-name" value="${escapeHtml(p.full_name||'')}"></div>
+      <div class="two-col">
+        <div class="form-row"><label>Mobile Number</label><input type="text" value="${escapeHtml(p.phone||'')}" disabled></div>
+        <div class="form-row"><label>Employee ID</label><input type="text" value="${escapeHtml(p.employee_id||'—')}" disabled></div>
+      </div>
+      ${p.role==='rider' ? `<div class="form-row"><label>Bike Number</label><input type="text" id="mp-bike" value="${escapeHtml(p.bike_number||'')}"></div>` : ''}
+      <div class="form-row"><label>Role</label><input type="text" value="${ROLE_LABEL[p.role]||p.role}" disabled></div>
+      <div class="form-row"><label>Region(s)</label><input type="text" value="${escapeHtml(regionNamesFor(p))}" disabled></div>
+      <button class="btn" id="mp-save-btn">Save changes</button>
+    </div>
+    <div class="card">
+      <h3>Change password</h3>
+      <p class="hint">Changing your password will sign you out of all other devices, for security.</p>
+      <div class="form-row"><label>New password</label>
+        <div class="password-field"><input type="password" id="mp-new-pw" minlength="6"><button type="button" class="password-toggle" id="mp-pw-toggle">Show</button></div>
+      </div>
+      <button class="btn" id="mp-pw-btn">Change password</button>
+    </div>
+  `;
+  document.getElementById('mp-save-btn').onclick = async () => {
+    const payload = { full_name: document.getElementById('mp-name').value.trim() };
+    if (p.role==='rider') payload.bike_number = document.getElementById('mp-bike').value.trim();
+    const { error } = await sb.from('profiles').update(payload).eq('id', state.user.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    state.profile = { ...state.profile, ...payload };
+    renderUserBadge();
+    toast('Saved');
+  };
+  document.getElementById('mp-pw-toggle').onclick = () => {
+    const input = document.getElementById('mp-new-pw');
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    document.getElementById('mp-pw-toggle').textContent = isHidden ? 'Hide' : 'Show';
+  };
+  document.getElementById('mp-pw-btn').onclick = async () => {
+    const pw = document.getElementById('mp-new-pw').value;
+    if (!pw || pw.length < 6){ toast('Password must be at least 6 characters'); return; }
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error){ toast('Could not update: ' + error.message); return; }
+    toast('Password updated. Signing you out for security…');
+    await callEdgeFunction('force_signout_self', {});
+    setTimeout(doLogout, 1200);
+  };
 }
 
 function openModal(innerHtml){
