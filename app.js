@@ -411,6 +411,8 @@ function renderUserBadge(){
 function bindProfileMenu(){
   const btn = document.getElementById('ribbon-profile-btn');
   if (btn) btn.onclick = () => navigateTo('myprofile');
+  const homeBtn = document.getElementById('ribbon-home-btn');
+  if (homeBtn) homeBtn.onclick = () => navigateTo('dashboard');
 }
 
 async function navigateTo(view){
@@ -419,7 +421,7 @@ async function navigateTo(view){
   document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
   document.getElementById('topbar-actions').innerHTML = '';
   const main = document.getElementById('main-content');
-  main.innerHTML = `<div class="empty-state">Loading…</div>`;
+  main.innerHTML = `<div class="empty-state"><div class="spinner"></div>Loading…</div>`;
   try{
     if (view==='dashboard') await renderDashboard();
     else if (view==='circulars') await renderCirculars();
@@ -1019,23 +1021,45 @@ async function renderTeam(){
     </tbody></table></div>`;
   }
 
-  html += `<div class="card"><h3>Team directory (${active.length})</h3>
-  <table><thead><tr><th>Name</th><th>Role</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-  ${active.map(p=>`<tr>
-    <td>${escapeHtml(p.full_name)}<div class="mono">${escapeHtml(p.email||p.phone||'')}</div></td>
-    <td>${ROLE_LABEL[p.role]||'—'}</td>
-    <td>${escapeHtml(regionNamesFor(p))}</td>
-    <td><span class="badge ${p.status}">${p.status}</span></td>
-    ${isAdmin() ? `<td style="white-space:nowrap;">
-      <button class="btn small outline" data-edit="${p.id}">Edit</button>
-      <button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
-      <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>
-      ${isSuperAdmin() ? `<button class="btn small danger" data-delete-member="${p.id}">Delete</button>` : ''}
-    </td>` : ''}
-  </tr>`).join('')}
-  </tbody></table></div>`;
+  html += `<div class="card"><h3>Team directory (${active.length})</h3>`;
+  const roleGroupOrder = ['rider','regional_poc','team_lead','coordinator','inventory_coordinator','admin','super_admin'];
+  roleGroupOrder.forEach(role => {
+    const members = active.filter(p => p.role === role);
+    if (!members.length) return;
+    const groupId = 'team-grp-' + role;
+    html += `
+      <button class="nav-group-header team-group-header collapsed" data-team-group-toggle="${groupId}" style="color:var(--ink); padding:12px 4px;">
+        <span>${ROLE_LABEL[role]} (${members.length})</span><span class="nav-group-arrow">▾</span>
+      </button>
+      <div class="nav-group-items collapsed" id="${groupId}">
+        <table><thead><tr><th>Name</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+        ${members.map(p=>`<tr>
+          <td>${escapeHtml(p.full_name)}<div class="mono">${escapeHtml(p.email||p.phone||'')}</div></td>
+          <td>${escapeHtml(regionNamesFor(p))}</td>
+          <td><span class="badge ${p.status}">${p.status}</span></td>
+          ${isAdmin() ? `<td style="white-space:nowrap;">
+            <button class="btn small outline" data-edit="${p.id}">Edit</button>
+            <button class="btn small outline" data-toggle-status="${p.id}">${p.status==='disabled'?'Enable':'Disable'}</button>
+            <button class="btn small outline" data-reset-pw="${p.id}">Reset Password</button>
+            ${isSuperAdmin() ? `<button class="btn small danger" data-delete-member="${p.id}">Delete</button>` : ''}
+          </td>` : ''}
+        </tr>`).join('')}
+        </tbody></table>
+      </div>`;
+  });
+  html += `</div>`;
 
   main.innerHTML = html || emptyState('No team members yet.');
+
+  main.querySelectorAll('[data-team-group-toggle]').forEach(btn => {
+    btn.onclick = () => {
+      const targetEl = document.getElementById(btn.dataset.teamGroupToggle);
+      const wasCollapsed = targetEl.classList.contains('collapsed');
+      main.querySelectorAll('.nav-group-items').forEach(el => el.classList.add('collapsed'));
+      main.querySelectorAll('.team-group-header').forEach(b => b.classList.add('collapsed'));
+      if (wasCollapsed){ targetEl.classList.remove('collapsed'); btn.classList.remove('collapsed'); }
+    };
+  });
 
   main.querySelectorAll('[data-resolve-reset]').forEach(btn => {
     btn.onclick = () => openResetPasswordModal(btn.dataset.resolveProfile, btn.dataset.resolveReset);
