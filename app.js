@@ -87,7 +87,19 @@ async function applyBrandingSettings(){
     setText('auth-subtitle', data.subtitle);
     setText('login-title-text', data.login_title);
     setText('login-subtitle-text', data.login_subtitle);
-  }catch(_e){ /* table may not exist yet if migration_6 hasn't run — fall back to defaults already in HTML */ }
+
+    if (data.logo_url){
+      document.querySelectorAll('.auth-logo-img, .brand-logo, .ribbon-logo').forEach(img => { img.src = data.logo_url; });
+    }
+    if (data.sidebar_bg_url){
+      const sidebar = document.querySelector('.sidebar');
+      if (sidebar) sidebar.style.backgroundImage = `linear-gradient(rgba(27,37,96,0.93), rgba(27,37,96,0.93)), url('${data.sidebar_bg_url}')`;
+    }
+    if (data.login_bg_url){
+      const authLeft = document.querySelector('.auth-left');
+      if (authLeft) authLeft.style.backgroundImage = `linear-gradient(rgba(20,28,80,0.88), rgba(20,28,80,0.88)), url('${data.login_bg_url}')`;
+    }
+  }catch(_e){ /* table may not exist yet if migration_6/7 hasn't run — fall back to defaults already in HTML */ }
 }
 
 function showAuthScreen(){
@@ -227,6 +239,13 @@ function bindAuthForms(){
     const email = document.getElementById('signup-email').value.trim();
     const bike_number = document.getElementById('signup-bike').value.trim();
     const password = document.getElementById('signup-password').value;
+
+    const { data: existing } = await sb.rpc('check_employee_id', { p_employee_id: employee_id });
+    if (existing && existing.length){
+      showAuthMessage(`Employee ID "${employee_id}" is already registered to ${existing[0].full_name} (${existing[0].phone}). Each Employee ID can only be used once.`);
+      return;
+    }
+
     const { data, error } = await sb.auth.signUp({
       phone, password, options: { data: { full_name } }
     });
@@ -261,6 +280,10 @@ function clearAuthMessage(){
 async function doLogout(){
   await sb.auth.signOut();
   state.user = null; state.profile = null;
+  const phoneEl = document.getElementById('login-phone');
+  const pwEl = document.getElementById('login-password');
+  if (phoneEl) phoneEl.value = '';
+  if (pwEl) pwEl.value = '';
   showAuthScreen();
 }
 
@@ -319,18 +342,19 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','reports','compliance'],
-  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','reports','compliance'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','compliance'],
-  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','knowledgebase'],
-  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','knowledgebase']
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','resources','reports','compliance'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
+  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','knowledgebase','resources'],
+  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','knowledgebase','resources']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
   expiries:'Expiry Tracker', tools:'Tool Issuance', team:'Team', regions:'Regions', settings:'Settings',
-  warnings:'Warnings', knowledgebase:'Knowledge Base', reports:'Reports', compliance:'Compliance Tracker'
+  warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
+  compliance:'Compliance Tracker', activitylog:'Activity Log'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
@@ -338,8 +362,8 @@ const NAV_GROUPS = [
   { label: 'Operations', items: ['circulars','tasks','requests'] },
   { label: 'Inventory', items: ['expiries','tools'] },
   { label: 'People', items: ['team','warnings','compliance'] },
-  { label: 'Knowledge', items: ['knowledgebase'] },
-  { label: 'Admin', items: ['regions','settings','reports'] }
+  { label: 'Knowledge', items: ['knowledgebase','resources'] },
+  { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
 ];
 
 function renderNav(){
@@ -367,9 +391,15 @@ function renderNav(){
   nav.querySelectorAll('.nav-link').forEach(btn => { btn.onclick = () => navigateTo(btn.dataset.view); });
   nav.querySelectorAll('[data-group-toggle]').forEach(btn => {
     btn.onclick = () => {
-      const el = document.getElementById(btn.dataset.groupToggle);
-      el.classList.toggle('collapsed');
-      btn.classList.toggle('collapsed');
+      const targetEl = document.getElementById(btn.dataset.groupToggle);
+      const wasCollapsed = targetEl.classList.contains('collapsed');
+      // Accordion: close every other group first
+      nav.querySelectorAll('.nav-group-items').forEach(el => el.classList.add('collapsed'));
+      nav.querySelectorAll('.nav-group-header').forEach(b => b.classList.add('collapsed'));
+      if (wasCollapsed){
+        targetEl.classList.remove('collapsed');
+        btn.classList.remove('collapsed');
+      }
     };
   });
 }
@@ -404,6 +434,8 @@ async function navigateTo(view){
     else if (view==='knowledgebase') await renderKnowledgeBase();
     else if (view==='reports') await renderReports();
     else if (view==='compliance') await renderCompliance();
+    else if (view==='resources') await renderResources();
+    else if (view==='activitylog') await renderActivityLog();
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -1394,12 +1426,20 @@ async function renderBrandingSettings(body){
   const { data } = await sb.from('branding_settings').select('*').eq('id', 1).single();
   const b = data || {};
   body.innerHTML = `
-    <div class="hint" style="margin-bottom:14px;">This controls the text shown on the sign-in page. To change the logo or background images, replace the image files (logo.jpg, sidebar-bg.webp, banner-riders.jpg) directly on GitHub — the same way you updated the logo before.</div>
+    <div class="hint" style="margin-bottom:14px;">Text and pictures here update instantly for everyone — no GitHub editing needed.</div>
     <div class="form-row"><label>Left-panel tagline</label><input type="text" id="brand-tagline" value="${escapeHtml(b.tagline||'')}"></div>
     <div class="form-row"><label>Left-panel subtitle</label><input type="text" id="brand-subtitle" value="${escapeHtml(b.subtitle||'')}"></div>
     <div class="form-row"><label>Sign-in form title</label><input type="text" id="brand-login-title" value="${escapeHtml(b.login_title||'')}"></div>
     <div class="form-row"><label>Sign-in form subtitle</label><input type="text" id="brand-login-subtitle" value="${escapeHtml(b.login_subtitle||'')}"></div>
-    <button class="btn" id="brand-save-btn">Save</button>
+    <button class="btn" id="brand-save-btn">Save Text</button>
+
+    <hr style="margin:24px 0; border:none; border-top:1px solid var(--line);">
+    <h3>Pictures</h3>
+    <p class="hint" style="margin-bottom:14px;">Upload a new picture to replace it everywhere instantly, or remove it to fall back to the default.</p>
+
+    ${brandingImageRow('logo', 'Logo', b.logo_url)}
+    ${brandingImageRow('sidebar_bg', 'Sidebar background', b.sidebar_bg_url)}
+    ${brandingImageRow('login_bg', 'Sign-in page background', b.login_bg_url)}
   `;
   document.getElementById('brand-save-btn').onclick = async () => {
     const { error } = await sb.from('branding_settings').update({
@@ -1410,8 +1450,45 @@ async function renderBrandingSettings(body){
       updated_by: state.user.id
     }).eq('id', 1);
     if (error){ toast('Could not save: ' + error.message); return; }
-    toast('Saved — sign-out and back in (or refresh) to see it on the login page.');
+    toast('Saved');
   };
+
+  ['logo','sidebar_bg','login_bg'].forEach(key => {
+    const fileInput = document.getElementById(`brand-file-${key}`);
+    const removeBtn = document.getElementById(`brand-remove-${key}`);
+    fileInput.onchange = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      toast('Uploading…');
+      const path = `${key}-${Date.now()}.${file.name.split('.').pop()}`;
+      const { error: upErr } = await sb.storage.from('branding').upload(path, file, { upsert: true });
+      if (upErr){ toast('Could not upload: ' + upErr.message); return; }
+      const { data: pub } = sb.storage.from('branding').getPublicUrl(path);
+      const column = key + '_url';
+      const { error: dbErr } = await sb.from('branding_settings').update({ [column]: pub.publicUrl, updated_by: state.user.id }).eq('id', 1);
+      if (dbErr){ toast('Uploaded, but could not save: ' + dbErr.message); return; }
+      toast('Updated'); await applyBrandingSettings(); renderSettings();
+    };
+    if (removeBtn){
+      removeBtn.onclick = async () => {
+        const column = key + '_url';
+        await sb.from('branding_settings').update({ [column]: null }).eq('id', 1);
+        toast('Reverted to default'); await applyBrandingSettings(); renderSettings();
+      };
+    }
+  });
+}
+
+function brandingImageRow(key, label, currentUrl){
+  return `
+    <div class="form-row" style="display:flex; align-items:center; gap:14px;">
+      ${currentUrl ? `<img src="${escapeHtml(currentUrl)}" style="width:60px; height:60px; object-fit:cover; border-radius:8px; border:1px solid var(--line);">` : `<div style="width:60px; height:60px; border-radius:8px; border:1px dashed var(--line); display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:11px;">Default</div>`}
+      <div style="flex:1;">
+        <label style="font-weight:600; font-size:13px;">${label}</label>
+        <input type="file" accept="image/*" id="brand-file-${key}" style="margin-top:4px;">
+      </div>
+      ${currentUrl ? `<button type="button" class="btn small outline" id="brand-remove-${key}">Revert to default</button>` : ''}
+    </div>`;
 }
 
 async function renderHomeNoticeSettings(body){
@@ -1603,19 +1680,32 @@ function currentPeriod(){
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 }
+function monthLabel(period){
+  const [y,m] = period.split('-');
+  return new Date(y, m-1, 1).toLocaleDateString('en-GB', {month:'long', year:'numeric'});
+}
+function shiftPeriod(period, delta){
+  const [y,m] = period.split('-').map(Number);
+  const d = new Date(y, m-1+delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
 
+let complianceSelectedPeriod = null;
 async function renderCompliance(){
   const main = document.getElementById('main-content');
-  const period = currentPeriod();
+  if (!complianceSelectedPeriod) complianceSelectedPeriod = currentPeriod();
+  const period = complianceSelectedPeriod;
+  const isCurrentMonth = period === currentPeriod();
+
   if (state.profile.role === 'rider'){
     const { data: mySubs } = await sb.from('compliance_submissions').select('*').eq('rider_id', state.user.id).eq('period', period);
     const submittedIds = new Set((mySubs||[]).map(s=>s.item_type_id));
-    main.innerHTML = `<div class="card"><h3>This month (${period})</h3>
+    main.innerHTML = `<div class="card"><h3>${monthLabel(period)}${isCurrentMonth?' (current month)':''}</h3>
       <table><thead><tr><th>Item</th><th>Status</th><th></th></tr></thead><tbody>
       ${state.complianceItemTypes.map(t => `<tr>
         <td>${escapeHtml(t.name)}</td>
         <td>${submittedIds.has(t.id) ? '<span class="badge active">Submitted</span>' : '<span class="badge open">Pending</span>'}</td>
-        <td>${!submittedIds.has(t.id) ? `<button class="btn small" data-submit-compliance="${t.id}">Mark Submitted</button>` : ''}</td>
+        <td>${(!submittedIds.has(t.id) && isCurrentMonth) ? `<button class="btn small" data-submit-compliance="${t.id}">Mark Submitted</button>` : ''}</td>
       </tr>`).join('')}
       </tbody></table></div>`;
     main.querySelectorAll('[data-submit-compliance]').forEach(btn => {
@@ -1631,29 +1721,55 @@ async function renderCompliance(){
     return;
   }
 
-  // Staff/Admin view: who has/hasn't submitted this month, in their scope.
-  // Regional POC / Area Incharge / Admin can click a Pending cell to mark it Received.
+  // Staff/Admin view: who has/hasn't submitted, with a month picker and CSV export
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider');
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
 
-  main.innerHTML = `<div class="card"><h3>Compliance for ${period}</h3>
-    <p class="hint">Click a "Pending" cell to mark that item as received from the rider.</p>
-    <table><thead><tr><th>Rider</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
-    ${riders.map(r => `<tr>
-      <td>${escapeHtml(r.full_name)}</td>
-      <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
-      ${state.complianceItemTypes.map(t => {
-        const submitted = subMap.get(r.id+'|'+t.id);
-        return `<td>${submitted
-          ? `<span class="badge active">✓ ${formatDate(submitted)}</span>`
-          : `<button class="btn small outline" data-mark-received="${r.id}|${t.id}">Mark Received</button>`}</td>`;
-      }).join('')}
-    </tr>`).join('')}
-    </tbody></table></div>`;
+  const pendingCount = riders.reduce((sum, r) => sum + state.complianceItemTypes.filter(t => !subMap.has(r.id+'|'+t.id)).length, 0);
 
+  main.innerHTML = `
+    <div class="card" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <button class="btn small outline" id="compliance-prev">‹ Prev</button>
+        <h3 style="margin:0;">${monthLabel(period)}${isCurrentMonth?' <span class="badge active" style="margin-left:6px;">Current</span>':''}</h3>
+        <button class="btn small outline" id="compliance-next" ${isCurrentMonth?'disabled':''}>Next ›</button>
+      </div>
+      <button class="btn small" id="compliance-csv-btn">Download Pending (CSV)</button>
+    </div>
+    <div class="card">
+      <p class="hint">${pendingCount} item(s) still pending across all riders this month. Click a "Pending" cell to mark that item received.</p>
+      <table><thead><tr><th>Rider</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
+      ${riders.map(r => `<tr>
+        <td>${escapeHtml(r.full_name)}</td>
+        <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
+        ${state.complianceItemTypes.map(t => {
+          const submitted = subMap.get(r.id+'|'+t.id);
+          return `<td>${submitted
+            ? `<span class="badge active">✓ ${formatDate(submitted)}</span>`
+            : `<button class="btn small outline" data-mark-received="${r.id}|${t.id}" ${!isCurrentMonth?'disabled title="Only current month can be marked"':''}>Pending</button>`}</td>`;
+        }).join('')}
+      </tr>`).join('')}
+      </tbody></table>
+    </div>`;
+
+  document.getElementById('compliance-prev').onclick = () => { complianceSelectedPeriod = shiftPeriod(period, -1); renderCompliance(); };
+  document.getElementById('compliance-next').onclick = () => { complianceSelectedPeriod = shiftPeriod(period, 1); renderCompliance(); };
+  document.getElementById('compliance-csv-btn').onclick = () => {
+    const rows = [];
+    riders.forEach(r => {
+      state.complianceItemTypes.forEach(t => {
+        if (!subMap.has(r.id+'|'+t.id)){
+          rows.push({ Rider: r.full_name, 'Employee ID': r.employee_id||'', Region: state.regions.find(rg=>rg.id===r.region_id)?.name||'', Item: t.name, Month: monthLabel(period) });
+        }
+      });
+    });
+    if (!rows.length){ toast('No pending items — nothing to export'); return; }
+    downloadCSV(`compliance-pending-${period}.csv`, toCSV(rows));
+  };
   main.querySelectorAll('[data-mark-received]').forEach(btn => {
+    if (btn.disabled) return;
     btn.onclick = async () => {
       const [riderId, itemTypeId] = btn.dataset.markReceived.split('|');
       const rider = riders.find(r=>r.id===riderId);
@@ -1805,10 +1921,13 @@ async function renderToolTypesSettings(body){
 // ---------------------------------------------------------
 async function renderTools(){
   const main = document.getElementById('main-content');
-  const canIssue = state.profile.role === 'inventory_coordinator' || isAdmin();
+  const canIssue = ['inventory_coordinator','regional_poc','team_lead','coordinator'].includes(state.profile.role) || isAdmin();
   if (canIssue){
-    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-tool-issuance-btn">+ Issue Tool</button>`;
+    document.getElementById('topbar-actions').innerHTML = `
+      <button class="btn outline" id="bulk-tool-issuance-btn">+ Bulk Issue</button>
+      <button class="btn" id="new-tool-issuance-btn">+ Issue Tool</button>`;
     document.getElementById('new-tool-issuance-btn').onclick = openNewToolIssuanceModal;
+    document.getElementById('bulk-tool-issuance-btn').onclick = openBulkToolIssuanceModal;
   }
   const { data: issuances } = await sb.from('tool_issuances').select('*, profiles(full_name), tool_types(name)').order('next_due_date');
   if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
@@ -1830,6 +1949,51 @@ async function renderTools(){
       </tr>`;
     }).join('')}
   </tbody></table>`;
+}
+
+function openBulkToolIssuanceModal(){
+  openModal(`
+    <h2>Bulk issue tool</h2>
+    <p class="hint">Paste one <strong>Employee ID</strong> per line — all of them will receive the same tool, issued on the same date.</p>
+    <form id="bulk-tool-form">
+      <div class="form-row"><label>Tool</label><select id="bti-tool" required></select></div>
+      <div class="form-row"><label>Issued date</label><input type="date" id="bti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
+      <div class="form-row"><label>Employee IDs</label><textarea id="bti-ids" rows="8" placeholder="EMP1001
+EMP1002
+EMP1003"></textarea></div>
+      <button class="btn-primary" type="submit">Issue to all</button>
+    </form>
+    <div id="bulk-tool-results" style="margin-top:14px;"></div>
+  `);
+  sb.from('tool_types').select('*').eq('active', true).order('name').then(({data}) => {
+    document.getElementById('bti-tool').innerHTML = (data||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)} (every ${t.interval_months}mo)</option>`).join('');
+  });
+  document.getElementById('bulk-tool-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const empIds = document.getElementById('bti-ids').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if (!empIds.length){ toast('Paste at least one Employee ID'); return; }
+    const toolTypeId = document.getElementById('bti-tool').value;
+    const issuedDate = document.getElementById('bti-date').value;
+    const resultsEl = document.getElementById('bulk-tool-results');
+    resultsEl.innerHTML = '<div class="mono">Processing…</div>';
+
+    await loadScopedProfiles();
+    const rows = [];
+    for (const empId of empIds){
+      const rider = state.profilesInScope.find(p => p.employee_id === empId);
+      if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
+      const { error } = await sb.from('tool_issuances').insert({
+        rider_id: rider.id, region_id: rider.region_id, tool_type_id: toolTypeId,
+        issued_date: issuedDate, recorded_by: state.user.id
+      });
+      rows.push({ empId, ok: !error, msg: error ? error.message : `Issued to ${rider.full_name}` });
+    }
+    resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
+    </tbody></table>`;
+    toast(`${rows.filter(r=>r.ok).length} of ${rows.length} issued`);
+    renderTools();
+  };
 }
 
 async function openNewToolIssuanceModal(){
@@ -1861,6 +2025,111 @@ async function openNewToolIssuanceModal(){
   };
 }
 
+
+// ---------------------------------------------------------
+// RESOURCE LINKS — panel company sheets, how-to videos, anything
+// hosted elsewhere (Google Sheets/Drive/YouTube) so it costs zero
+// database/storage space here.
+// ---------------------------------------------------------
+async function renderResources(){
+  const main = document.getElementById('main-content');
+  if (isSuperAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-resource-btn">+ Add Link</button>`;
+    document.getElementById('new-resource-btn').onclick = () => openResourceModal(null);
+  }
+  const { data: links } = await sb.from('resource_links').select('*').order('category').order('title');
+  if (!links || !links.length){ main.innerHTML = emptyState('No resource links added yet.'); return; }
+
+  const byCategory = {};
+  links.forEach(l => { (byCategory[l.category || 'General'] ||= []).push(l); });
+
+  main.innerHTML = Object.entries(byCategory).map(([cat, items]) => `
+    <div class="card">
+      <h3>${escapeHtml(cat)}</h3>
+      <table><thead><tr><th>Title</th><th></th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
+        ${items.map(l => `<tr>
+          <td>${escapeHtml(l.title)}</td>
+          <td><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener" class="btn small outline">Open ↗</a></td>
+          ${isSuperAdmin() ? `<td>
+            <button class="btn small outline" data-edit-resource="${l.id}">Edit</button>
+            <button class="btn small outline" data-delete-resource="${l.id}">Remove</button>
+          </td>` : ''}
+        </tr>`).join('')}
+      </tbody></table>
+    </div>`).join('');
+
+  main.querySelectorAll('[data-edit-resource]').forEach(btn => {
+    btn.onclick = () => openResourceModal(links.find(l=>l.id===btn.dataset.editResource));
+  });
+  main.querySelectorAll('[data-delete-resource]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this link?')) return;
+      await sb.from('resource_links').delete().eq('id', btn.dataset.deleteResource);
+      renderResources();
+    };
+  });
+}
+
+function openResourceModal(link){
+  openModal(`
+    <h2>${link ? 'Edit' : 'Add'} resource link</h2>
+    <form id="resource-form">
+      <div class="form-row"><label>Title</label><input type="text" id="res-title" value="${link?escapeHtml(link.title):''}" required placeholder="e.g. Sui Gas Panel — Requirements"></div>
+      <div class="form-row"><label>Category (optional)</label><input type="text" id="res-category" value="${link?escapeHtml(link.category||''):''}" placeholder="e.g. Panel Companies, How-To Videos"></div>
+      <div class="form-row"><label>Link (Google Sheet, Drive, YouTube, etc.)</label><input type="url" id="res-url" value="${link?escapeHtml(link.url):''}" required placeholder="https://..."></div>
+      <p class="hint">Tip: in Google Sheets/Docs, use Share → "Anyone with the link can view" so riders can open it.</p>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+    <div style="margin-top:14px;">
+      <p class="hint">Add many at once — paste rows as <strong>Title | Category | URL</strong>, one per line:</p>
+      <textarea id="res-bulk" rows="4" style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" placeholder="Sui Gas Panel | Panel Companies | https://...
+Barcode Install Video | How-To Videos | https://youtube.com/..."></textarea>
+      <button class="btn small outline" id="res-bulk-btn" style="margin-top:8px;">Add All</button>
+    </div>
+  `);
+  document.getElementById('resource-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      title: document.getElementById('res-title').value.trim(),
+      category: document.getElementById('res-category').value.trim() || null,
+      url: document.getElementById('res-url').value.trim()
+    };
+    const { error } = link
+      ? await sb.from('resource_links').update(payload).eq('id', link.id)
+      : await sb.from('resource_links').insert({ ...payload, created_by: state.user.id });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); renderResources();
+  };
+  document.getElementById('res-bulk-btn').onclick = async () => {
+    const lines = document.getElementById('res-bulk').value.split('\n').map(l=>l.trim()).filter(Boolean);
+    const rows = lines.map(line => {
+      const [title, category, url] = line.split('|').map(s=>s?.trim());
+      return { title, category: category || null, url, created_by: state.user.id };
+    }).filter(r => r.title && r.url);
+    if (!rows.length){ toast('Paste at least one valid row'); return; }
+    const { error } = await sb.from('resource_links').insert(rows);
+    if (error){ toast('Could not add: ' + error.message); return; }
+    closeModal(); toast(`${rows.length} links added`); renderResources();
+  };
+}
+
+// ---------------------------------------------------------
+// ACTIVITY LOG — Super Admin only
+// ---------------------------------------------------------
+async function renderActivityLog(){
+  const main = document.getElementById('main-content');
+  const { data: log } = await sb.from('activity_log').select('*, profiles(full_name)').order('created_at', {ascending:false}).limit(200);
+  if (!log || !log.length){ main.innerHTML = emptyState('No activity recorded yet.'); return; }
+  main.innerHTML = `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
+    ${log.map(l => `<tr>
+      <td class="mono">${formatDateTime(l.created_at)}</td>
+      <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
+      <td>${escapeHtml(l.action)}</td>
+      <td>${escapeHtml(l.entity_type)}</td>
+      <td>${escapeHtml(l.entity_label||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
 
 async function renderMyProfile(){
   const main = document.getElementById('main-content');
@@ -1927,9 +2196,11 @@ function closeModal(){
 }
 function toast(msg){
   const t = document.createElement('div');
-  t.className = 'toast'; t.textContent = msg;
+  t.className = 'toast';
+  t.innerHTML = `<span>${escapeHtml(msg)}</span><button class="toast-close" aria-label="Dismiss">✕</button>`;
   document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 3000);
+  const timer = setTimeout(()=>t.remove(), 12000);
+  t.querySelector('.toast-close').onclick = () => { clearTimeout(timer); t.remove(); };
 }
 function emptyState(msg){
   return `<div class="empty-state">
