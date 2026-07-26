@@ -160,8 +160,10 @@ a{ color: var(--sky); }
 }
 .nav-group-arrow{ transition:transform 0.15s; display:inline-block; }
 .nav-group-header.collapsed .nav-group-arrow{ transform:rotate(-90deg); }
-.nav-group-items{ display:flex; flex-direction:column; gap:2px; overflow:hidden; max-height:600px; transition:max-height 0.2s ease; }
+.nav-group-items{ display:flex; flex-direction:column; gap:2px; overflow:hidden; max-height:4000px; transition:max-height 0.2s ease; }
 .nav-group-items.collapsed{ max-height:0; }
+.team-group-header{ width:100%; text-align:left; font-size:14px !important; font-weight:700 !important; text-transform:none !important; letter-spacing:0 !important; border-radius:8px; cursor:pointer; }
+.team-group-header:hover{ background:var(--paper); }
 .nav-link{
   display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px;
   color:#CFE0DB; text-decoration:none; font-size:14px; font-weight:500; cursor:pointer; border:none; background:none; text-align:left; width:100%;
@@ -246,6 +248,14 @@ tr:last-child td{ border-bottom:none; }
 .tabs{ display:flex; gap:4px; margin-bottom:18px; border-bottom:1px solid var(--line); }
 .tab{ padding:9px 14px; font-size:13.5px; font-weight:600; color:var(--muted); background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; }
 .tab.active{ color:var(--ink); border-bottom-color: var(--amber); }
+
+.spinner{
+  width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--teal);
+  border-radius:50%; margin:0 auto 12px auto; animation:spin 0.7s linear infinite;
+}
+@keyframes spin{ to{ transform:rotate(360deg); } }
+.main-content{ animation:fadeIn 0.2s ease; }
+@keyframes fadeIn{ from{ opacity:0; transform:translateY(4px); } to{ opacity:1; transform:translateY(0); } }
 
 .toast{ position:fixed; bottom:24px; right:24px; background:var(--ink); color:#fff; padding:12px 16px; border-radius:8px; font-size:13.5px; box-shadow:var(--shadow); z-index:100; display:flex; align-items:center; gap:14px; max-width:360px; }
 .toast-close{ background:none; border:none; color:#B9C2E8; cursor:pointer; font-size:13px; flex-shrink:0; }
