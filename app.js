@@ -106,6 +106,7 @@ function showAuthScreen(){
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('pending-screen').style.display = 'none';
   document.getElementById('force-password-screen').style.display = 'none';
+  document.getElementById('maintenance-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'none';
 }
 
@@ -127,9 +128,22 @@ async function afterLogin(user){
     return;
   }
 
+  // Maintenance mode: only Super Admin can get past this
+  const { data: sysSettings } = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle();
+  if (sysSettings && !sysSettings.portal_active && profile.role !== 'super_admin'){
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('pending-screen').style.display = 'none';
+    document.getElementById('force-password-screen').style.display = 'none';
+    document.getElementById('app-shell').style.display = 'none';
+    document.getElementById('maintenance-message').textContent = sysSettings.maintenance_message || 'FieldHub is temporarily unavailable for maintenance. Please check back shortly.';
+    document.getElementById('maintenance-screen').style.display = 'flex';
+    return;
+  }
+
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('pending-screen').style.display = 'none';
   document.getElementById('force-password-screen').style.display = 'none';
+  document.getElementById('maintenance-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'flex';
 
   await loadRegions();
@@ -140,6 +154,29 @@ async function afterLogin(user){
   navigateTo('dashboard');
   showLatestUnackedCircularPopup();
   showPendingRemindersBanner();
+  showPendingPopupAnnouncement();
+  setupDesktopNotifications();
+}
+
+function setupDesktopNotifications(){
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') Notification.requestPermission();
+  if (Notification.permission !== 'granted') return;
+
+  // New circulars — notify everyone
+  sb.channel('circulars-notify')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'circulars' }, (payload) => {
+      if (payload.new.created_by === state.user.id) return;
+      new Notification('FieldHub: New Circular', { body: payload.new.title });
+    })
+    .subscribe();
+
+  // New requests assigned directly to me — notify the handler
+  sb.channel('requests-notify-' + state.user.id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'requests', filter: `assigned_poc_id=eq.${state.user.id}` }, (payload) => {
+      new Notification('FieldHub: New Request', { body: `New "${payload.new.category}" request needs your attention.` });
+    })
+    .subscribe();
 }
 
 async function showLatestUnackedCircularPopup(){
@@ -170,6 +207,25 @@ async function showPendingRemindersBanner(){
   const [{count: expCount}, {count: toolCount}] = await Promise.all([expiryQ, toolQ]);
   const total = (expCount||0) + (toolCount||0);
   if (total > 0) toast(`⚠️ ${total} item(s) due/overdue for renewal — check Expiry Tracker / Tool Issuance`);
+}
+
+async function showPendingPopupAnnouncement(){
+  const { data: popups } = await sb.from('popup_announcements').select('*').eq('active', true).order('created_at', {ascending:false});
+  if (!popups || !popups.length) return;
+  const { data: dismissed } = await sb.from('popup_dismissals').select('popup_id').eq('user_id', state.user.id);
+  const dismissedSet = new Set((dismissed||[]).map(d=>d.popup_id));
+  const next = popups.find(p => !dismissedSet.has(p.id));
+  if (!next) return;
+  openModal(`
+    <h2>${escapeHtml(next.title)}</h2>
+    <p style="font-size:14px; white-space:pre-wrap;">${escapeHtml(next.body)}</p>
+    <button class="btn-primary" id="popup-announcement-dismiss">Got it</button>
+  `);
+  const dismiss = async () => { await sb.from('popup_dismissals').insert({ popup_id: next.id, user_id: state.user.id }); };
+  document.getElementById('popup-announcement-dismiss').onclick = async () => { await dismiss(); closeModal(); };
+  // Also record dismissal if they close via the modal's own ✕ button
+  const modalCloseBtn = document.querySelector('#active-modal .modal-close');
+  if (modalCloseBtn) modalCloseBtn.addEventListener('click', dismiss, { once: true });
 }
 
 async function loadRegions(){
@@ -261,6 +317,7 @@ function bindAuthForms(){
     if (session) await afterLogin(session.user);
   };
   document.getElementById('pending-logout').onclick = doLogout;
+  document.getElementById('maintenance-logout').onclick = doLogout;
   document.getElementById('logout-btn').onclick = doLogout;
 }
 
@@ -342,27 +399,27 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog'],
-  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','regions','settings','knowledgebase','resources','reports','compliance'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','team','knowledgebase','resources','compliance'],
-  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','knowledgebase','resources'],
-  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','knowledgebase','resources']
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
+  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes'],
+  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes']
 };
 const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
-  expiries:'Expiry Tracker', tools:'Tool Issuance', team:'Team', regions:'Regions', settings:'Settings',
+  expiries:'Expiry Tracker', tools:'Tool Issuance', roster:'Roster', team:'Team', regions:'Regions', settings:'Settings',
   warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
-  compliance:'Compliance Tracker', activitylog:'Activity Log'
+  compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New"
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
   { label: null, items: ['dashboard'] },
   { label: 'Operations', items: ['circulars','tasks','requests'] },
   { label: 'Inventory', items: ['expiries','tools'] },
-  { label: 'People', items: ['team','warnings','compliance'] },
-  { label: 'Knowledge', items: ['knowledgebase','resources'] },
+  { label: 'People', items: ['team','warnings','compliance','roster'] },
+  { label: 'Knowledge', items: ['knowledgebase','resources','releasenotes'] },
   { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
 ];
 
@@ -438,6 +495,8 @@ async function navigateTo(view){
     else if (view==='compliance') await renderCompliance();
     else if (view==='resources') await renderResources();
     else if (view==='activitylog') await renderActivityLog();
+    else if (view==='roster') await renderRoster();
+    else if (view==='releasenotes') await renderReleaseNotes();
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -1215,26 +1274,28 @@ function openBulkUploadModal(){
   const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   openModal(`
     <h2>Bulk add riders</h2>
-    <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Password (optional), Full Name (optional), Bike Number (optional)</strong> — one rider per line, comma-separated. Leave password blank to default everyone to <strong>Test@123</strong> (they'll be required to change it on first login).</p>
+    <p class="hint">Paste rows as: <strong>Mobile Number, Employee ID, Full Name, Region</strong> — one rider per line, comma-separated. Region is optional per row (falls back to the default below). Everyone gets password <strong>Test@123</strong> (forced to change it on first login), and lands as <strong>pending</strong> — just review and Approve them on this page afterward.</p>
     <form id="bulk-form">
-      <div class="form-row"><label>Region for this batch</label><select id="bulk-region" required>${regionOptions}</select></div>
-      <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001
-03007654321, EMP1002, , Ali Khan, LEA-1234"></textarea></div>
+      <div class="form-row"><label>Default region (used if a row doesn't specify one)</label><select id="bulk-region">${regionOptions}</select></div>
+      <div class="form-row"><label>Rider list</label><textarea id="bulk-rows" rows="8" placeholder="03001234567, EMP1001, Ali Khan, Lahore
+03007654321, EMP1002, Bilal Ahmed, Multan"></textarea></div>
       <button class="btn-primary" type="submit">Create logins</button>
     </form>
     <div id="bulk-results" style="margin-top:14px;"></div>
   `);
   document.getElementById('bulk-form').onsubmit = async (e) => {
     e.preventDefault();
-    const regionId = document.getElementById('bulk-region').value;
+    const defaultRegionId = document.getElementById('bulk-region').value;
     const lines = document.getElementById('bulk-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
     const rows = lines.map(line => {
       const parts = line.split(',').map(p=>p.trim());
-      return { phone: parts[0], employee_id: parts[1], password: parts[2]||'', full_name: parts[3]||'', bike_number: parts[4]||'' };
+      const regionName = parts[3] || '';
+      const matchedRegion = regionName ? state.regions.find(r => r.name.toLowerCase() === regionName.toLowerCase()) : null;
+      return { phone: parts[0], employee_id: parts[1], full_name: parts[2]||'', region_id: matchedRegion?.id || null };
     });
     if (!rows.length){ toast('Paste at least one rider row'); return; }
     document.getElementById('bulk-results').innerHTML = '<div class="mono">Creating logins…</div>';
-    const resp = await callEdgeFunction('bulk_create_riders', { rows, region_id: regionId });
+    const resp = await callEdgeFunction('bulk_create_riders', { rows, region_id: defaultRegionId });
     if (resp.skipped){
       document.getElementById('bulk-results').innerHTML = `<div class="auth-message" style="display:block;">The Edge Function isn't deployed/configured yet — see SETUP_GUIDE_PART2.md for the one-time setup, then bulk upload will work.</div>`;
       return;
@@ -1245,9 +1306,9 @@ function openBulkUploadModal(){
     }
     const results = resp.results || [];
     document.getElementById('bulk-results').innerHTML = `<table><thead><tr><th>Mobile</th><th>Result</th></tr></thead><tbody>
-      ${results.map(r=>`<tr><td class="mono">${escapeHtml(r.phone)}</td><td>${r.ok ? '<span class="badge active">Created</span>' : `<span class="badge open">Failed: ${escapeHtml(r.error||'')}</span>`}</td></tr>`).join('')}
+      ${results.map(r=>`<tr><td class="mono">${escapeHtml(r.phone)}</td><td>${r.ok ? '<span class="badge pending">Created — pending approval</span>' : `<span class="badge open">Failed: ${escapeHtml(r.error||'')}</span>`}</td></tr>`).join('')}
     </tbody></table>`;
-    toast(`${results.filter(r=>r.ok).length} of ${results.length} logins created`);
+    toast(`${results.filter(r=>r.ok).length} of ${results.length} logins created — approve them below`);
     renderTeam();
   };
 }
@@ -1293,8 +1354,15 @@ async function renderSettings(){
     ['expirytypes','Expiry Item Types'],
     ['tooltypes','Tool Types'],
     ['compliancetypes','Compliance Items'],
+    ['subregions','Sub-Regions / Cities'],
+    ['shifttypes','Shift Types'],
     ['notice','Home Notice'],
-    ...(isSuperAdmin() ? [['branding','Login Page Branding']] : [])
+    ...(isSuperAdmin() ? [
+      ['branding','Login Page Branding'],
+      ['popups','Popup Announcements'],
+      ['permissions','Permissions'],
+      ['maintenance','Maintenance Mode']
+    ] : [])
   ];
   main.innerHTML = `<div class="tabs">
     ${tabs.map(([k,label]) => `<button class="tab ${settingsTab===k?'active':''}" data-settings-tab="${k}">${label}</button>`).join('')}
@@ -1308,8 +1376,13 @@ async function renderSettings(){
   else if (settingsTab === 'expirytypes') await renderSimpleTypeList(body, 'expiry_item_types', 'Expiry Item Type');
   else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
+  else if (settingsTab === 'subregions') await renderSubRegionsSettings(body);
+  else if (settingsTab === 'shifttypes') await renderSimpleTypeList(body, 'shift_types', 'Shift');
   else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
   else if (settingsTab === 'branding') await renderBrandingSettings(body);
+  else if (settingsTab === 'popups') await renderPopupsSettings(body);
+  else if (settingsTab === 'permissions') await renderPermissionsSettings(body);
+  else if (settingsTab === 'maintenance') await renderMaintenanceSettings(body);
 }
 
 async function renderCategoriesInto(body){
@@ -1900,6 +1973,147 @@ async function generateReport(){
   statusEl.textContent = `Downloaded ${rows.length} rows.`;
 }
 
+async function renderSubRegionsSettings(body){
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const { data: subs } = await sb.from('sub_regions').select('*, regions(name)').order('name');
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">For Lahore these are sub-regions (e.g. "1", "2"). For out-of-station regions like Multan/Faisalabad, use this for cities instead.</p>
+    <form id="new-subregion-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <select id="sr-region" required>${regionOptions}</select>
+      <input type="text" id="sr-name" placeholder="e.g. 1, 2, or city name" required style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <button class="btn small" type="submit">Add</button>
+    </form>
+    <table><thead><tr><th>Region</th><th>Sub-Region / City</th><th>Status</th><th></th></tr></thead><tbody>
+      ${(subs||[]).map(s=>`<tr>
+        <td>${escapeHtml(s.regions?.name||'—')}</td>
+        <td>${escapeHtml(s.name)}</td>
+        <td><span class="badge ${s.active?'active':'closed'}">${s.active?'Active':'Inactive'}</span></td>
+        <td><button class="btn small outline" data-toggle-subregion="${s.id}" data-active="${s.active}">${s.active?'Disable':'Enable'}</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+  document.getElementById('new-subregion-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('sub_regions').insert({
+      region_id: document.getElementById('sr-region').value,
+      name: document.getElementById('sr-name').value.trim()
+    });
+    if (error){ toast('Could not add: ' + error.message); return; }
+    toast('Added'); renderSettings();
+  };
+  body.querySelectorAll('[data-toggle-subregion]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('sub_regions').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleSubregion);
+      renderSettings();
+    };
+  });
+}
+
+async function renderPopupsSettings(body){
+  const { data: popups } = await sb.from('popup_announcements').select('*').order('created_at', {ascending:false});
+  body.innerHTML = `<button class="btn small" id="new-popup-btn" style="margin-bottom:14px;">+ New Popup</button>
+  <table><thead><tr><th>Title</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(popups||[]).map(p=>`<tr>
+      <td>${escapeHtml(p.title)}</td>
+      <td><span class="badge ${p.active?'active':'closed'}">${p.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn small outline" data-toggle-popup="${p.id}" data-active="${p.active}">${p.active?'Disable':'Enable'}</button>
+        <button class="btn small outline" data-delete-popup="${p.id}">Remove</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  document.getElementById('new-popup-btn').onclick = () => {
+    openModal(`
+      <h2>New popup announcement</h2>
+      <p class="hint">Shows once to every logged-in person on their next login/reload. Once someone dismisses it, it never shows to them again.</p>
+      <form id="popup-form">
+        <div class="form-row"><label>Title</label><input type="text" id="pu-title" required></div>
+        <div class="form-row"><label>Message</label><textarea id="pu-body" required></textarea></div>
+        <button class="btn-primary" type="submit">Publish</button>
+      </form>
+    `);
+    document.getElementById('popup-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const { error } = await sb.from('popup_announcements').insert({
+        title: document.getElementById('pu-title').value.trim(),
+        body: document.getElementById('pu-body').value.trim(),
+        created_by: state.user.id
+      });
+      if (error){ toast('Could not publish: ' + error.message); return; }
+      closeModal(); toast('Published'); renderSettings();
+    };
+  };
+  body.querySelectorAll('[data-toggle-popup]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('popup_announcements').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.togglePopup);
+      renderSettings();
+    };
+  });
+  body.querySelectorAll('[data-delete-popup]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this popup permanently?')) return;
+      await sb.from('popup_announcements').delete().eq('id', btn.dataset.deletePopup);
+      renderSettings();
+    };
+  });
+}
+
+const GRANTABLE_PERMISSIONS = [
+  ['manage_categories', 'Add/edit/remove Request Categories'],
+  ['manage_regions', 'Add/edit/remove Regions & Sub-Regions'],
+  ['manage_types', 'Manage Warning/Expiry/Compliance/Tool Types']
+];
+async function renderPermissionsSettings(body){
+  await loadScopedProfiles();
+  const staff = state.profilesInScope.filter(p => !['rider','super_admin'].includes(p.role) && p.status==='active');
+  const { data: grants } = await sb.from('custom_permissions').select('*');
+  const grantMap = new Set((grants||[]).map(g => g.profile_id+'|'+g.permission_key));
+
+  body.innerHTML = `<p class="hint" style="margin-bottom:14px;">Grant a specific person extra access beyond their normal role — e.g. let one Coordinator manage categories.</p>
+  <table><thead><tr><th>Person</th><th>Role</th>${GRANTABLE_PERMISSIONS.map(([,label])=>`<th>${label}</th>`).join('')}</tr></thead><tbody>
+    ${staff.map(p => `<tr>
+      <td>${escapeHtml(p.full_name)}</td>
+      <td>${ROLE_LABEL[p.role]}</td>
+      ${GRANTABLE_PERMISSIONS.map(([key]) => `<td style="text-align:center;">
+        <input type="checkbox" data-perm-toggle="${p.id}|${key}" ${grantMap.has(p.id+'|'+key)?'checked':''}>
+      </td>`).join('')}
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  body.querySelectorAll('[data-perm-toggle]').forEach(cb => {
+    cb.onchange = async () => {
+      const [profileId, key] = cb.dataset.permToggle.split('|');
+      if (cb.checked){
+        await sb.from('custom_permissions').insert({ profile_id: profileId, permission_key: key, granted_by: state.user.id });
+      } else {
+        await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
+      }
+      toast('Updated');
+    };
+  });
+}
+
+async function renderMaintenanceSettings(body){
+  const { data: sys } = await sb.from('system_settings').select('*').eq('id', 1).single();
+  body.innerHTML = `
+    <div class="card" style="border-left:4px solid ${sys?.portal_active?'var(--moss)':'var(--clay)'};">
+      <h3>Portal status: ${sys?.portal_active ? 'Live' : 'Under maintenance'}</h3>
+      <p class="hint">Turning this off immediately blocks everyone except Super Admin from using the portal.</p>
+      <div class="form-row"><label>Message shown to everyone while offline</label><textarea id="maint-message">${escapeHtml(sys?.maintenance_message||'')}</textarea></div>
+      <button class="btn ${sys?.portal_active?'danger':'success'}" id="maint-toggle-btn">${sys?.portal_active ? 'Take Portal Offline' : 'Bring Portal Back Online'}</button>
+    </div>`;
+  document.getElementById('maint-toggle-btn').onclick = async () => {
+    const newState = !sys?.portal_active;
+    if (newState === false && !confirm('This will block everyone except Super Admin from using FieldHub right now. Continue?')) return;
+    const { error } = await sb.from('system_settings').update({
+      portal_active: newState,
+      maintenance_message: document.getElementById('maint-message').value.trim(),
+      updated_by: state.user.id
+    }).eq('id', 1);
+    if (error){ toast('Could not update: ' + error.message); return; }
+    toast(newState ? 'Portal is back online' : 'Portal is now offline for everyone else'); renderSettings();
+  };
+}
+
 async function renderToolTypesSettings(body){
   const { data: rows } = await sb.from('tool_types').select('*').order('name');
   body.innerHTML = `<button class="btn small" id="new-tool-type-btn" style="margin-bottom:14px;">+ Add Tool Type</button>
@@ -1956,23 +2170,45 @@ async function renderTools(){
   const { data: issuances } = await sb.from('tool_issuances').select('*, profiles(full_name), tool_types(name)').order('next_due_date');
   if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
 
+  const { data: acks } = await sb.from('tool_issuance_acks').select('*');
+  const ackMap = new Map((acks||[]).map(a => [a.tool_issuance_id, a]));
+
   const today = new Date();
-  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th></tr></thead><tbody>
+  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th></tr></thead><tbody>
     ${issuances.map(i => {
       const due = new Date(i.next_due_date);
       const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
       let badge='badge active', label='OK';
       if (daysLeft<0){ badge='badge open'; label='Overdue for reissue'; }
       else if (daysLeft<=30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
+      const ack = ackMap.get(i.id);
+      const isMine = i.rider_id === state.user.id;
+      let ackCell;
+      if (ack){
+        ackCell = `<span class="badge active">✓ Acknowledged ${formatDate(ack.seen_at)}</span>`;
+      } else if (isMine){
+        ackCell = `<button class="btn small" data-ack-tool="${i.id}">Acknowledge Receipt</button>`;
+      } else {
+        ackCell = `<span class="badge pending">Awaiting rider</span>`;
+      }
       return `<tr>
         <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
         <td>${escapeHtml(i.tool_types?.name||'—')}</td>
         <td class="mono">${i.issued_date}</td>
         <td class="mono">${i.next_due_date}</td>
         <td><span class="${badge}">${label}</span></td>
+        <td>${ackCell}</td>
       </tr>`;
     }).join('')}
   </tbody></table>`;
+
+  main.querySelectorAll('[data-ack-tool]').forEach(btn => {
+    btn.onclick = async () => {
+      const { error } = await sb.from('tool_issuance_acks').insert({ tool_issuance_id: btn.dataset.ackTool, user_id: state.user.id });
+      if (error){ toast('Could not acknowledge: ' + error.message); return; }
+      toast('Acknowledged — thank you'); renderTools();
+    };
+  });
 }
 
 function openBulkToolIssuanceModal(){
@@ -2153,6 +2389,168 @@ async function renderActivityLog(){
       <td>${escapeHtml(l.entity_label||'—')}</td>
     </tr>`).join('')}
   </tbody></table>`;
+}
+
+// ---------------------------------------------------------
+// RELEASE NOTES — "What's New", Super Admin posts updates
+// ---------------------------------------------------------
+async function renderReleaseNotes(){
+  const main = document.getElementById('main-content');
+  if (isSuperAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-release-btn">+ Add Update</button>`;
+    document.getElementById('new-release-btn').onclick = () => {
+      openModal(`
+        <h2>Post an update</h2>
+        <form id="release-form">
+          <div class="form-row"><label>Title</label><input type="text" id="rel-title" required placeholder="e.g. New: Tool Issuance module"></div>
+          <div class="form-row"><label>Details</label><textarea id="rel-body" rows="5" required></textarea></div>
+          <button class="btn-primary" type="submit">Post</button>
+        </form>
+      `);
+      document.getElementById('release-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const { error } = await sb.from('release_notes').insert({
+          title: document.getElementById('rel-title').value.trim(),
+          body: document.getElementById('rel-body').value.trim(),
+          created_by: state.user.id
+        });
+        if (error){ toast('Could not post: ' + error.message); return; }
+        closeModal(); toast('Posted'); renderReleaseNotes();
+      };
+    };
+  }
+  const { data: notes } = await sb.from('release_notes').select('*, profiles(full_name)').order('created_at', {ascending:false});
+  if (!notes || !notes.length){ main.innerHTML = emptyState("No updates posted yet."); return; }
+  main.innerHTML = notes.map(n => `
+    <div class="card">
+      <h3>${escapeHtml(n.title)}</h3>
+      <p style="font-size:13.5px; white-space:pre-wrap;">${escapeHtml(n.body)}</p>
+      <div class="mono">${formatDateTime(n.created_at)}</div>
+    </div>`).join('');
+}
+
+// ---------------------------------------------------------
+// ROSTER — region/sub-region weekly roster (not date-based)
+// ---------------------------------------------------------
+async function renderRoster(){
+  const main = document.getElementById('main-content');
+  if (isAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-roster-btn">+ Add to Roster</button>`;
+    document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
+  }
+  let query = sb.from('roster_entries').select('*, profiles!roster_entries_rider_id_fkey(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
+  if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
+  const { data: entries } = await query.order('created_at', {ascending:false});
+
+  if (!entries || !entries.length){ main.innerHTML = emptyState('No roster entries yet.'); return; }
+
+  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Region</th><th>Sub-Region/City</th><th>Shift</th><th>Day Off</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+    ${entries.map(e => `<tr>
+      <td>${escapeHtml(e.profiles?.full_name||'—')}<div class="mono">${escapeHtml(e.profiles?.employee_id||'')}</div></td>
+      <td>${escapeHtml(e.regions?.name||'—')}</td>
+      <td>${escapeHtml(e.sub_regions?.name||'—')}</td>
+      <td>${escapeHtml(e.shift_types?.name||'—')}</td>
+      <td>${escapeHtml(e.day_off||'—')}</td>
+      <td>${e.status==='removed'
+        ? `<span class="badge open">Removed — ${escapeHtml(e.removal_reason||'')}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
+        : '<span class="badge active">Active</span>'}</td>
+      ${isAdmin() ? `<td style="white-space:nowrap;">
+        <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
+        ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Remove</button>` : ''}
+      </td>` : ''}
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  main.querySelectorAll('[data-edit-roster]').forEach(btn => {
+    btn.onclick = () => openRosterModal(entries.find(e=>e.id===btn.dataset.editRoster));
+  });
+  main.querySelectorAll('[data-remove-roster]').forEach(btn => {
+    btn.onclick = () => openRosterRemovalModal(btn.dataset.removeRoster);
+  });
+}
+
+async function openRosterModal(entry){
+  await loadScopedProfiles();
+  const riders = state.profilesInScope.filter(p=>p.role==='rider');
+  const riderOptions = riders.map(p=>`<option value="${p.id}" ${entry?.rider_id===p.id?'selected':''}>${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id||'—')})</option>`).join('');
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}" ${entry?.region_id===r.id?'selected':''}>${escapeHtml(r.name)}</option>`).join('');
+  const { data: shifts } = await sb.from('shift_types').select('*').eq('active', true).order('name');
+  const shiftOptions = (shifts||[]).map(s=>`<option value="${s.id}" ${entry?.shift_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+  const days = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const dayOptions = days.map(d=>`<option value="${d}" ${entry?.day_off===d?'selected':''}>${d}</option>`).join('');
+
+  openModal(`
+    <h2>${entry?'Edit':'Add'} roster entry</h2>
+    <form id="roster-form">
+      <div class="form-row"><label>Rider</label><select id="ro-rider" required>${riderOptions}</select></div>
+      <div class="two-col">
+        <div class="form-row"><label>Region</label><select id="ro-region" required>${regionOptions}</select></div>
+        <div class="form-row"><label>Sub-Region / City</label><select id="ro-subregion"><option value="">—</option></select></div>
+      </div>
+      <div class="two-col">
+        <div class="form-row"><label>Shift</label><select id="ro-shift">${shiftOptions}</select></div>
+        <div class="form-row"><label>Day Off</label><select id="ro-dayoff">${dayOptions}</select></div>
+      </div>
+      <div class="two-col">
+        <div class="form-row"><label>Personal Mobile</label><input type="text" id="ro-personal" value="${entry?escapeHtml(entry.personal_mobile||''):''}"></div>
+        <div class="form-row"><label>Official Mobile (optional)</label><input type="text" id="ro-official" value="${entry?escapeHtml(entry.official_mobile||''):''}"></div>
+      </div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+
+  const loadSubRegions = async (regionId, selectedId) => {
+    const { data: subs } = await sb.from('sub_regions').select('*').eq('region_id', regionId).eq('active', true).order('name');
+    document.getElementById('ro-subregion').innerHTML = '<option value="">—</option>' + (subs||[]).map(s=>`<option value="${s.id}" ${selectedId===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+  };
+  document.getElementById('ro-region').onchange = (e) => loadSubRegions(e.target.value, null);
+  if (entry?.region_id) await loadSubRegions(entry.region_id, entry.sub_region_id);
+
+  document.getElementById('roster-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      rider_id: document.getElementById('ro-rider').value,
+      region_id: document.getElementById('ro-region').value,
+      sub_region_id: document.getElementById('ro-subregion').value || null,
+      shift_id: document.getElementById('ro-shift').value || null,
+      day_off: document.getElementById('ro-dayoff').value || null,
+      personal_mobile: document.getElementById('ro-personal').value.trim(),
+      official_mobile: document.getElementById('ro-official').value.trim()
+    };
+    const { error } = entry
+      ? await sb.from('roster_entries').update(payload).eq('id', entry.id)
+      : await sb.from('roster_entries').insert({ ...payload, created_by: state.user.id });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); renderRoster();
+  };
+}
+
+function openRosterRemovalModal(entryId){
+  openModal(`
+    <h2>Remove from roster</h2>
+    <p class="hint">This will also disable this rider's portal login.</p>
+    <form id="roster-removal-form">
+      <div class="form-row"><label>Reason</label><select id="rr-reason" required>
+        <option>Transfer</option><option>Termination</option><option>Resignation</option><option>Other</option>
+      </select></div>
+      <div class="form-row"><label>Explanation</label><textarea id="rr-note" required placeholder="Short note for the record"></textarea></div>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:14px;">
+        <input type="checkbox" id="rr-replacement"> Replacement for this position is pending
+      </label>
+      <button class="btn-primary" type="submit">Confirm removal</button>
+    </form>
+  `);
+  document.getElementById('roster-removal-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('roster_entries').update({
+      status: 'removed',
+      removal_reason: document.getElementById('rr-reason').value,
+      removal_note: document.getElementById('rr-note').value.trim(),
+      replacement_pending: document.getElementById('rr-replacement').checked
+    }).eq('id', entryId);
+    if (error){ toast('Could not remove: ' + error.message); return; }
+    closeModal(); toast('Removed from roster — login disabled'); renderRoster();
+  };
 }
 
 async function renderMyProfile(){
