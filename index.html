@@ -10,6 +10,10 @@
 </head>
 <body>
 
+<div id="boot-loading" style="position:fixed; inset:0; background:var(--ink,#1E2A6E); display:flex; align-items:center; justify-content:center; z-index:9999;">
+  <div class="spinner" style="border-color:rgba(255,255,255,0.25); border-top-color:#fff;"></div>
+</div>
+
 <!-- ============ AUTH SCREEN (split layout) ============ -->
 <div id="auth-screen" class="auth-split">
   <div class="auth-left">
@@ -47,13 +51,22 @@
         <h2>Create account</h2>
         <p class="hint">Your account will be <strong>pending</strong> until your Area Lead approves it and assigns your role and region.</p>
         <label>Full name<input type="text" id="signup-name" required></label>
+        <label>Designation
+          <select id="signup-designation">
+            <option value="rider">Rider</option>
+            <option value="coordinator">Coordinator</option>
+            <option value="regional_poc">Regional POC</option>
+            <option value="team_lead">Area Incharge</option>
+            <option value="inventory_coordinator">Inventory Coordinator</option>
+          </select>
+        </label>
         <label>Employee ID<input type="text" id="signup-empid" required></label>
         <label>Mobile Number
           <input type="tel" id="signup-phone" required placeholder="e.g. 03*********" inputmode="numeric" maxlength="11" autocomplete="username">
           <span class="field-hint">Enter without dashes or spaces</span>
         </label>
         <label>Email (optional)<input type="email" id="signup-email"></label>
-        <label>Bike Number<input type="text" id="signup-bike" placeholder="e.g. LEA-1234"></label>
+        <label id="signup-bike-wrap">Bike Number<input type="text" id="signup-bike" placeholder="e.g. LEA-1234"></label>
         <label>Password
           <div class="password-field">
             <input type="password" id="signup-password" required autocomplete="new-password" minlength="6">
@@ -153,6 +166,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>
