@@ -993,7 +993,10 @@ async function renderRequests(){
         <span class="badge ${r.status}">${r.status.replace('_',' ')}</span>
       </div>
       <p style="font-size:13.5px;">${escapeHtml(r.description)}</p>
-      <div id="thread-${r.id}" class="thread">Loading thread…</div>
+      <details class="thread-details">
+        <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Status history &amp; remarks ▾</summary>
+        <div id="thread-${r.id}" class="thread">Loading thread…</div>
+      </details>
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
         ${requestActionControls(r)}
         ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
@@ -1302,7 +1305,9 @@ async function renderTeam(){
   const activeCount = nonPending.filter(p=>p.status==='active').length;
   const disabledCount = nonPending.filter(p=>p.status==='disabled').length;
   html += `<div class="card"><h3>Team directory (${nonPending.length} total — ${activeCount} active, ${disabledCount} disabled)</h3>`;
-  const roleGroupOrder = ['rider','regional_poc','team_lead','coordinator','inventory_coordinator','admin','super_admin'];
+  const roleGroupOrder = isAdmin()
+    ? ['rider','regional_poc','team_lead','coordinator','inventory_coordinator','admin','super_admin']
+    : ['team_lead','coordinator','regional_poc','inventory_coordinator','rider','admin','super_admin'];
   roleGroupOrder.forEach(role => {
     const members = nonPending.filter(p => p.role === role);
     if (!members.length) return;
@@ -1699,10 +1704,9 @@ async function renderSettings(){
 async function renderCategoriesInto(body){
   const canAdd = isAdmin() || hasPermission('categories_add');
   const canEdit = isAdmin() || hasPermission('categories_edit') || hasPermission('categories_remove');
-  const addBtnHtml = canAdd ? `<button class="btn small" id="new-category-btn" style="margin-bottom:14px;">+ Add Category</button>` : '';
   const { data: cats } = await sb.from('categories').select('*').order('name');
-  body.innerHTML = addBtnHtml + `<table><thead><tr><th>Category</th><th>Routes to</th><th>TAT (hrs)</th><th>Status</th>${canEdit?'<th></th>':''}</tr></thead><tbody>
-    ${(cats||[]).map(c=>`<tr>
+  const renderRows = (list) => `<table><thead><tr><th>Category</th><th>Routes to</th><th>TAT (hrs)</th><th>Status</th>${canEdit?'<th></th>':''}</tr></thead><tbody>
+    ${list.map(c=>`<tr>
       <td>${escapeHtml(c.name)}</td>
       <td>${ROLE_LABEL[c.primary_role]||c.primary_role}</td>
       <td class="mono">${c.tat_hours ?? '—'}</td>
@@ -1710,10 +1714,36 @@ async function renderCategoriesInto(body){
       ${canEdit ? `<td><button class="btn small outline" data-edit-cat="${c.id}">Edit</button></td>` : ''}
     </tr>`).join('')}
   </tbody></table>`;
+  body.innerHTML = `
+    <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+      ${canAdd ? `<button class="btn small" id="new-category-btn">+ Add Category</button>` : ''}
+      <input type="text" id="cat-search" placeholder="Search categories…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <select id="cat-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+        <option value="az">A → Z</option><option value="za">Z → A</option><option value="newest">Newest first</option>
+      </select>
+    </div>
+    <div id="cat-list">${renderRows(cats||[])}</div>`;
   if (canAdd) document.getElementById('new-category-btn').onclick = () => openCategoryModal(null);
-  body.querySelectorAll('[data-edit-cat]').forEach(btn => {
-    btn.onclick = () => openCategoryModal(cats.find(c=>c.id===btn.dataset.editCat));
-  });
+
+  const applyFilters = () => {
+    const q = document.getElementById('cat-search').value.toLowerCase();
+    const sortMode = document.getElementById('cat-sort').value;
+    let list = (cats||[]).filter(c => c.name.toLowerCase().includes(q));
+    if (sortMode==='az') list = list.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    else if (sortMode==='za') list = list.slice().sort((a,b)=>b.name.localeCompare(a.name));
+    else if (sortMode==='newest') list = list.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+    document.getElementById('cat-list').innerHTML = renderRows(list);
+    bindActions();
+  };
+  document.getElementById('cat-search').oninput = applyFilters;
+  document.getElementById('cat-sort').onchange = applyFilters;
+
+  function bindActions(){
+    document.querySelectorAll('[data-edit-cat]').forEach(btn => {
+      btn.onclick = () => openCategoryModal((cats||[]).find(c=>c.id===btn.dataset.editCat));
+    });
+  }
+  bindActions();
 }
 
 async function openCategoryModal(cat){
@@ -1784,6 +1814,7 @@ async function renderSimpleTypeList(body, table, label){
       <td>${escapeHtml(r.name)}</td>
       <td><span class="badge ${r.active?'active':'closed'}">${r.active?'Active':'Inactive'}</span></td>
       <td>
+        <button class="btn small outline" data-edit-type="${r.id}">Edit</button>
         <button class="btn small outline" data-toggle-type="${r.id}" data-active="${r.active}">${r.active?'Disable':'Enable'}</button>
         <button class="btn small outline" data-delete-type="${r.id}">Remove</button>
       </td>
@@ -1835,6 +1866,17 @@ async function renderSimpleTypeList(body, table, label){
     toast(`${names.length} added`); refreshReferenceAndRerender(table);
   };
   function bindRowActions(){
+    document.querySelectorAll('[data-edit-type]').forEach(btn => {
+      btn.onclick = async () => {
+        const row = (rows||[]).find(r=>r.id===btn.dataset.editType);
+        const newName = prompt(`Rename "${row.name}" to:`, row.name);
+        if (newName && newName.trim() && newName.trim() !== row.name){
+          const { error } = await sb.from(table).update({ name: newName.trim() }).eq('id', row.id);
+          if (error){ toast('Could not rename: ' + error.message); return; }
+          toast('Renamed'); refreshReferenceAndRerender(table);
+        }
+      };
+    });
     document.querySelectorAll('[data-toggle-type]').forEach(btn => {
       btn.onclick = async () => {
         const newActive = btn.dataset.active !== 'true';
@@ -2404,6 +2446,17 @@ async function generateReport(){
 async function renderSubRegionsSettings(body){
   const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   const { data: subs } = await sb.from('sub_regions').select('*, regions(name)').order('name');
+  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region / City</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(s=>`<tr>
+        <td>${escapeHtml(s.regions?.name||'—')}</td>
+        <td>${escapeHtml(s.name)}</td>
+        <td><span class="badge ${s.active?'active':'closed'}">${s.active?'Active':'Inactive'}</span></td>
+        <td>
+          <button class="btn small outline" data-edit-subregion="${s.id}">Edit</button>
+          <button class="btn small outline" data-toggle-subregion="${s.id}" data-active="${s.active}">${s.active?'Disable':'Enable'}</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
   body.innerHTML = `
     <p class="hint" style="margin-bottom:14px;">For Lahore these are sub-regions (e.g. "1", "2"). For out-of-station regions like Multan/Faisalabad, use this for cities instead.</p>
     <form id="new-subregion-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
@@ -2411,14 +2464,14 @@ async function renderSubRegionsSettings(body){
       <input type="text" id="sr-name" placeholder="e.g. 1, 2, or city name" required style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <button class="btn small" type="submit">Add</button>
     </form>
-    <table><thead><tr><th>Region</th><th>Sub-Region / City</th><th>Status</th><th></th></tr></thead><tbody>
-      ${(subs||[]).map(s=>`<tr>
-        <td>${escapeHtml(s.regions?.name||'—')}</td>
-        <td>${escapeHtml(s.name)}</td>
-        <td><span class="badge ${s.active?'active':'closed'}">${s.active?'Active':'Inactive'}</span></td>
-        <td><button class="btn small outline" data-toggle-subregion="${s.id}" data-active="${s.active}">${s.active?'Disable':'Enable'}</button></td>
-      </tr>`).join('')}
-    </tbody></table>`;
+    <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+      <input type="text" id="subregion-search" placeholder="Search sub-regions/cities…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <select id="subregion-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+        <option value="az">A → Z</option><option value="za">Z → A</option><option value="newest">Newest first</option>
+      </select>
+    </div>
+    <div id="subregion-list">${renderRows(subs||[])}</div>`;
+
   document.getElementById('new-subregion-form').onsubmit = async (e) => {
     e.preventDefault();
     const { error } = await sb.from('sub_regions').insert({
@@ -2428,12 +2481,40 @@ async function renderSubRegionsSettings(body){
     if (error){ toast('Could not add: ' + error.message); return; }
     toast('Added'); renderSettings();
   };
-  body.querySelectorAll('[data-toggle-subregion]').forEach(btn => {
-    btn.onclick = async () => {
-      await sb.from('sub_regions').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleSubregion);
-      renderSettings();
-    };
-  });
+
+  const applyFilters = () => {
+    const q = document.getElementById('subregion-search').value.toLowerCase();
+    const sortMode = document.getElementById('subregion-sort').value;
+    let list = (subs||[]).filter(s => s.name.toLowerCase().includes(q) || (s.regions?.name||'').toLowerCase().includes(q));
+    if (sortMode==='az') list = list.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    else if (sortMode==='za') list = list.slice().sort((a,b)=>b.name.localeCompare(a.name));
+    else if (sortMode==='newest') list = list.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+    document.getElementById('subregion-list').innerHTML = renderRows(list);
+    bindActions();
+  };
+  document.getElementById('subregion-search').oninput = applyFilters;
+  document.getElementById('subregion-sort').onchange = applyFilters;
+
+  function bindActions(){
+    document.querySelectorAll('[data-edit-subregion]').forEach(btn => {
+      btn.onclick = async () => {
+        const row = (subs||[]).find(s=>s.id===btn.dataset.editSubregion);
+        const newName = prompt(`Rename "${row.name}" to:`, row.name);
+        if (newName && newName.trim() && newName.trim() !== row.name){
+          const { error } = await sb.from('sub_regions').update({ name: newName.trim() }).eq('id', row.id);
+          if (error){ toast('Could not rename: ' + error.message); return; }
+          toast('Renamed'); renderSettings();
+        }
+      };
+    });
+    document.querySelectorAll('[data-toggle-subregion]').forEach(btn => {
+      btn.onclick = async () => {
+        await sb.from('sub_regions').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleSubregion);
+        renderSettings();
+      };
+    });
+  }
+  bindActions();
 }
 
 async function renderPopupsSettings(body){
@@ -2695,33 +2776,62 @@ async function renderMaintenanceSettings(body){
 const REISSUE_BASIS_LABEL = { months:'Every N Months', years:'Every N Years', wear_tear:'Wear & Tear (as needed)', after_review:'After Review (as needed)' };
 async function renderToolTypesSettings(body){
   const { data: rows } = await sb.from('tool_types').select('*').order('name');
-  body.innerHTML = `<button class="btn small" id="new-tool-type-btn" style="margin-bottom:14px;">+ Add Tool Type</button>
-  <table><thead><tr><th>Tool</th><th>Reissuance</th><th>Status</th><th></th></tr></thead><tbody>
-    ${(rows||[]).map(r=>`<tr>
+  const renderRows = (list) => `<table><thead><tr><th>Tool</th><th>Reissuance</th><th>Status</th><th></th></tr></thead><tbody>
+    ${list.map(r=>`<tr>
       <td>${escapeHtml(r.name)}</td>
       <td class="mono">${r.reissue_basis==='months' ? `Every ${r.interval_months} months` : r.reissue_basis==='years' ? `Every ${r.interval_months} years` : REISSUE_BASIS_LABEL[r.reissue_basis]||r.reissue_basis}</td>
       <td><span class="badge ${r.active?'active':'closed'}">${r.active?'Active':'Inactive'}</span></td>
-      <td>
+      <td style="white-space:nowrap;">
+        <button class="btn small outline" data-edit-tool="${r.id}">Edit</button>
         <button class="btn small outline" data-toggle-tool="${r.id}" data-active="${r.active}">${r.active?'Disable':'Enable'}</button>
         <button class="btn small outline" data-delete-tool="${r.id}">Remove</button>
       </td>
     </tr>`).join('')}
   </tbody></table>`;
-  document.getElementById('new-tool-type-btn').onclick = () => openToolTypeModal();
-  body.querySelectorAll('[data-toggle-tool]').forEach(btn => {
-    btn.onclick = async () => {
-      await sb.from('tool_types').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleTool);
-      renderSettings();
-    };
-  });
-  body.querySelectorAll('[data-delete-tool]').forEach(btn => {
-    btn.onclick = async () => {
-      if (!confirm('Remove this tool type permanently?')) return;
-      const { error } = await sb.from('tool_types').delete().eq('id', btn.dataset.deleteTool);
-      if (error){ toast('Could not remove (it may be in use): ' + error.message); return; }
-      renderSettings();
-    };
-  });
+  body.innerHTML = `
+  <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+    <button class="btn small" id="new-tool-type-btn">+ Add Tool Type</button>
+    <input type="text" id="tool-search" placeholder="Search tool types…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+    <select id="tool-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <option value="az">A → Z</option><option value="za">Z → A</option><option value="newest">Newest first</option>
+    </select>
+  </div>
+  <div id="tool-type-list">${renderRows(rows||[])}</div>`;
+
+  const applyFilters = () => {
+    const q = document.getElementById('tool-search').value.toLowerCase();
+    const sortMode = document.getElementById('tool-sort').value;
+    let list = (rows||[]).filter(r => r.name.toLowerCase().includes(q));
+    if (sortMode==='az') list = list.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    else if (sortMode==='za') list = list.slice().sort((a,b)=>b.name.localeCompare(a.name));
+    else if (sortMode==='newest') list = list.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+    document.getElementById('tool-type-list').innerHTML = renderRows(list);
+    bindActions();
+  };
+  document.getElementById('tool-search').oninput = applyFilters;
+  document.getElementById('tool-sort').onchange = applyFilters;
+  document.getElementById('new-tool-type-btn').onclick = () => openToolTypeModal(null);
+
+  function bindActions(){
+    document.querySelectorAll('[data-edit-tool]').forEach(btn => {
+      btn.onclick = () => openToolTypeModal((rows||[]).find(r=>r.id===btn.dataset.editTool));
+    });
+    document.querySelectorAll('[data-toggle-tool]').forEach(btn => {
+      btn.onclick = async () => {
+        await sb.from('tool_types').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleTool);
+        renderSettings();
+      };
+    });
+    document.querySelectorAll('[data-delete-tool]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Remove this tool type permanently?')) return;
+        const { error } = await sb.from('tool_types').delete().eq('id', btn.dataset.deleteTool);
+        if (error){ toast('Could not remove (it may be in use): ' + error.message); return; }
+        renderSettings();
+      };
+    });
+  }
+  bindActions();
 }
 
 // ---------------------------------------------------------
@@ -2730,12 +2840,15 @@ async function renderToolTypesSettings(body){
 async function renderTools(){
   const main = document.getElementById('main-content');
   const canIssue = ['inventory_coordinator','regional_poc','team_lead','coordinator'].includes(state.profile.role) || isAdmin();
+  const canBulkUpdate = isAdmin() || hasPermission('tool_bulk_update');
   if (canIssue){
     document.getElementById('topbar-actions').innerHTML = `
       <button class="btn outline" id="bulk-tool-issuance-btn">+ Bulk Issue</button>
+      ${canBulkUpdate ? `<button class="btn outline" id="bulk-tool-update-btn">Bulk Update</button>` : ''}
       <button class="btn" id="new-tool-issuance-btn">+ Issue Tool</button>`;
     document.getElementById('new-tool-issuance-btn').onclick = openNewToolIssuanceModal;
     document.getElementById('bulk-tool-issuance-btn').onclick = openBulkToolIssuanceModal;
+    if (canBulkUpdate) document.getElementById('bulk-tool-update-btn').onclick = openBulkToolUpdateModal;
   }
   const { data: issuances } = await sb.from('tool_issuances').select('*, profiles(full_name), tool_types(name)').order('next_due_date');
   if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
@@ -2781,18 +2894,18 @@ async function renderTools(){
   });
 }
 
-function openToolTypeModal(){
+function openToolTypeModal(row){
   openModal(`
-    <h2>Add tool type</h2>
+    <h2>${row?'Edit':'Add'} tool type</h2>
     <form id="tool-type-form">
-      <div class="form-row"><label>Tool name</label><input type="text" id="tt-name" required placeholder="e.g. Raincoat"></div>
+      <div class="form-row"><label>Tool name</label><input type="text" id="tt-name" required placeholder="e.g. Raincoat" value="${row?escapeHtml(row.name):''}"></div>
       <div class="form-row"><label>Reissuance basis</label><select id="tt-basis">
-        <option value="months">Every N Months</option>
-        <option value="years">Every N Years</option>
-        <option value="wear_tear">Wear & Tear (as needed, no fixed schedule)</option>
-        <option value="after_review">After Review (as needed, no fixed schedule)</option>
+        <option value="months" ${row?.reissue_basis==='months'?'selected':''}>Every N Months</option>
+        <option value="years" ${row?.reissue_basis==='years'?'selected':''}>Every N Years</option>
+        <option value="wear_tear" ${row?.reissue_basis==='wear_tear'?'selected':''}>Wear & Tear (as needed, no fixed schedule)</option>
+        <option value="after_review" ${row?.reissue_basis==='after_review'?'selected':''}>After Review (as needed, no fixed schedule)</option>
       </select></div>
-      <div class="form-row" id="tt-number-row"><label id="tt-number-label">Number of months</label><input type="number" id="tt-number" min="1" placeholder="e.g. 24"></div>
+      <div class="form-row" id="tt-number-row"><label id="tt-number-label">Number of months</label><input type="number" id="tt-number" min="1" placeholder="e.g. 24" value="${row?.interval_months??''}"></div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
@@ -2818,13 +2931,16 @@ function openToolTypeModal(){
     if ((basis === 'months' || basis === 'years') && !numberVal){
       toast('Please enter a number for this reissuance basis'); return;
     }
-    const { error } = await sb.from('tool_types').insert({
+    const payload = {
       name: document.getElementById('tt-name').value.trim(),
       reissue_basis: basis,
       interval_months: numberVal ? parseInt(numberVal, 10) : null
-    });
-    if (error){ toast('Could not add: ' + error.message); return; }
-    closeModal(); toast('Added'); renderSettings();
+    };
+    const { error } = row
+      ? await sb.from('tool_types').update(payload).eq('id', row.id)
+      : await sb.from('tool_types').insert(payload);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); renderSettings();
   };
 }
 
@@ -2843,7 +2959,7 @@ EMP1003"></textarea></div>
     <div id="bulk-tool-results" style="margin-top:14px;"></div>
   `);
   sb.from('tool_types').select('*').eq('active', true).order('name').then(({data}) => {
-    document.getElementById('bti-tool').innerHTML = (data||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)} (every ${t.interval_months}mo)</option>`).join('');
+    document.getElementById('bti-tool').innerHTML = (data||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   });
   document.getElementById('bulk-tool-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -2869,6 +2985,69 @@ EMP1003"></textarea></div>
       ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
     </tbody></table>`;
     toast(`${rows.filter(r=>r.ok).length} of ${rows.length} issued`);
+    renderTools();
+  };
+}
+
+function computeNextDueDate(issuedDateStr, toolType){
+  if (!toolType) return null;
+  const d = new Date(issuedDateStr);
+  if (toolType.reissue_basis === 'months' && toolType.interval_months){
+    d.setMonth(d.getMonth() + toolType.interval_months);
+    return d.toISOString().slice(0,10);
+  }
+  if (toolType.reissue_basis === 'years' && toolType.interval_months){
+    d.setFullYear(d.getFullYear() + toolType.interval_months);
+    return d.toISOString().slice(0,10);
+  }
+  return null; // wear_tear / after_review — no fixed schedule
+}
+
+function openBulkToolUpdateModal(){
+  openModal(`
+    <h2>Bulk update tool records</h2>
+    <p class="hint">Use this to correct issued dates on <strong>existing</strong> tool issuance records for many riders at once (e.g. after a data entry mistake) — this does not create new issuances.</p>
+    <form id="bulk-tool-update-form">
+      <div class="form-row"><label>Tool</label><select id="btu-tool" required></select></div>
+      <div class="form-row"><label>New issued date for all matched records</label><input type="date" id="btu-date" value="${new Date().toISOString().slice(0,10)}" required></div>
+      <div class="form-row"><label>Employee IDs (one per line)</label><textarea id="btu-ids" rows="8" placeholder="EMP1001
+EMP1002
+EMP1003"></textarea></div>
+      <button class="btn-primary" type="submit">Update all</button>
+    </form>
+    <div id="bulk-tool-update-results" style="margin-top:14px;"></div>
+  `);
+  let toolTypes = [];
+  sb.from('tool_types').select('*').order('name').then(({data}) => {
+    toolTypes = data || [];
+    document.getElementById('btu-tool').innerHTML = toolTypes.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+  });
+  document.getElementById('bulk-tool-update-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const empIds = document.getElementById('btu-ids').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if (!empIds.length){ toast('Paste at least one Employee ID'); return; }
+    const toolTypeId = document.getElementById('btu-tool').value;
+    const toolType = toolTypes.find(t=>t.id===toolTypeId);
+    const issuedDate = document.getElementById('btu-date').value;
+    const nextDue = computeNextDueDate(issuedDate, toolType);
+    const resultsEl = document.getElementById('bulk-tool-update-results');
+    resultsEl.innerHTML = '<div class="mono">Processing…</div>';
+
+    await loadScopedProfiles();
+    const rows = [];
+    for (const empId of empIds){
+      const rider = state.profilesInScope.find(p => p.employee_id === empId);
+      if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
+      const { data: existing } = await sb.from('tool_issuances').select('id').eq('rider_id', rider.id).eq('tool_type_id', toolTypeId)
+        .order('issued_date', {ascending:false}).limit(1).maybeSingle();
+      if (!existing){ rows.push({ empId, ok:false, msg:'No existing issuance record for this tool — use Bulk Issue instead' }); continue; }
+      const { error } = await sb.from('tool_issuances').update({ issued_date: issuedDate, next_due_date: nextDue }).eq('id', existing.id);
+      rows.push({ empId, ok: !error, msg: error ? error.message : `Updated for ${rider.full_name}` });
+    }
+    resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
+    </tbody></table>`;
+    toast(`${rows.filter(r=>r.ok).length} of ${rows.length} updated`);
     renderTools();
   };
 }
