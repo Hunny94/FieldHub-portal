@@ -682,6 +682,7 @@ function openCircularPopup(c, acked){
     <div id="circular-popup-actions" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
       ${(!acked && !isCreator) ? `<button class="btn" id="popup-ack-btn2">Acknowledge</button>` : ''}
       ${(isAdmin() || isCreator) ? `<button class="btn outline" id="popup-tracker-btn">View Tracker</button>` : ''}
+      ${isSuperAdmin() ? `<button class="btn outline" id="popup-kb-toggle-btn">${c.push_to_kb ? 'Remove from Knowledge Base' : 'Push to Knowledge Base'}</button>` : ''}
       ${isSuperAdmin() ? `<button class="btn danger" id="popup-delete-btn">Delete Permanently</button>` : ''}
     </div>
     <div id="popup-tracker-area" style="margin-top:14px;"></div>
@@ -696,6 +697,14 @@ function openCircularPopup(c, acked){
     document.getElementById('popup-tracker-btn').onclick = () => showCircularTracker(c.id, c, document.getElementById('popup-tracker-area'));
   }
   if (isSuperAdmin()){
+    document.getElementById('popup-kb-toggle-btn').onclick = async () => {
+      const newVal = !c.push_to_kb;
+      const { error } = await sb.from('circulars').update({ push_to_kb: newVal }).eq('id', c.id);
+      if (error){ toast('Could not update: ' + error.message); return; }
+      c.push_to_kb = newVal;
+      toast(newVal ? 'Pushed to Knowledge Base' : 'Removed from Knowledge Base');
+      closeModal(); openCircularPopup(c, acked);
+    };
     document.getElementById('popup-delete-btn').onclick = async () => {
       if (!confirm('Permanently delete this circular? This cannot be undone.')) return;
       const { error } = await sb.from('circulars').delete().eq('id', c.id);
@@ -764,7 +773,6 @@ async function openNewCircularModal(){
     : Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   const { data: cats } = await sb.from('circular_categories').select('*').eq('active', true).order('name');
   const catOptions = `<option value="">— None —</option>` + (cats||[]).map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-  const canPushKb = isAdmin() || hasPermission('circular_push_kb');
   const wordLimit = state.systemSettings?.circular_word_limit;
   openModal(`
     <h2>New circular</h2>
@@ -778,9 +786,6 @@ async function openNewCircularModal(){
         <div class="form-row"><label>Target region</label><select id="c-region">${regionOptions}</select></div>
         <div class="form-row"><label>Target role</label><select id="c-role">${isRoleLockedToFieldStaff ? '' : '<option value="">All roles</option>'}${roleOptions}</select></div>
       </div>
-      ${canPushKb ? `<label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:14px;">
-        <input type="checkbox" id="c-push-kb"> Also push this circular into the Knowledge Base
-      </label>` : ''}
       <button class="btn-primary" type="submit">Post circular</button>
     </form>
   `);
@@ -808,8 +813,7 @@ async function openNewCircularModal(){
       created_by: state.user.id,
       target_region_id: targetRegionId,
       target_role: targetRole,
-      category_id: document.getElementById('c-category').value || null,
-      push_to_kb: canPushKb ? !!document.getElementById('c-push-kb')?.checked : false
+      category_id: document.getElementById('c-category').value || null
     });
     if (error){ toast('Could not post: ' + error.message); return; }
     closeModal(); toast('Circular posted'); renderCirculars();
@@ -999,11 +1003,15 @@ async function renderRequests(){
       </details>
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
         ${requestActionControls(r)}
+        ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
         ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
       </div>
-      <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed'].includes(r.status)?'none':'flex'}; gap:8px;">
-        <input type="text" placeholder="Short remark (max 25 words)…" maxlength="180" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
-        <button class="btn small" type="submit">Send</button>
+      <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed'].includes(r.status)?'none':'flex'}; flex-direction:column; gap:4px;">
+        <div style="display:flex; gap:8px;">
+          <input type="text" placeholder="Short remark…" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
+          <button class="btn small" type="submit">Send</button>
+        </div>
+        <span class="field-hint reply-word-count">0 words${state.systemSettings?.request_remark_word_limit ? ` / ${state.systemSettings.request_remark_word_limit} max` : ''}</span>
       </form>
     </div>
   `).join('');
@@ -1011,21 +1019,32 @@ async function renderRequests(){
   main.querySelectorAll('[data-delete-request]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('Permanently delete this request and its whole thread? This cannot be undone.')) return;
-      const { error } = await sb.from('requests').delete().eq('id', btn.dataset.deleteRequest);
+      const { data, error } = await sb.from('requests').delete().eq('id', btn.dataset.deleteRequest).select();
       if (error){ toast('Could not delete: ' + error.message); return; }
+      if (!data || !data.length){ toast('Delete was blocked by a permissions rule — nothing was removed. Ask Super Admin to check the request_delete database policy.'); return; }
       toast('Request deleted'); renderRequests();
     };
   });
+  main.querySelectorAll('[data-edit-request]').forEach(btn => {
+    btn.onclick = () => openEditRequestModal(requests.find(r=>r.id===btn.dataset.editRequest));
+  });
   requests.forEach(r => loadThread(r.id));
   main.querySelectorAll('.reply-form').forEach(f => {
+    const input = f.querySelector('input');
+    const counterEl = f.querySelector('.reply-word-count');
+    const wordLimit = state.systemSettings?.request_remark_word_limit;
+    input.oninput = () => {
+      const n = countWords(input.value);
+      counterEl.textContent = `${n} words${wordLimit?` / ${wordLimit} max`:''}`;
+      counterEl.style.color = (wordLimit && n > wordLimit) ? 'var(--clay)' : '';
+    };
     f.onsubmit = async (e) => {
       e.preventDefault();
-      const input = f.querySelector('input');
       const text = input.value.trim();
       if (!text) return;
-      if (countWords(text) > 25){ toast('Please keep remarks under 25 words'); return; }
+      if (wordLimit && countWords(text) > wordLimit){ toast(`Please keep remarks under ${wordLimit} words`); return; }
       await sb.from('request_updates').insert({ request_id: f.dataset.requestId, message: text, created_by: state.user.id });
-      input.value='';
+      input.value=''; counterEl.textContent = `0 words${wordLimit?` / ${wordLimit} max`:''}`;
       loadThread(f.dataset.requestId);
     };
   });
@@ -1036,26 +1055,67 @@ async function renderRequests(){
 
 function countWords(str){ return (str.trim().match(/\S+/g)||[]).length; }
 
+function openEditRequestModal(r){
+  openModal(`
+    <h2>Edit request</h2>
+    <p class="hint">Use this to correct a mistake in the original request — this does not notify the rider.</p>
+    <form id="request-edit-form">
+      <div class="form-row"><label>Category</label><input type="text" id="er-category" value="${escapeHtml(r.category||'')}" required></div>
+      <div class="form-row"><label>Description</label><textarea id="er-description" required>${escapeHtml(r.description||'')}</textarea></div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>
+  `);
+  document.getElementById('request-edit-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('requests').update({
+      category: document.getElementById('er-category').value.trim(),
+      description: document.getElementById('er-description').value.trim()
+    }).eq('id', r.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Updated'); renderRequests();
+  };
+}
+
 async function changeRequestStatus(requestId, newStatus){
-  const remark = window.prompt(`Add a short remark (max 25 words) for marking this as "${newStatus.replace('_',' ')}":`);
-  if (remark === null) return;
-  if (!remark.trim()){ toast('A remark is required'); return; }
-  if (countWords(remark) > 25){ toast('Please keep remarks under 25 words'); return; }
+  const wordLimit = state.systemSettings?.request_remark_word_limit ?? 25;
+  openModal(`
+    <h2>Mark as ${newStatus.replace('_',' ')}</h2>
+    <form id="req-status-form">
+      <div class="form-row"><label>Remarks</label><textarea id="rs-remark" required placeholder="Short remark for this status change"></textarea>
+        <span class="field-hint" id="rs-word-count">0 words${wordLimit?` / ${wordLimit} max`:''}</span>
+      </div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  const remarkEl = document.getElementById('rs-remark');
+  const counterEl = document.getElementById('rs-word-count');
+  remarkEl.oninput = () => {
+    const n = countWords(remarkEl.value);
+    counterEl.textContent = `${n} words${wordLimit?` / ${wordLimit} max`:''}`;
+    counterEl.style.color = (wordLimit && n > wordLimit) ? 'var(--clay)' : '';
+  };
+  document.getElementById('req-status-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const remark = remarkEl.value.trim();
+    if (!remark){ toast('A remark is required'); return; }
+    if (wordLimit && countWords(remark) > wordLimit){ toast(`Please keep remarks under ${wordLimit} words`); return; }
 
-  const payload = { status: newStatus };
-  if (newStatus === 'in_progress') payload.in_progress_at = new Date().toISOString();
-  if (newStatus === 'resolved') payload.resolved_at = new Date().toISOString();
-  if (newStatus === 'closed') payload.closed_at = new Date().toISOString();
+    const payload = { status: newStatus };
+    if (newStatus === 'in_progress') payload.in_progress_at = new Date().toISOString();
+    if (newStatus === 'resolved') payload.resolved_at = new Date().toISOString();
+    if (newStatus === 'closed') payload.closed_at = new Date().toISOString();
 
-  const { error } = await sb.from('requests').update(payload).eq('id', requestId);
-  if (error){ toast('Could not update: ' + error.message); return; }
+    const { error } = await sb.from('requests').update(payload).eq('id', requestId);
+    if (error){ toast('Could not update: ' + error.message); return; }
 
-  const { error: remarkErr } = await sb.from('request_updates').insert({
-    request_id: requestId, message: remark.trim(), created_by: state.user.id, new_status: newStatus
-  });
-  if (remarkErr){ toast('Status changed, but the remark could not be saved: ' + remarkErr.message); }
-  else { toast('Updated'); }
-  renderRequests();
+    const { error: remarkErr } = await sb.from('request_updates').insert({
+      request_id: requestId, message: remark, created_by: state.user.id, new_status: newStatus
+    });
+    closeModal();
+    if (remarkErr){ toast('Status changed, but the remark could not be saved: ' + remarkErr.message); }
+    else { toast('Updated'); }
+    renderRequests();
+  };
 }
 
 function requestActionControls(r){
@@ -1144,21 +1204,24 @@ async function renderExpiries(){
   const canDelete = isAdmin() || hasPermission('expiry_delete');
   const showActionsCol = canRemind || canEdit || canDelete;
   const today = new Date();
-  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
+  main.innerHTML = `<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
     ${items.map(i=>{
       const d = new Date(i.expiry_date);
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
       let badge = 'badge active', label='OK';
       if (daysLeft < 0){ badge='badge open'; label='Overdue'; }
       else if (daysLeft <= 30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
+      const appliesTo = i.profiles?.full_name
+        ? escapeHtml(i.profiles.full_name)
+        : `${escapeHtml(state.regions.find(r=>r.id===i.region_id)?.name || '—')}${i.applies_to_role ? ' · ' + (ROLE_LABEL[i.applies_to_role]||i.applies_to_role) : ' (whole region)'}`;
       return `<tr>
-        <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
+        <td>${appliesTo}</td>
         <td>${escapeHtml(i.item_type)}${i.item_label?' — '+escapeHtml(i.item_label):''}</td>
         <td>${escapeHtml(i.added_by?.full_name||'—')}</td>
         <td class="mono">${i.expiry_date}</td>
         <td><span class="${badge}">${label}</span></td>
         ${showActionsCol ? `<td style="white-space:nowrap;">
-          ${(canRemind && daysLeft<=30) ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}
+          ${(canRemind && daysLeft<=30 && i.profiles?.phone) ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}
           ${canEdit ? `<button class="btn small outline" data-edit-expiry="${i.id}">Edit</button>` : ''}
           ${canDelete ? `<button class="btn small danger" data-delete-expiry="${i.id}">Delete</button>` : ''}
         </td>` : ''}
@@ -1193,28 +1256,40 @@ async function renderExpiries(){
 
 async function openNewExpiryModal(){
   await loadScopedProfiles();
-  const options = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Track expiry item</h2>
+    <p class="hint">Not every item belongs to one rider — leave "Specific rider" blank for something that applies to a whole region or role (e.g. an office agreement, or a role-wide certification).</p>
     <form id="expiry-form">
-      <div class="form-row"><label>Rider</label><select id="e-rider" required>${options}</select></div>
+      <div class="form-row"><label>Region</label><select id="e-region" required>${regionOptions}</select></div>
+      <div class="form-row"><label>Applies to role (optional)</label><select id="e-role"><option value="">— Not role-specific —</option>${Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
+      <div class="form-row"><label>Specific rider (optional)</label><select id="e-rider"><option value="">— Not tied to a specific rider —</option></select></div>
       <div class="form-row"><label>Item type</label><select id="e-type">${typeOptions}</select></div>
       <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="e-label"></div>
       <div class="form-row"><label>Expiry date</label><input type="date" id="e-date" required></div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+  const populateRiders = () => {
+    const regionId = document.getElementById('e-region').value;
+    const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.region_id===regionId);
+    document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>' +
+      riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
+  };
+  document.getElementById('e-region').onchange = populateRiders;
+  populateRiders();
+
   document.getElementById('expiry-form').onsubmit = async (e) => {
     e.preventDefault();
-    const riderId = document.getElementById('e-rider').value;
-    const rider = state.profilesInScope.find(p=>p.id===riderId);
+    const riderId = document.getElementById('e-rider').value || null;
     const typeSelect = document.getElementById('e-type');
     const typeId = typeSelect.value;
     const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || 'Other';
     const { error } = await sb.from('expiry_items').insert({
       rider_id: riderId,
-      region_id: rider?.region_id,
+      region_id: document.getElementById('e-region').value,
+      applies_to_role: document.getElementById('e-role').value || null,
       item_type_id: typeId,
       item_type: typeName,
       item_label: document.getElementById('e-label').value.trim(),
@@ -1232,7 +1307,7 @@ function openEditExpiryModal(item){
   openModal(`
     <h2>Edit expiry item</h2>
     <form id="expiry-edit-form">
-      <div class="form-row"><label>Rider</label><input type="text" value="${escapeHtml(item.profiles?.full_name||'—')}" disabled></div>
+      <div class="form-row"><label>Applies to</label><input type="text" value="${escapeHtml(item.profiles?.full_name || (state.regions.find(r=>r.id===item.region_id)?.name||'—'))}" disabled></div>
       <div class="form-row"><label>Item type</label><select id="ee-type">${typeOptions}</select></div>
       <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="ee-label" value="${escapeHtml(item.item_label||'')}"></div>
       <div class="form-row"><label>Expiry date</label><input type="date" id="ee-date" value="${item.expiry_date}" required></div>
@@ -1565,7 +1640,7 @@ function openBulkUploadModal(){
     const defaultRegionId = document.getElementById('bulk-region').value;
     const lines = document.getElementById('bulk-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
     const rows = lines.map(line => {
-      const parts = line.split(',').map(p=>p.trim());
+      const parts = line.split(/\t|,/).map(p=>p.trim());
       const regionName = parts[3] || '';
       const matchedRegion = regionName ? state.regions.find(r => r.name.toLowerCase() === regionName.toLowerCase()) : null;
       return { phone: parts[0], employee_id: parts[1], full_name: toProperCase(parts[2]||''), region_id: matchedRegion?.id || null };
@@ -1602,16 +1677,27 @@ async function renderRegions(){
   if (canAdd) document.getElementById('new-region-btn').onclick = () => openRegionModal(null);
 
   const { data: allRegions } = await sb.from('regions').select('*').order('name');
-  main.innerHTML = `<table><thead><tr><th>Region</th><th>Status</th>${(canEdit||canRemove)?'<th></th>':''}</tr></thead><tbody>
-    ${(allRegions||[]).map(r=>`<tr>
+  const { data: allSubs } = await sb.from('sub_regions').select('*').order('name');
+  const subsByRegion = {};
+  (allSubs||[]).forEach(s => { (subsByRegion[s.region_id] ||= []).push(s); });
+
+  main.innerHTML = `<table><thead><tr><th>Region</th><th>Sub-Regions / Cities</th><th>Status</th>${(canEdit||canRemove)?'<th></th>':''}</tr></thead><tbody>
+    ${(allRegions||[]).map(r=>{
+      const subs = subsByRegion[r.id] || [];
+      return `<tr>
       <td>${escapeHtml(r.name)}</td>
+      <td>${subs.length
+        ? `<select style="max-width:220px;"><option>${subs.length} sub-region${subs.length>1?'s':''} ▾</option>${subs.map(s=>`<option disabled>${escapeHtml(s.name)}${s.active?'':' (inactive)'}</option>`).join('')}</select>`
+        : `<span class="mono" style="color:var(--muted);">None yet</span>`}</td>
       <td><span class="badge ${r.active!==false?'active':'closed'}">${r.active!==false?'Active':'Deactivated'}</span></td>
       ${(canEdit||canRemove) ? `<td style="white-space:nowrap;">
         ${canEdit ? `<button class="btn small outline" data-edit-region="${r.id}">Edit</button>` : ''}
         ${canRemove ? `<button class="btn small outline" data-toggle-region="${r.id}" data-active="${r.active!==false}">${r.active!==false?'Deactivate':'Reactivate'}</button>` : ''}
       </td>` : ''}
-    </tr>`).join('')}
-  </tbody></table>`;
+    </tr>`;
+    }).join('')}
+  </tbody></table>
+  <p class="hint" style="margin-top:12px;">To add or rename sub-regions/cities, go to Settings → Sub-Regions / Cities.</p>`;
 
   main.querySelectorAll('[data-edit-region]').forEach(btn => {
     btn.onclick = () => openRegionModal((allRegions||[]).find(r=>r.id===btn.dataset.editRegion));
@@ -1658,28 +1744,50 @@ let settingsTab = 'categories';
 async function renderSettings(){
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
-  const allTabs = [
-    ['categories','Request Categories', () => isAdmin() || hasPermission('categories_add') || hasPermission('categories_edit') || hasPermission('categories_remove')],
-    ['warningtypes','Warning Types', () => isAdmin() || hasPermission('manage_types')],
-    ['expirytypes','Expiry Item Types', () => isAdmin() || hasPermission('manage_types')],
-    ['tooltypes','Tool Types', () => isAdmin() || hasPermission('manage_types')],
-    ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
-    ['subregions','Sub-Regions / Cities', () => isAdmin() || hasPermission('regions_add') || hasPermission('regions_edit') || hasPermission('regions_remove')],
-    ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
-    ['circularcategories','Circular Categories', () => isAdmin() || hasPermission('circular_categories_manage')],
-    ['notice','Home Notice', () => isAdmin()],
-    ['branding','Login Page Branding', () => isSuperAdmin()],
-    ['homebanner','Home Banner', () => isSuperAdmin()],
-    ['popups','Popup Announcements', () => isSuperAdmin()],
-    ['permissions','Permissions', () => isSuperAdmin()],
-    ['storage','Storage Usage', () => isSuperAdmin()],
-    ['maintenance','Maintenance Mode', () => isSuperAdmin()]
+  const groups = [
+    { label: 'Workflow', items: [
+      ['categories','Request Categories', () => isAdmin() || hasPermission('categories_add') || hasPermission('categories_edit') || hasPermission('categories_remove')],
+      ['circularcategories','Circular Categories', () => isAdmin() || hasPermission('circular_categories_manage')],
+    ]},
+    { label: 'Types & Categories', items: [
+      ['warningtypes','Warning Types', () => isAdmin() || hasPermission('manage_types')],
+      ['expirytypes','Expiry Item Types', () => isAdmin() || hasPermission('manage_types')],
+      ['tooltypes','Tool Types', () => isAdmin() || hasPermission('manage_types')],
+      ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
+      ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
+    ]},
+    { label: 'Regions', items: [
+      ['subregions','Sub-Regions / Cities', () => isAdmin() || hasPermission('regions_add') || hasPermission('regions_edit') || hasPermission('regions_remove')],
+    ]},
+    { label: 'Branding & Announcements', items: [
+      ['notice','Home Notice', () => isAdmin()],
+      ['branding','Login Page Branding', () => isSuperAdmin()],
+      ['homebanner','Home Banner', () => isSuperAdmin()],
+      ['popups','Popup Announcements', () => isSuperAdmin()],
+    ]},
+    { label: 'System', items: [
+      ['permissions','Permissions', () => isSuperAdmin()],
+      ['storage','Storage Usage', () => isSuperAdmin()],
+      ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
+    ]}
   ];
-  const tabs = allTabs.filter(([,,can]) => can()).map(([k,label]) => [k,label]);
-  if (!tabs.find(([k])=>k===settingsTab)) settingsTab = tabs[0]?.[0] || 'categories';
-  main.innerHTML = `<div class="tabs">
-    ${tabs.map(([k,label]) => `<button class="tab ${settingsTab===k?'active':''}" data-settings-tab="${k}">${label}</button>`).join('')}
-  </div><div id="settings-body"></div>`;
+  const visibleGroups = groups
+    .map(g => ({ label: g.label, items: g.items.filter(([,,can]) => can()) }))
+    .filter(g => g.items.length);
+  const flatKeys = visibleGroups.flatMap(g => g.items.map(([k]) => k));
+  if (!flatKeys.includes(settingsTab)) settingsTab = flatKeys[0] || 'categories';
+
+  main.innerHTML = `
+    <div style="display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:start;">
+      <div>
+        ${visibleGroups.map(g => `
+          <div style="margin-bottom:18px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); padding:0 4px 6px;">${g.label}</div>
+            ${g.items.map(([k,label]) => `<button class="btn small ${settingsTab===k?'':'outline'}" data-settings-tab="${k}" style="display:block; width:100%; text-align:left; margin-bottom:4px;">${label}</button>`).join('')}
+          </div>`).join('')}
+      </div>
+      <div id="settings-body" class="card"></div>
+    </div>`;
   main.querySelectorAll('[data-settings-tab]').forEach(btn => {
     btn.onclick = () => { settingsTab = btn.dataset.settingsTab; renderSettings(); };
   });
@@ -2035,9 +2143,53 @@ async function renderWarnings(){
         Rider: ${escapeHtml(w.rider?.full_name||'—')} · Employee ID: ${escapeHtml(w.rider?.employee_id||'—')} · Region: ${escapeHtml(state.regions.find(r=>r.id===w.rider?.region_id)?.name||'—')}
       </div>` : ''}
       <p style="font-size:13.5px;">${escapeHtml(w.description)}</p>
-      <div class="mono">Recorded by ${escapeHtml(w.recorder?.full_name||'—')}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div class="mono">Recorded by ${escapeHtml(w.recorder?.full_name||'—')}</div>
+        ${isSuperAdmin() ? `<div style="display:flex; gap:8px;">
+          <button class="btn small outline" data-edit-warning="${w.id}">Edit</button>
+          <button class="btn small danger" data-delete-warning="${w.id}">Delete</button>
+        </div>` : ''}
+      </div>
     </div>
   `).join('');
+
+  if (isSuperAdmin()){
+    main.querySelectorAll('[data-delete-warning]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Permanently delete this warning? This cannot be undone.')) return;
+        const { error } = await sb.from('disciplinary_actions').delete().eq('id', btn.dataset.deleteWarning);
+        if (error){ toast('Could not delete: ' + error.message); return; }
+        toast('Warning deleted'); renderWarnings();
+      };
+    });
+    main.querySelectorAll('[data-edit-warning]').forEach(btn => {
+      btn.onclick = () => openEditWarningModal(warnings.find(w=>w.id===btn.dataset.editWarning));
+    });
+  }
+}
+
+function openEditWarningModal(w){
+  const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
+  openModal(`
+    <h2>Edit warning</h2>
+    <p class="mono" style="margin-bottom:12px;">${escapeHtml(w.rider?.full_name||'—')}</p>
+    <form id="warning-edit-form">
+      <div class="form-row"><label>Type</label><select id="we-type">${typeOptions}</select></div>
+      <div class="form-row"><label>Details</label><textarea id="we-desc" required>${escapeHtml(w.description||'')}</textarea></div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>
+  `);
+  document.getElementById('warning-edit-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const typeSelect = document.getElementById('we-type');
+    const { error } = await sb.from('disciplinary_actions').update({
+      warning_type_id: typeSelect.value,
+      action_type: typeSelect.options[typeSelect.selectedIndex]?.textContent || w.action_type,
+      description: document.getElementById('we-desc').value.trim()
+    }).eq('id', w.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Updated'); renderWarnings();
+  };
 }
 
 async function openNewWarningModal(){
@@ -2590,31 +2742,60 @@ const GRANTABLE_PERMISSIONS = [
 async function renderPermissionsSettings(body){
   await loadScopedProfiles();
   const staff = state.profilesInScope.filter(p => !['rider','super_admin'].includes(p.role) && p.status==='active');
-  const { data: grants } = await sb.from('custom_permissions').select('*');
-  const grantMap = new Set((grants||[]).map(g => g.profile_id+'|'+g.permission_key));
 
-  body.innerHTML = `<p class="hint" style="margin-bottom:14px;">Grant a specific person extra access beyond their normal role — e.g. let one Coordinator manage categories.</p>
-  <table><thead><tr><th>Person</th><th>Role</th>${GRANTABLE_PERMISSIONS.map(([,label])=>`<th>${label}</th>`).join('')}</tr></thead><tbody>
-    ${staff.map(p => `<tr>
-      <td>${escapeHtml(p.full_name)}</td>
-      <td>${ROLE_LABEL[p.role]}</td>
-      ${GRANTABLE_PERMISSIONS.map(([key]) => `<td style="text-align:center;">
-        <input type="checkbox" data-perm-toggle="${p.id}|${key}" ${grantMap.has(p.id+'|'+key)?'checked':''}>
-      </td>`).join('')}
-    </tr>`).join('')}
-  </tbody></table>`;
+  body.innerHTML = `<p class="hint" style="margin-bottom:14px;">Grant a specific person extra access beyond their normal role — e.g. let one Coordinator manage categories, or let one Area Incharge download the active-employee list.</p>
+    <div class="form-row"><label>Search for a person</label>
+      <input type="text" id="perm-user-search" placeholder="Type a name…" autocomplete="off">
+      <div id="perm-user-results" style="border:1px solid var(--line); border-radius:8px; margin-top:6px; max-height:220px; overflow-y:auto; display:none;"></div>
+    </div>
+    <div id="perm-selected-user" class="card" style="display:none; margin-top:16px;"></div>`;
 
-  body.querySelectorAll('[data-perm-toggle]').forEach(cb => {
-    cb.onchange = async () => {
-      const [profileId, key] = cb.dataset.permToggle.split('|');
-      if (cb.checked){
-        await sb.from('custom_permissions').insert({ profile_id: profileId, permission_key: key, granted_by: state.user.id });
-      } else {
-        await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
-      }
-      toast('Updated');
-    };
-  });
+  const searchInput = document.getElementById('perm-user-search');
+  const resultsBox = document.getElementById('perm-user-results');
+  const selectedBox = document.getElementById('perm-selected-user');
+
+  searchInput.oninput = () => {
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q){ resultsBox.style.display = 'none'; resultsBox.innerHTML=''; return; }
+    const matches = staff.filter(p => p.full_name.toLowerCase().includes(q) || (p.employee_id||'').toLowerCase().includes(q)).slice(0, 20);
+    resultsBox.innerHTML = matches.length
+      ? matches.map(p => `<div class="perm-result-row" data-pick-user="${p.id}" style="padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line);">
+          <strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${ROLE_LABEL[p.role]}${p.employee_id?' · '+escapeHtml(p.employee_id):''}</span>
+        </div>`).join('')
+      : `<div style="padding:9px 12px; color:var(--muted);">No match</div>`;
+    resultsBox.style.display = 'block';
+    resultsBox.querySelectorAll('[data-pick-user]').forEach(row => {
+      row.onclick = () => selectPermUser(row.dataset.pickUser);
+    });
+  };
+
+  async function selectPermUser(profileId){
+    const p = staff.find(x=>x.id===profileId);
+    resultsBox.style.display = 'none';
+    searchInput.value = p.full_name;
+    const { data: grants } = await sb.from('custom_permissions').select('permission_key').eq('profile_id', profileId);
+    const granted = new Set((grants||[]).map(g=>g.permission_key));
+    selectedBox.style.display = 'block';
+    selectedBox.innerHTML = `
+      <h3 style="margin-bottom:2px;">${escapeHtml(p.full_name)}</h3>
+      <div class="mono" style="margin-bottom:14px;">${ROLE_LABEL[p.role]}${p.employee_id?' · '+escapeHtml(p.employee_id):''}</div>
+      ${GRANTABLE_PERMISSIONS.map(([key,label]) => `
+        <label style="display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line); font-weight:400;">
+          <input type="checkbox" data-perm-toggle="${key}" ${granted.has(key)?'checked':''}> ${escapeHtml(label)}
+        </label>`).join('')}
+    `;
+    selectedBox.querySelectorAll('[data-perm-toggle]').forEach(cb => {
+      cb.onchange = async () => {
+        const key = cb.dataset.permToggle;
+        if (cb.checked){
+          await sb.from('custom_permissions').insert({ profile_id: profileId, permission_key: key, granted_by: state.user.id });
+        } else {
+          await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
+        }
+        toast('Updated');
+      };
+    });
+  }
 }
 
 function formatBytes(n){
@@ -3304,38 +3485,42 @@ async function renderRoster(){
 
   const shiftNames = [...new Set(entries.map(e=>e.shift_types?.name).filter(Boolean))];
   const dayOffs = [...new Set(entries.map(e=>e.day_off).filter(Boolean))];
+  const reasons = [...new Set(entries.filter(e=>e.status==='removed').map(e=>e.removal_reason).filter(Boolean))];
 
-  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Region</th><th>Sub-Region/City</th><th>Shift</th><th>Day Off</th><th>Official Mobile</th><th>Personal Mobile</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
+  const renderRows = (list) => list.length ? `<table><thead><tr><th>Rider</th><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Shift</th><th>Day Off</th><th>Official Mobile</th><th>Personal Mobile</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
     ${list.map(e => `<tr>
       <td>${escapeHtml(e.profiles?.full_name||'—')}<div class="mono">${escapeHtml(e.profiles?.employee_id||'')}</div></td>
       <td>${escapeHtml(e.regions?.name||'—')}</td>
       <td>${escapeHtml(e.sub_regions?.name||'—')}</td>
+      <td>${escapeHtml(e.hotspot||'—')}</td>
       <td>${escapeHtml(e.shift_types?.name||'—')}</td>
       <td>${escapeHtml(e.day_off||'—')}</td>
       <td class="mono">${escapeHtml(e.official_mobile||'—')}</td>
       <td class="mono">${escapeHtml(e.personal_mobile||'—')}</td>
       <td>${e.status==='removed'
-        ? `<span class="badge open">Removed — ${escapeHtml(e.removal_reason||'')}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
-        : '<span class="badge active">Active</span>'}</td>
+        ? `<span class="badge open">${escapeHtml(e.removal_reason||'Removed')}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
+        : '<span class="badge active">Approved / Working</span>'}</td>
       ${canManage ? `<td style="white-space:nowrap;">
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
-        ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Remove</button>` : ''}
+        ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Mark Resigned/Terminated/Transferred</button>` : ''}
       </td>` : ''}
     </tr>`).join('')}
-  </tbody></table>`;
+  </tbody></table>` : emptyState('No roster entries match this filter.');
 
   main.innerHTML = `
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:16px;">
-      <div class="card stat-card sky"><div class="stat-number">${total}</div><div class="stat-label">Total on Roster</div></div>
-      <div class="card stat-card clay"><div class="stat-number">${active}</div><div class="stat-label">Currently Working</div></div>
-      <div class="card stat-card amber"><div class="stat-number">${total-active}</div><div class="stat-label">Resigned/Released/Terminated</div></div>
-      <div class="card stat-card amber"><div class="stat-number">${replacementPending}</div><div class="stat-label">Replacement Needed</div></div>
+      <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer;"><div class="stat-number">${total}</div><div class="stat-label">Total on Roster</div></div>
+      <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer;"><div class="stat-number">${active}</div><div class="stat-label">Approved / Currently Working</div></div>
+      <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer;"><div class="stat-number">${total-active}</div><div class="stat-label">Resigned/Terminated/Transferred</div></div>
+      <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer;"><div class="stat-number">${replacementPending}</div><div class="stat-label">Replacement Needed</div></div>
     </div>
+    ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
       <select id="rf-region"><option value="">All Regions</option>${state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
       <select id="rf-shift"><option value="">All Shifts</option>${shiftNames.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select>
       <select id="rf-dayoff"><option value="">All Day-Offs</option>${dayOffs.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}</select>
-      <select id="rf-status"><option value="">All Statuses</option><option value="active">Active</option><option value="removed">Removed</option></select>
+      <select id="rf-status"><option value="">All Statuses</option><option value="active">Approved / Working</option><option value="removed">Resigned/Terminated/Transferred</option></select>
+      ${reasons.length ? `<select id="rf-reason"><option value="">All Reasons</option>${reasons.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>` : ''}
       <input type="text" id="rf-search" placeholder="Search rider name…" style="flex:1; min-width:160px;">
     </div>
     <div id="roster-list">${renderRows(entries)}</div>`;
@@ -3345,19 +3530,38 @@ async function renderRoster(){
     const shift = document.getElementById('rf-shift').value;
     const dayOff = document.getElementById('rf-dayoff').value;
     const status = document.getElementById('rf-status').value;
+    const reason = document.getElementById('rf-reason')?.value || '';
     const q = document.getElementById('rf-search').value.toLowerCase();
     const filtered = entries.filter(e =>
       (!region || e.region_id === region) &&
       (!shift || e.shift_types?.name === shift) &&
       (!dayOff || e.day_off === dayOff) &&
       (!status || (status==='removed' ? e.status==='removed' : e.status!=='removed')) &&
+      (!reason || e.removal_reason === reason) &&
       (!q || (e.profiles?.full_name||'').toLowerCase().includes(q))
     );
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
   };
-  ['rf-region','rf-shift','rf-dayoff','rf-status'].forEach(id => document.getElementById(id).onchange = applyFilters);
+  ['rf-region','rf-shift','rf-dayoff','rf-status','rf-reason'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.onchange = applyFilters;
+  });
   document.getElementById('rf-search').oninput = applyFilters;
+
+  main.querySelectorAll('[data-stat-filter]').forEach(card => {
+    card.onclick = () => {
+      const which = card.dataset.statFilter;
+      document.getElementById('rf-status').value = which === 'replacement' ? 'removed' : which;
+      if (document.getElementById('rf-reason')) document.getElementById('rf-reason').value = '';
+      applyFilters();
+      if (which === 'replacement'){
+        document.getElementById('roster-list').innerHTML = renderRows(entries.filter(e=>e.status==='removed' && e.replacement_pending));
+        bindRowActions();
+      }
+      document.getElementById('roster-list').scrollIntoView({behavior:'smooth', block:'start'});
+    };
+  });
 
   function bindRowActions(){
     document.querySelectorAll('[data-edit-roster]').forEach(btn => {
@@ -3391,6 +3595,7 @@ async function openRosterModal(entry){
         <div class="form-row"><label>Region</label><select id="ro-region" required>${regionOptions}</select></div>
         <div class="form-row"><label>Sub-Region / City</label><select id="ro-subregion"><option value="">—</option></select></div>
       </div>
+      <div class="form-row"><label>Hotspot / Area (optional)</label><input type="text" id="ro-hotspot" value="${entry?escapeHtml(entry.hotspot||''):''}" placeholder="e.g. DHA Phase 5, Model Town"></div>
       <div class="two-col">
         <div class="form-row"><label>Shift</label><select id="ro-shift">${shiftOptions}</select></div>
         <div class="form-row"><label>Day Off</label><select id="ro-dayoff">${dayOptions}</select></div>
@@ -3416,6 +3621,7 @@ async function openRosterModal(entry){
       rider_id: document.getElementById('ro-rider').value,
       region_id: document.getElementById('ro-region').value,
       sub_region_id: document.getElementById('ro-subregion').value || null,
+      hotspot: document.getElementById('ro-hotspot').value.trim() || null,
       shift_id: document.getElementById('ro-shift').value || null,
       day_off: document.getElementById('ro-dayoff').value || null,
       personal_mobile: document.getElementById('ro-personal').value.trim(),
@@ -3432,9 +3638,9 @@ async function openRosterModal(entry){
 function openBulkRosterModal(){
   openModal(`
     <h2>Bulk add to roster</h2>
-    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off</strong> — one rider per line, comma-separated. Region/Shift names must match existing ones (Settings → Sub-Regions / Shift Types).</p>
+    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off, Hotspot (optional)</strong> — one rider per line. Works with comma-separated or pasted directly from Excel. Region/Shift names must match existing ones (Settings → Sub-Regions / Shift Types).</p>
     <form id="bulk-roster-form">
-      <textarea id="br-rows" rows="8" placeholder="EMP1001, Lahore, 1, 7:00 AM - 7:00 PM, Sunday
+      <textarea id="br-rows" rows="8" placeholder="EMP1001, Lahore, 1, 7:00 AM - 7:00 PM, Sunday, DHA Phase 5
 EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       <button class="btn-primary" type="submit" style="margin-top:12px;">Add All</button>
     </form>
@@ -3453,9 +3659,9 @@ EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
 
     const rows = [];
     for (const line of lines){
-      const parts = line.split(',').map(p=>p.trim());
-      const [empId, regionName, subRegionName, shiftName, dayOff] = parts;
-      const rider = state.profilesInScope.find(p => p.employee_id === empId);
+      const parts = line.split(/\t|,/).map(p=>p.trim());
+      const [empId, regionName, subRegionName, shiftName, dayOff, hotspot] = parts;
+      const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
       const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
       if (!region){ rows.push({ empId, ok:false, msg:`Region "${regionName}" not found` }); continue; }
@@ -3463,7 +3669,7 @@ EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       const shift = shiftName ? (allShifts||[]).find(s => s.name.toLowerCase() === shiftName.toLowerCase()) : null;
       const { error } = await sb.from('roster_entries').insert({
         rider_id: rider.id, region_id: region.id, sub_region_id: subRegion?.id || null,
-        shift_id: shift?.id || null, day_off: dayOff || null, created_by: state.user.id
+        shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspot || null, created_by: state.user.id
       });
       rows.push({ empId, ok: !error, msg: error ? error.message : `Added — ${rider.full_name}` });
     }
@@ -3477,17 +3683,17 @@ EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
 
 function openRosterRemovalModal(entryId, riderId){
   openModal(`
-    <h2>Remove from roster</h2>
+    <h2>Mark as Resigned / Terminated / Transferred</h2>
     <p class="hint">This will also disable this rider's portal login.</p>
     <form id="roster-removal-form">
       <div class="form-row"><label>Reason</label><select id="rr-reason" required>
-        <option>Transfer</option><option>Termination</option><option>Resignation</option><option>Other</option>
+        <option>Resigned</option><option>Terminated</option><option>Transfer</option><option>Other</option>
       </select></div>
       <div class="form-row"><label>Explanation</label><textarea id="rr-note" required placeholder="Short note for the record"></textarea></div>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:14px;">
-        <input type="checkbox" id="rr-replacement"> Replacement for this position is pending
+        <input type="checkbox" id="rr-replacement"> Replacement for this position is needed
       </label>
-      <button class="btn-primary" type="submit">Confirm removal</button>
+      <button class="btn-primary" type="submit">Confirm</button>
     </form>
   `);
   document.getElementById('roster-removal-form').onsubmit = async (e) => {
