@@ -1677,7 +1677,7 @@ async function renderRegions(){
   if (canAdd) document.getElementById('new-region-btn').onclick = () => openRegionModal(null);
 
   const { data: allRegions } = await sb.from('regions').select('*').order('name');
-  const { data: allSubs } = await sb.from('sub_regions').select('*').order('name');
+  const { data: allSubs } = await sb.from('sub_regions').select('*').eq('active', true).order('name');
   const subsByRegion = {};
   (allSubs||[]).forEach(s => { (subsByRegion[s.region_id] ||= []).push(s); });
 
@@ -1687,7 +1687,7 @@ async function renderRegions(){
       return `<tr>
       <td>${escapeHtml(r.name)}</td>
       <td>${subs.length
-        ? `<select style="max-width:220px;"><option>${subs.length} sub-region${subs.length>1?'s':''} ▾</option>${subs.map(s=>`<option disabled>${escapeHtml(s.name)}${s.active?'':' (inactive)'}</option>`).join('')}</select>`
+        ? `<select style="max-width:220px;"><option>${subs.length} sub-region${subs.length>1?'s':''} ▾</option>${subs.map(s=>`<option disabled>${escapeHtml(s.name)}</option>`).join('')}</select>`
         : `<span class="mono" style="color:var(--muted);">None yet</span>`}</td>
       <td><span class="badge ${r.active!==false?'active':'closed'}">${r.active!==false?'Active':'Deactivated'}</span></td>
       ${(canEdit||canRemove) ? `<td style="white-space:nowrap;">
@@ -1722,15 +1722,20 @@ function openRegionModal(region){
     <h2>${region ? 'Edit' : 'Add'} region</h2>
     <form id="region-form">
       <div class="form-row"><label>Region name</label><input type="text" id="reg-name" value="${region?escapeHtml(region.name):''}" required></div>
+      <div class="form-row"><label>Approved headcount</label><input type="number" id="reg-headcount" min="0" value="${region?.approved_headcount ?? ''}" placeholder="Budgeted number of riders for this region">
+        <span class="field-hint">Used on the Roster page to show Approved vs Currently Working.</span>
+      </div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
   document.getElementById('region-form').onsubmit = async (e) => {
     e.preventDefault();
     const name = document.getElementById('reg-name').value.trim();
+    const headcountVal = document.getElementById('reg-headcount').value;
+    const payload = { name, approved_headcount: headcountVal ? parseInt(headcountVal,10) : null };
     const { error } = region
-      ? await sb.from('regions').update({ name }).eq('id', region.id)
-      : await sb.from('regions').insert({ name });
+      ? await sb.from('regions').update(payload).eq('id', region.id)
+      : await sb.from('regions').insert(payload);
     if (error){ toast('Could not save: ' + error.message); return; }
     closeModal(); toast('Saved'); await loadRegions(); renderRegions();
   };
@@ -1757,7 +1762,8 @@ async function renderSettings(){
       ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
     ]},
     { label: 'Regions', items: [
-      ['subregions','Sub-Regions / Cities', () => isAdmin() || hasPermission('regions_add') || hasPermission('regions_edit') || hasPermission('regions_remove')],
+      ['subregions','Sub-Regions / Cities', () => isSuperAdmin()],
+      ['hotspots','Hotspots', () => isAdmin() || hasPermission('regions_add') || hasPermission('regions_edit') || hasPermission('regions_remove')],
     ]},
     { label: 'Branding & Announcements', items: [
       ['notice','Home Notice', () => isAdmin()],
@@ -1769,6 +1775,7 @@ async function renderSettings(){
       ['permissions','Permissions', () => isSuperAdmin()],
       ['storage','Storage Usage', () => isSuperAdmin()],
       ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
+      ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
     ]}
   ];
   const visibleGroups = groups
@@ -1798,6 +1805,7 @@ async function renderSettings(){
   else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
   else if (settingsTab === 'subregions') await renderSubRegionsSettings(body);
+  else if (settingsTab === 'hotspots') await renderHotspotsSettings(body);
   else if (settingsTab === 'shifttypes') await renderSimpleTypeList(body, 'shift_types', 'Shift');
   else if (settingsTab === 'circularcategories') await renderSimpleTypeList(body, 'circular_categories', 'Circular Category');
   else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
@@ -1807,6 +1815,7 @@ async function renderSettings(){
   else if (settingsTab === 'permissions') await renderPermissionsSettings(body);
   else if (settingsTab === 'storage') await renderStorageSettings(body);
   else if (settingsTab === 'maintenance') await renderMaintenanceSettings(body);
+  else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
 }
 
 async function renderCategoriesInto(body){
@@ -2168,24 +2177,42 @@ async function renderWarnings(){
   }
 }
 
-function openEditWarningModal(w){
+async function openEditWarningModal(w){
+  await loadScopedProfiles();
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
+  const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role));
+  const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)} (${ROLE_LABEL[p.role]})</option>`).join('');
   openModal(`
     <h2>Edit warning</h2>
-    <p class="mono" style="margin-bottom:12px;">${escapeHtml(w.rider?.full_name||'—')}</p>
     <form id="warning-edit-form">
+      <div class="form-row"><label>Rider / Coordinator</label><select id="we-target" required>${targetOptions}</select></div>
       <div class="form-row"><label>Type</label><select id="we-type">${typeOptions}</select></div>
-      <div class="form-row"><label>Details</label><textarea id="we-desc" required>${escapeHtml(w.description||'')}</textarea></div>
+      <div class="form-row"><label>Details</label><textarea id="we-desc" required>${escapeHtml(w.description||'')}</textarea>
+        <span class="field-hint" id="we-word-count">0 words${state.systemSettings?.warning_word_limit?` / ${state.systemSettings.warning_word_limit} max`:''}</span>
+      </div>
       <button class="btn-primary" type="submit">Save changes</button>
     </form>
   `);
+  const editWordLimit = state.systemSettings?.warning_word_limit;
+  const editDescEl = document.getElementById('we-desc');
+  const editCounterEl = document.getElementById('we-word-count');
+  const updateEditCounter = () => {
+    const n = countWords(editDescEl.value);
+    editCounterEl.textContent = `${n} words${editWordLimit?` / ${editWordLimit} max`:''}`;
+    editCounterEl.style.color = (editWordLimit && n > editWordLimit) ? 'var(--clay)' : '';
+  };
+  editDescEl.oninput = updateEditCounter;
+  updateEditCounter();
   document.getElementById('warning-edit-form').onsubmit = async (e) => {
     e.preventDefault();
+    const description = editDescEl.value.trim();
+    if (editWordLimit && countWords(description) > editWordLimit){ toast(`Please keep details under ${editWordLimit} words`); return; }
     const typeSelect = document.getElementById('we-type');
     const { error } = await sb.from('disciplinary_actions').update({
+      rider_id: document.getElementById('we-target').value,
       warning_type_id: typeSelect.value,
       action_type: typeSelect.options[typeSelect.selectedIndex]?.textContent || w.action_type,
-      description: document.getElementById('we-desc').value.trim()
+      description
     }).eq('id', w.id);
     if (error){ toast('Could not save: ' + error.message); return; }
     closeModal(); toast('Updated'); renderWarnings();
@@ -2209,10 +2236,20 @@ async function openNewWarningModal(){
         <div><label style="font-size:13px; font-weight:600; color:var(--ink-soft);">Region</label><input type="text" id="w-region" disabled></div>
       </div>
       <div class="form-row"><label>Type</label><select id="w-type">${typeOptions}</select></div>
-      <div class="form-row"><label>Details</label><textarea id="w-desc" required placeholder="What happened, what was discussed, any outcome…"></textarea></div>
+      <div class="form-row"><label>Details</label><textarea id="w-desc" required placeholder="What happened, what was discussed, any outcome…"></textarea>
+        <span class="field-hint" id="w-word-count">0 words${state.systemSettings?.warning_word_limit?` / ${state.systemSettings.warning_word_limit} max`:''}</span>
+      </div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+  const wordLimit = state.systemSettings?.warning_word_limit;
+  const descEl = document.getElementById('w-desc');
+  const counterEl = document.getElementById('w-word-count');
+  descEl.oninput = () => {
+    const n = countWords(descEl.value);
+    counterEl.textContent = `${n} words${wordLimit?` / ${wordLimit} max`:''}`;
+    counterEl.style.color = (wordLimit && n > wordLimit) ? 'var(--clay)' : '';
+  };
   const updateReadOnly = () => {
     const sel = document.getElementById('w-rider');
     const opt = sel.options[sel.selectedIndex];
@@ -2223,13 +2260,15 @@ async function openNewWarningModal(){
   updateReadOnly();
   document.getElementById('warning-form').onsubmit = async (e) => {
     e.preventDefault();
+    const description = document.getElementById('w-desc').value.trim();
+    if (wordLimit && countWords(description) > wordLimit){ toast(`Please keep details under ${wordLimit} words`); return; }
     const typeId = document.getElementById('w-type').value;
     const typeName = state.warningTypes.find(t=>t.id===typeId)?.name || 'Other';
     const { error } = await sb.from('disciplinary_actions').insert({
       rider_id: document.getElementById('w-rider').value,
       warning_type_id: typeId,
       action_type: typeName,
-      description: document.getElementById('w-desc').value.trim(),
+      description,
       recorded_by: state.user.id
     });
     if (error){ toast('Could not save: ' + error.message); return; }
@@ -2500,6 +2539,12 @@ async function renderReports(){
   const today = new Date().toISOString().slice(0,10);
   const monthAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
   const canExportEmployees = isSuperAdmin() || hasPermission('export_active_employees');
+  const now = new Date();
+  const monthOptions = Array.from({length:12}, (_,i)=>{
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    return `<option value="${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}">${d.toLocaleString('default',{month:'long', year:'numeric'})}</option>`;
+  }).join('');
+  const yearOptions = Array.from({length:5}, (_,i)=>now.getFullYear()-i).map(y=>`<option value="${y}">${y}</option>`).join('');
   main.innerHTML = `
     <div class="card">
       <h3>Download a report</h3>
@@ -2513,13 +2558,28 @@ async function renderReports(){
           ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for salary processing)</option>` : ''}
         </select></div>
         <div></div>
-        <div class="form-row"><label>From</label><input type="date" id="rep-from" value="${monthAgo}"></div>
-        <div class="form-row"><label>To</label><input type="date" id="rep-to" value="${today}"></div>
+        <div class="form-row"><label>Date range</label><select id="rep-preset">
+          <option value="custom">Custom range</option>
+          <option value="month">A specific month</option>
+          <option value="year">A specific year</option>
+        </select></div>
+        <div></div>
+        <div class="form-row" id="rep-custom-wrap"><label>From</label><input type="date" id="rep-from" value="${monthAgo}"></div>
+        <div class="form-row" id="rep-custom-wrap2"><label>To</label><input type="date" id="rep-to" value="${today}"></div>
+        <div class="form-row" id="rep-month-wrap" style="display:none;"><label>Month</label><select id="rep-month">${monthOptions}</select></div>
+        <div class="form-row" id="rep-year-wrap" style="display:none;"><label>Year</label><select id="rep-year">${yearOptions}</select></div>
       </div>
       <button class="btn-primary" id="rep-download-btn" style="width:auto; padding:10px 20px;">Download CSV</button>
       <div id="rep-status" class="mono" style="margin-top:10px;"></div>
     </div>
   `;
+  document.getElementById('rep-preset').onchange = (e) => {
+    const mode = e.target.value;
+    document.getElementById('rep-custom-wrap').style.display = mode==='custom' ? 'block' : 'none';
+    document.getElementById('rep-custom-wrap2').style.display = mode==='custom' ? 'block' : 'none';
+    document.getElementById('rep-month-wrap').style.display = mode==='month' ? 'block' : 'none';
+    document.getElementById('rep-year-wrap').style.display = mode==='year' ? 'block' : 'none';
+  };
   document.getElementById('rep-download-btn').onclick = generateReport;
 }
 
@@ -2540,8 +2600,20 @@ function downloadCSV(filename, csv){
 
 async function generateReport(){
   const type = document.getElementById('rep-type').value;
-  const from = document.getElementById('rep-from').value;
-  const to = document.getElementById('rep-to').value + 'T23:59:59';
+  const preset = document.getElementById('rep-preset').value;
+  let from, to;
+  if (preset === 'month'){
+    const [y,m] = document.getElementById('rep-month').value.split('-').map(Number);
+    from = new Date(y, m-1, 1).toISOString();
+    to = new Date(y, m, 0, 23, 59, 59).toISOString();
+  } else if (preset === 'year'){
+    const y = parseInt(document.getElementById('rep-year').value, 10);
+    from = new Date(y, 0, 1).toISOString();
+    to = new Date(y, 11, 31, 23, 59, 59).toISOString();
+  } else {
+    from = document.getElementById('rep-from').value;
+    to = document.getElementById('rep-to').value + 'T23:59:59';
+  }
   const statusEl = document.getElementById('rep-status');
   statusEl.textContent = 'Generating…';
 
@@ -2596,26 +2668,28 @@ async function generateReport(){
 }
 
 async function renderSubRegionsSettings(body){
+  const canManage = isSuperAdmin(); // Client explicitly wants this Super-Admin-only, not delegatable
   const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   const { data: subs } = await sb.from('sub_regions').select('*, regions(name)').order('name');
-  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region / City</th><th>Status</th><th></th></tr></thead><tbody>
+  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region / City</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
       ${list.map(s=>`<tr>
         <td>${escapeHtml(s.regions?.name||'—')}</td>
         <td>${escapeHtml(s.name)}</td>
         <td><span class="badge ${s.active?'active':'closed'}">${s.active?'Active':'Inactive'}</span></td>
-        <td>
+        ${canManage ? `<td style="white-space:nowrap;">
           <button class="btn small outline" data-edit-subregion="${s.id}">Edit</button>
           <button class="btn small outline" data-toggle-subregion="${s.id}" data-active="${s.active}">${s.active?'Disable':'Enable'}</button>
-        </td>
+          <button class="btn small danger" data-delete-subregion="${s.id}">Delete Permanently</button>
+        </td>` : ''}
       </tr>`).join('')}
     </tbody></table>`;
   body.innerHTML = `
-    <p class="hint" style="margin-bottom:14px;">For Lahore these are sub-regions (e.g. "1", "2"). For out-of-station regions like Multan/Faisalabad, use this for cities instead.</p>
-    <form id="new-subregion-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+    <p class="hint" style="margin-bottom:14px;">For Lahore these are sub-regions (e.g. "1", "2"). For out-of-station regions like Multan/Faisalabad, use this for cities instead.${canManage?'':' Only Super Admin can add, edit, or delete these.'}</p>
+    ${canManage ? `<form id="new-subregion-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
       <select id="sr-region" required>${regionOptions}</select>
       <input type="text" id="sr-name" placeholder="e.g. 1, 2, or city name" required style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <button class="btn small" type="submit">Add</button>
-    </form>
+    </form>` : ''}
     <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
       <input type="text" id="subregion-search" placeholder="Search sub-regions/cities…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <select id="subregion-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
@@ -2624,7 +2698,7 @@ async function renderSubRegionsSettings(body){
     </div>
     <div id="subregion-list">${renderRows(subs||[])}</div>`;
 
-  document.getElementById('new-subregion-form').onsubmit = async (e) => {
+  if (canManage) document.getElementById('new-subregion-form').onsubmit = async (e) => {
     e.preventDefault();
     const { error } = await sb.from('sub_regions').insert({
       region_id: document.getElementById('sr-region').value,
@@ -2648,6 +2722,7 @@ async function renderSubRegionsSettings(body){
   document.getElementById('subregion-sort').onchange = applyFilters;
 
   function bindActions(){
+    if (!canManage) return;
     document.querySelectorAll('[data-edit-subregion]').forEach(btn => {
       btn.onclick = async () => {
         const row = (subs||[]).find(s=>s.id===btn.dataset.editSubregion);
@@ -2659,6 +2734,14 @@ async function renderSubRegionsSettings(body){
         }
       };
     });
+    document.querySelectorAll('[data-delete-subregion]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Permanently delete this sub-region? Roster entries and hotspots using it will lose that reference. This cannot be undone.')) return;
+        const { error } = await sb.from('sub_regions').delete().eq('id', btn.dataset.deleteSubregion);
+        if (error){ toast('Could not delete: ' + error.message); return; }
+        toast('Deleted'); renderSettings();
+      };
+    });
     document.querySelectorAll('[data-toggle-subregion]').forEach(btn => {
       btn.onclick = async () => {
         await sb.from('sub_regions').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleSubregion);
@@ -2667,6 +2750,128 @@ async function renderSubRegionsSettings(body){
     });
   }
   bindActions();
+}
+
+async function renderHotspotsSettings(body){
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const { data: subs } = await sb.from('sub_regions').select('*').order('name');
+  const { data: hotspots } = await sb.from('hotspots').select('*, regions(name), sub_regions(name)').order('name');
+  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Status</th><th></th></tr></thead><tbody>
+    ${list.map(h=>`<tr>
+      <td>${escapeHtml(h.regions?.name||'—')}</td>
+      <td>${escapeHtml(h.sub_regions?.name||'—')}</td>
+      <td>${escapeHtml(h.name)}</td>
+      <td><span class="badge ${h.active?'active':'closed'}">${h.active?'Active':'Inactive'}</span></td>
+      <td style="white-space:nowrap;">
+        <button class="btn small outline" data-edit-hotspot="${h.id}">Edit</button>
+        <button class="btn small outline" data-toggle-hotspot="${h.id}" data-active="${h.active}">${h.active?'Disable':'Enable'}</button>
+        <button class="btn small danger" data-delete-hotspot="${h.id}">Remove</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">Hotspots/areas are scoped to a Region (and optionally a Sub-Region/City) so Roster only offers relevant options for whichever region is selected there.</p>
+    <form id="new-hotspot-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <select id="hs-region" required>${regionOptions}</select>
+      <select id="hs-subregion"><option value="">— Any sub-region —</option></select>
+      <input type="text" id="hs-name" placeholder="e.g. DHA Phase 5" required style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <button class="btn small" type="submit">Add</button>
+    </form>
+    <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+      <input type="text" id="hotspot-search" placeholder="Search hotspots…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <select id="hotspot-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+        <option value="az">A → Z</option><option value="za">Z → A</option><option value="newest">Newest first</option>
+      </select>
+    </div>
+    <div id="hotspot-list">${renderRows(hotspots||[])}</div>`;
+
+  const populateSubregionOptions = () => {
+    const regionId = document.getElementById('hs-region').value;
+    const opts = (subs||[]).filter(s=>s.region_id===regionId && s.active);
+    document.getElementById('hs-subregion').innerHTML = '<option value="">— Any sub-region —</option>' + opts.map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+  };
+  document.getElementById('hs-region').onchange = populateSubregionOptions;
+  populateSubregionOptions();
+
+  document.getElementById('new-hotspot-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('hotspots').insert({
+      region_id: document.getElementById('hs-region').value,
+      sub_region_id: document.getElementById('hs-subregion').value || null,
+      name: document.getElementById('hs-name').value.trim()
+    });
+    if (error){ toast('Could not add: ' + error.message); return; }
+    toast('Added'); renderSettings();
+  };
+
+  const applyFilters = () => {
+    const q = document.getElementById('hotspot-search').value.toLowerCase();
+    const sortMode = document.getElementById('hotspot-sort').value;
+    let list = (hotspots||[]).filter(h => h.name.toLowerCase().includes(q) || (h.regions?.name||'').toLowerCase().includes(q));
+    if (sortMode==='az') list = list.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    else if (sortMode==='za') list = list.slice().sort((a,b)=>b.name.localeCompare(a.name));
+    else if (sortMode==='newest') list = list.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+    document.getElementById('hotspot-list').innerHTML = renderRows(list);
+    bindActions();
+  };
+  document.getElementById('hotspot-search').oninput = applyFilters;
+  document.getElementById('hotspot-sort').onchange = applyFilters;
+
+  function bindActions(){
+    document.querySelectorAll('[data-edit-hotspot]').forEach(btn => {
+      btn.onclick = async () => {
+        const row = (hotspots||[]).find(h=>h.id===btn.dataset.editHotspot);
+        const newName = prompt(`Rename "${row.name}" to:`, row.name);
+        if (newName && newName.trim() && newName.trim() !== row.name){
+          const { error } = await sb.from('hotspots').update({ name: newName.trim() }).eq('id', row.id);
+          if (error){ toast('Could not rename: ' + error.message); return; }
+          toast('Renamed'); renderSettings();
+        }
+      };
+    });
+    document.querySelectorAll('[data-toggle-hotspot]').forEach(btn => {
+      btn.onclick = async () => {
+        await sb.from('hotspots').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleHotspot);
+        renderSettings();
+      };
+    });
+    document.querySelectorAll('[data-delete-hotspot]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Remove this hotspot permanently?')) return;
+        const { error } = await sb.from('hotspots').delete().eq('id', btn.dataset.deleteHotspot);
+        if (error){ toast('Could not remove: ' + error.message); return; }
+        toast('Removed'); renderSettings();
+      };
+    });
+  }
+  bindActions();
+}
+
+async function renderShortcutsSettings(body){
+  const rows = [
+    ['General', [
+      ['Esc', 'Close the open form/popup (or dismiss the newest notification if none is open)'],
+      ['Ctrl/Cmd + K', 'Jump to the search box on the current page (Team, Permissions, Roster, Knowledge Base, and most Settings lists)'],
+      ['Alt + N', 'Trigger the main "+ Add / New" button on the current page'],
+      ['Tab / Shift+Tab', 'Move between fields in a form'],
+      ['Enter', 'Submit the currently focused form'],
+    ]],
+    ['Search dropdowns (e.g. Settings → Permissions)', [
+      ['↓', 'Highlight the next result'],
+      ['↑', 'Highlight the previous result'],
+      ['Enter', 'Select the highlighted result'],
+      ['Esc', 'Close the results list'],
+    ]],
+  ];
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:16px;">These work anywhere in FieldHub, from any browser, no setup needed.</p>
+    ${rows.map(([section, items]) => `
+      <h3 style="margin-bottom:8px;">${escapeHtml(section)}</h3>
+      <table style="margin-bottom:20px;"><tbody>
+        ${items.map(([key,desc]) => `<tr><td class="mono" style="white-space:nowrap; width:160px;"><kbd style="background:var(--line); padding:2px 8px; border-radius:5px; font-size:12.5px;">${escapeHtml(key)}</kbd></td><td>${escapeHtml(desc)}</td></tr>`).join('')}
+      </tbody></table>`).join('')}
+  `;
 }
 
 async function renderPopupsSettings(body){
@@ -2753,9 +2958,18 @@ async function renderPermissionsSettings(body){
   const searchInput = document.getElementById('perm-user-search');
   const resultsBox = document.getElementById('perm-user-results');
   const selectedBox = document.getElementById('perm-selected-user');
+  let highlightedIndex = -1;
+
+  const highlightRow = (index) => {
+    const rows = resultsBox.querySelectorAll('[data-pick-user]');
+    rows.forEach(r => r.style.background = '');
+    if (rows[index]){ rows[index].style.background = 'var(--line)'; rows[index].scrollIntoView({block:'nearest'}); }
+    highlightedIndex = index;
+  };
 
   searchInput.oninput = () => {
     const q = searchInput.value.trim().toLowerCase();
+    highlightedIndex = -1;
     if (!q){ resultsBox.style.display = 'none'; resultsBox.innerHTML=''; return; }
     const matches = staff.filter(p => p.full_name.toLowerCase().includes(q) || (p.employee_id||'').toLowerCase().includes(q)).slice(0, 20);
     resultsBox.innerHTML = matches.length
@@ -2769,32 +2983,50 @@ async function renderPermissionsSettings(body){
     });
   };
 
+  searchInput.onkeydown = (e) => {
+    const rows = resultsBox.querySelectorAll('[data-pick-user]');
+    if (!rows.length) return;
+    if (e.key === 'ArrowDown'){ e.preventDefault(); highlightRow(Math.min(highlightedIndex+1, rows.length-1)); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); highlightRow(Math.max(highlightedIndex-1, 0)); }
+    else if (e.key === 'Enter'){ e.preventDefault(); if (highlightedIndex>=0 && rows[highlightedIndex]) selectPermUser(rows[highlightedIndex].dataset.pickUser); }
+    else if (e.key === 'Escape'){ resultsBox.style.display = 'none'; }
+  };
+
   async function selectPermUser(profileId){
     const p = staff.find(x=>x.id===profileId);
     resultsBox.style.display = 'none';
     searchInput.value = p.full_name;
     const { data: grants } = await sb.from('custom_permissions').select('permission_key').eq('profile_id', profileId);
-    const granted = new Set((grants||[]).map(g=>g.permission_key));
+    const originalGranted = new Set((grants||[]).map(g=>g.permission_key));
     selectedBox.style.display = 'block';
     selectedBox.innerHTML = `
       <h3 style="margin-bottom:2px;">${escapeHtml(p.full_name)}</h3>
       <div class="mono" style="margin-bottom:14px;">${ROLE_LABEL[p.role]}${p.employee_id?' · '+escapeHtml(p.employee_id):''}</div>
       ${GRANTABLE_PERMISSIONS.map(([key,label]) => `
         <label style="display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line); font-weight:400;">
-          <input type="checkbox" data-perm-toggle="${key}" ${granted.has(key)?'checked':''}> ${escapeHtml(label)}
+          <input type="checkbox" data-perm-toggle="${key}" ${originalGranted.has(key)?'checked':''}> ${escapeHtml(label)}
         </label>`).join('')}
+      <button class="btn-primary" id="perm-save-btn" style="margin-top:16px; width:auto; padding:10px 24px;">Save Settings</button>
+      <span id="perm-save-status" class="mono" style="margin-left:10px;"></span>
     `;
-    selectedBox.querySelectorAll('[data-perm-toggle]').forEach(cb => {
-      cb.onchange = async () => {
-        const key = cb.dataset.permToggle;
-        if (cb.checked){
-          await sb.from('custom_permissions').insert({ profile_id: profileId, permission_key: key, granted_by: state.user.id });
-        } else {
-          await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
-        }
-        toast('Updated');
-      };
-    });
+    document.getElementById('perm-save-btn').onclick = async () => {
+      const statusEl = document.getElementById('perm-save-status');
+      statusEl.textContent = 'Saving…';
+      const checkedNow = new Set(Array.from(selectedBox.querySelectorAll('[data-perm-toggle]:checked')).map(cb=>cb.dataset.permToggle));
+      const toAdd = [...checkedNow].filter(k => !originalGranted.has(k));
+      const toRemove = [...originalGranted].filter(k => !checkedNow.has(k));
+      if (toAdd.length){
+        await sb.from('custom_permissions').insert(toAdd.map(key => ({ profile_id: profileId, permission_key: key, granted_by: state.user.id })));
+      }
+      for (const key of toRemove){
+        await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
+      }
+      toAdd.forEach(k=>originalGranted.add(k));
+      toRemove.forEach(k=>originalGranted.delete(k));
+      statusEl.textContent = 'Saved ✓';
+      toast('Permissions updated');
+      setTimeout(()=>{ if (statusEl) statusEl.textContent=''; }, 2000);
+    };
   }
 }
 
@@ -2914,6 +3146,7 @@ async function renderMaintenanceSettings(body){
       <div class="form-row"><label>Max words per circular</label><input type="number" id="maint-word-limit" min="1" value="${sys?.circular_word_limit ?? ''}" placeholder="e.g. 150"></div>
       <div class="form-row"><label>Max words per request status remark</label><input type="number" id="maint-req-word-limit" min="1" value="${sys?.request_remark_word_limit ?? 25}" placeholder="e.g. 25"></div>
       <div class="form-row"><label>Max words per task status remark</label><input type="number" id="maint-task-word-limit" min="1" value="${sys?.task_remark_word_limit ?? 25}" placeholder="e.g. 25"></div>
+      <div class="form-row"><label>Max words per warning description</label><input type="number" id="maint-warning-word-limit" min="1" value="${sys?.warning_word_limit ?? ''}" placeholder="e.g. 100"></div>
       <button class="btn" id="maint-wordlimit-btn">Save word limits</button>
     </div>
     <div class="card">
@@ -2937,13 +3170,22 @@ async function renderMaintenanceSettings(body){
     const val = document.getElementById('maint-word-limit').value;
     const reqVal = document.getElementById('maint-req-word-limit').value;
     const taskVal = document.getElementById('maint-task-word-limit').value;
+    const warnVal = document.getElementById('maint-warning-word-limit').value;
     const { error } = await sb.from('system_settings').update({
       circular_word_limit: val ? parseInt(val,10) : null,
       request_remark_word_limit: reqVal ? parseInt(reqVal,10) : null,
-      task_remark_word_limit: taskVal ? parseInt(taskVal,10) : null
+      task_remark_word_limit: taskVal ? parseInt(taskVal,10) : null,
+      warning_word_limit: warnVal ? parseInt(warnVal,10) : null
     }).eq('id', 1);
     if (error){ toast('Could not save: ' + error.message); return; }
-    toast('Saved'); state.systemSettings = { ...state.systemSettings, circular_word_limit: val?parseInt(val,10):null, request_remark_word_limit: reqVal?parseInt(reqVal,10):null, task_remark_word_limit: taskVal?parseInt(taskVal,10):null };
+    toast('Saved');
+    state.systemSettings = {
+      ...state.systemSettings,
+      circular_word_limit: val?parseInt(val,10):null,
+      request_remark_word_limit: reqVal?parseInt(reqVal,10):null,
+      task_remark_word_limit: taskVal?parseInt(taskVal,10):null,
+      warning_word_limit: warnVal?parseInt(warnVal,10):null
+    };
   };
   document.getElementById('maint-session-btn').onclick = async () => {
     const mins = parseInt(document.getElementById('maint-session-timeout').value, 10) || 15;
@@ -3482,6 +3724,8 @@ async function renderRoster(){
     removedByReason[key] = (removedByReason[key]||0) + 1;
   });
   const replacementPending = entries.filter(e=>e.status==='removed' && e.replacement_pending).length;
+  const regionIdsInPlay = [...new Set(entries.map(e=>e.region_id))];
+  const approvedHeadcount = regionIdsInPlay.reduce((sum, rid) => sum + (state.regions.find(r=>r.id===rid)?.approved_headcount || 0), 0);
 
   const shiftNames = [...new Set(entries.map(e=>e.shift_types?.name).filter(Boolean))];
   const dayOffs = [...new Set(entries.map(e=>e.day_off).filter(Boolean))];
@@ -3498,7 +3742,7 @@ async function renderRoster(){
       <td class="mono">${escapeHtml(e.official_mobile||'—')}</td>
       <td class="mono">${escapeHtml(e.personal_mobile||'—')}</td>
       <td>${e.status==='removed'
-        ? `<span class="badge open">${escapeHtml(e.removal_reason||'Removed')}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
+        ? `<span class="badge open">${escapeHtml(e.removal_reason||'Removed')}${e.status_date?' — '+formatDate(e.status_date):''}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
         : '<span class="badge active">Approved / Working</span>'}</td>
       ${canManage ? `<td style="white-space:nowrap;">
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
@@ -3511,6 +3755,7 @@ async function renderRoster(){
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:16px;">
       <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer;"><div class="stat-number">${total}</div><div class="stat-label">Total on Roster</div></div>
       <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer;"><div class="stat-number">${active}</div><div class="stat-label">Approved / Currently Working</div></div>
+      ${approvedHeadcount ? `<div class="card stat-card sky"><div class="stat-number">${approvedHeadcount}</div><div class="stat-label">Approved Headcount (Regions shown)</div></div>` : ''}
       <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer;"><div class="stat-number">${total-active}</div><div class="stat-label">Resigned/Terminated/Transferred</div></div>
       <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer;"><div class="stat-number">${replacementPending}</div><div class="stat-label">Replacement Needed</div></div>
     </div>
@@ -3595,7 +3840,7 @@ async function openRosterModal(entry){
         <div class="form-row"><label>Region</label><select id="ro-region" required>${regionOptions}</select></div>
         <div class="form-row"><label>Sub-Region / City</label><select id="ro-subregion"><option value="">—</option></select></div>
       </div>
-      <div class="form-row"><label>Hotspot / Area (optional)</label><input type="text" id="ro-hotspot" value="${entry?escapeHtml(entry.hotspot||''):''}" placeholder="e.g. DHA Phase 5, Model Town"></div>
+      <div class="form-row"><label>Hotspot / Area (optional)</label><select id="ro-hotspot"><option value="">— Select region first —</option></select></div>
       <div class="two-col">
         <div class="form-row"><label>Shift</label><select id="ro-shift">${shiftOptions}</select></div>
         <div class="form-row"><label>Day Off</label><select id="ro-dayoff">${dayOptions}</select></div>
@@ -3612,8 +3857,21 @@ async function openRosterModal(entry){
     const { data: subs } = await sb.from('sub_regions').select('*').eq('region_id', regionId).eq('active', true).order('name');
     document.getElementById('ro-subregion').innerHTML = '<option value="">—</option>' + (subs||[]).map(s=>`<option value="${s.id}" ${selectedId===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
   };
-  document.getElementById('ro-region').onchange = (e) => loadSubRegions(e.target.value, null);
-  if (entry?.region_id) await loadSubRegions(entry.region_id, entry.sub_region_id);
+  const loadHotspots = async (regionId, subRegionId, selectedName) => {
+    if (!regionId){ document.getElementById('ro-hotspot').innerHTML = '<option value="">— Select region first —</option>'; return; }
+    let q = sb.from('hotspots').select('*').eq('region_id', regionId).eq('active', true);
+    const { data: spots } = await q.order('name');
+    const relevant = (spots||[]).filter(h => !h.sub_region_id || h.sub_region_id === subRegionId);
+    document.getElementById('ro-hotspot').innerHTML = '<option value="">— None —</option>' +
+      relevant.map(h=>`<option value="${escapeHtml(h.name)}" ${selectedName===h.name?'selected':''}>${escapeHtml(h.name)}</option>`).join('') +
+      (relevant.length ? '' : '<option value="" disabled>No hotspots set up for this region yet — add in Settings → Hotspots</option>');
+  };
+  document.getElementById('ro-region').onchange = (e) => { loadSubRegions(e.target.value, null); loadHotspots(e.target.value, null, null); };
+  document.getElementById('ro-subregion').onchange = (e) => loadHotspots(document.getElementById('ro-region').value, e.target.value || null, null);
+  if (entry?.region_id){
+    await loadSubRegions(entry.region_id, entry.sub_region_id);
+    await loadHotspots(entry.region_id, entry.sub_region_id, entry.hotspot);
+  }
 
   document.getElementById('roster-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -3621,7 +3879,7 @@ async function openRosterModal(entry){
       rider_id: document.getElementById('ro-rider').value,
       region_id: document.getElementById('ro-region').value,
       sub_region_id: document.getElementById('ro-subregion').value || null,
-      hotspot: document.getElementById('ro-hotspot').value.trim() || null,
+      hotspot: document.getElementById('ro-hotspot').value || null,
       shift_id: document.getElementById('ro-shift').value || null,
       day_off: document.getElementById('ro-dayoff').value || null,
       personal_mobile: document.getElementById('ro-personal').value.trim(),
@@ -3638,10 +3896,10 @@ async function openRosterModal(entry){
 function openBulkRosterModal(){
   openModal(`
     <h2>Bulk add to roster</h2>
-    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off, Hotspot (optional)</strong> — one rider per line. Works with comma-separated or pasted directly from Excel. Region/Shift names must match existing ones (Settings → Sub-Regions / Shift Types).</p>
+    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off, Hotspot (optional)</strong> — one rider per line. It's fine to also include the rider's Name as an extra column right after Employee ID (it'll be ignored — we already know their name from Employee ID); it's just there because that's usually how people copy from Excel. Works with comma-separated or pasted directly from Excel. Region/Shift names must match existing ones exactly (Settings → Sub-Regions / Shift Types).</p>
     <form id="bulk-roster-form">
       <textarea id="br-rows" rows="8" placeholder="EMP1001, Lahore, 1, 7:00 AM - 7:00 PM, Sunday, DHA Phase 5
-EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
+EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       <button class="btn-primary" type="submit" style="margin-top:12px;">Add All</button>
     </form>
     <div id="bulk-roster-results" style="margin-top:14px;"></div>
@@ -3656,15 +3914,24 @@ EMP1002, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
     await loadScopedProfiles();
     const { data: allSubRegions } = await sb.from('sub_regions').select('*');
     const { data: allShifts } = await sb.from('shift_types').select('*');
+    const isKnownRegion = (s) => state.regions.some(r => r.name.toLowerCase() === (s||'').trim().toLowerCase());
 
     const rows = [];
     for (const line of lines){
       const parts = line.split(/\t|,/).map(p=>p.trim());
-      const [empId, regionName, subRegionName, shiftName, dayOff, hotspot] = parts;
+      const empId = parts[0];
+      // Auto-detect an extra "Name" column: if the 2nd field isn't a real
+      // region, assume it's a name and shift everything over by one.
+      let regionName, subRegionName, shiftName, dayOff, hotspot;
+      if (isKnownRegion(parts[1])){
+        [regionName, subRegionName, shiftName, dayOff, hotspot] = [parts[1], parts[2], parts[3], parts[4], parts[5]];
+      } else {
+        [regionName, subRegionName, shiftName, dayOff, hotspot] = [parts[2], parts[3], parts[4], parts[5], parts[6]];
+      }
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
       const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
-      if (!region){ rows.push({ empId, ok:false, msg:`Region "${regionName}" not found` }); continue; }
+      if (!region){ rows.push({ empId, ok:false, msg:`Region "${regionName}" not found — check spelling matches Settings exactly` }); continue; }
       const subRegion = subRegionName ? (allSubRegions||[]).find(s => s.region_id===region.id && s.name.toLowerCase()===subRegionName.toLowerCase()) : null;
       const shift = shiftName ? (allShifts||[]).find(s => s.name.toLowerCase() === shiftName.toLowerCase()) : null;
       const { error } = await sb.from('roster_entries').insert({
@@ -3689,6 +3956,7 @@ function openRosterRemovalModal(entryId, riderId){
       <div class="form-row"><label>Reason</label><select id="rr-reason" required>
         <option>Resigned</option><option>Terminated</option><option>Transfer</option><option>Other</option>
       </select></div>
+      <div class="form-row"><label>Effective date</label><input type="date" id="rr-date" value="${new Date().toISOString().slice(0,10)}" required></div>
       <div class="form-row"><label>Explanation</label><textarea id="rr-note" required placeholder="Short note for the record"></textarea></div>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:14px;">
         <input type="checkbox" id="rr-replacement"> Replacement for this position is needed
@@ -3701,6 +3969,7 @@ function openRosterRemovalModal(entryId, riderId){
     const { error } = await sb.from('roster_entries').update({
       status: 'removed',
       removal_reason: document.getElementById('rr-reason').value,
+      status_date: document.getElementById('rr-date').value,
       removal_note: document.getElementById('rr-note').value.trim(),
       replacement_pending: document.getElementById('rr-replacement').checked
     }).eq('id', entryId);
@@ -3771,11 +4040,38 @@ function openModal(innerHtml){
   overlay.innerHTML = `<div class="modal"><button class="modal-close" onclick="closeModal()">✕</button>${innerHtml}</div>`;
   overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
   document.body.appendChild(overlay);
+  // Focus the first text input in the modal so typing/shortcuts work immediately
+  setTimeout(() => { overlay.querySelector('input,textarea,select')?.focus(); }, 30);
 }
 function closeModal(){
   const m = document.getElementById('active-modal');
   if (m) m.remove();
 }
+
+// Global keyboard shortcuts (see Settings > Keyboard Shortcuts for the full list)
+window.addEventListener('keydown', (e) => {
+  const tag = document.activeElement?.tagName;
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+  // Esc: close the topmost modal, or dismiss the newest toast if no modal is open
+  if (e.key === 'Escape'){
+    if (document.getElementById('active-modal')){ closeModal(); return; }
+    const toasts = document.querySelectorAll('.toast');
+    if (toasts.length) toasts[toasts.length-1].remove();
+    return;
+  }
+  // Ctrl/Cmd+K: focus the most relevant search box on the current page
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k'){
+    const box = document.querySelector('#perm-user-search, #kb-search, #rf-search, #type-search, #cat-search, #subregion-search, #hotspot-search, #tool-search');
+    if (box){ e.preventDefault(); box.focus(); box.select?.(); }
+    return;
+  }
+  // Alt+N: open the primary "add new" action on the current page, if any
+  if (e.altKey && e.key.toLowerCase() === 'n' && !typing){
+    const btn = document.querySelector('#topbar-actions .btn:not(.outline)') || document.querySelector('#topbar-actions .btn');
+    if (btn){ e.preventDefault(); btn.click(); }
+  }
+});
 function toast(msg){
   const t = document.createElement('div');
   t.className = 'toast';
