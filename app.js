@@ -17,6 +17,7 @@ const state = {
   myPermissions: new Set(),
   profilesInScope: [],
   branding: null,
+  notifications: [],
   view: 'dashboard'
 };
 
@@ -120,7 +121,7 @@ function showAuthScreen(){
 
 async function afterLogin(user){
   state.user = user;
-  const { data: profile, error } = await sb.from('profiles').select('*, regions!profiles_region_id_fkey(name)').eq('id', user.id).single();
+  const { data: profile, error } = await sb.from('profiles').select('*, regions!region_id(name)').eq('id', user.id).single();
   if (error || !profile){ toast('Could not load your profile. Try refreshing.'); return; }
   state.profile = profile;
 
@@ -165,6 +166,7 @@ async function afterLogin(user){
   showLatestUnackedCircularPopup();
   showPendingRemindersBanner();
   showPendingPopupAnnouncement();
+  loadAndShowNotifications();
   setupDesktopNotifications();
   setupSessionTimeout();
 }
@@ -240,8 +242,103 @@ async function showPendingRemindersBanner(){
   let expiryQ = sb.from('expiry_items').select('id', {count:'exact', head:true}).lte('expiry_date', cutoffStr);
   let toolQ = sb.from('tool_issuances').select('id', {count:'exact', head:true}).lte('next_due_date', cutoffStr);
   const [{count: expCount}, {count: toolCount}] = await Promise.all([expiryQ, toolQ]);
-  const total = (expCount||0) + (toolCount||0);
-  if (total > 0) toast(`⚠️ ${total} item(s) due/overdue for renewal — check Expiry Tracker / Tool Issuance`);
+  if (expCount) toast(`⚠️ ${expCount} expiry item(s) due/overdue — check Expiry Tracker`);
+  if (toolCount) toast(`⚠️ ${toolCount} tool(s) due/overdue for reissue — check Tool Issuance`);
+}
+
+// ---------------------------------------------------------
+// NOTIFICATIONS — a small bell near the profile/sign-out buttons
+// showing the most recent items relevant to this person (new
+// circulars, status updates on their requests/tasks, warnings issued
+// to them). Each item is its own notification, shown as its own toast
+// on login, rather than one combined summary line.
+// ---------------------------------------------------------
+async function loadAndShowNotifications(){
+  const retainCount = state.systemSettings?.notification_retain_count || 5;
+  const since = state.profile.notifications_last_seen_at || new Date(Date.now() - 3*24*60*60*1000).toISOString();
+
+  const items = [];
+  const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+  (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ type:'Circular', title:'New circular', body:c.title, created_at:c.created_at }));
+
+  const { data: myRequests } = await sb.from('requests').select('id, category').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
+  const myRequestIds = (myRequests||[]).map(r=>r.id);
+  if (myRequestIds.length){
+    const { data: reqUpdates } = await sb.from('request_updates').select('*, profiles(full_name)').in('request_id', myRequestIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
+    (reqUpdates||[]).forEach(u => items.push({ type:'Request update', title:`${u.profiles?.full_name||'Someone'} updated a request`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at }));
+  }
+
+  const { data: myTasks } = await sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`);
+  const myTaskIds = (myTasks||[]).map(t=>t.id);
+  if (myTaskIds.length){
+    const { data: taskUpdates } = await sb.from('task_updates').select('*, profiles(full_name)').in('task_id', myTaskIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
+    (taskUpdates||[]).forEach(u => items.push({ type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at }));
+  }
+
+  if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
+    const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+    (myWarnings||[]).forEach(w => items.push({ type:'Warning', title:`Warning issued by ${w.recorder?.full_name||'—'}`, body: w.action_type, created_at:w.created_at }));
+  }
+
+  items.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  state.notifications = items.slice(0, retainCount);
+
+  // Each item gets its own toast, instead of one combined line
+  state.notifications.forEach(n => toast(`${n.title}: ${n.body}`));
+
+  ensureNotificationBell();
+  updateNotificationBadge();
+}
+
+function ensureNotificationBell(){
+  if (document.getElementById('notif-bell-btn')) return;
+  const actions = document.querySelector('.top-ribbon-actions');
+  const logoutBtn = document.getElementById('logout-btn');
+  if (!actions || !logoutBtn) return;
+  const btn = document.createElement('button');
+  btn.id = 'notif-bell-btn';
+  btn.className = 'ribbon-link';
+  btn.style.position = 'relative';
+  btn.innerHTML = `🔔<span id="notif-badge" style="display:none; position:absolute; top:2px; right:2px; background:#c0392b; color:#fff; border-radius:50%; font-size:10px; line-height:1; padding:2px 5px;">0</span>`;
+  actions.insertBefore(btn, logoutBtn);
+  btn.onclick = (e) => { e.stopPropagation(); toggleNotificationDropdown(); };
+}
+
+function updateNotificationBadge(){
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  const n = state.notifications.length;
+  badge.style.display = n ? 'block' : 'none';
+  badge.textContent = n;
+}
+
+function toggleNotificationDropdown(){
+  const existing = document.getElementById('notif-dropdown');
+  if (existing){ existing.remove(); return; }
+  const bell = document.getElementById('notif-bell-btn');
+  if (!bell) return;
+  const rect = bell.getBoundingClientRect();
+  const dropdown = document.createElement('div');
+  dropdown.id = 'notif-dropdown';
+  dropdown.style.cssText = `position:fixed; top:${rect.bottom+6}px; right:${window.innerWidth-rect.right}px; width:320px; max-height:400px; overflow-y:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.15); z-index:5000; padding:10px;`;
+  dropdown.innerHTML = state.notifications.length
+    ? state.notifications.map(n => `<div style="padding:9px 6px; border-bottom:1px solid var(--line);">
+        <div style="font-weight:600; font-size:13px;">${escapeHtml(n.title)}</div>
+        <div style="font-size:12.5px; color:var(--muted);">${escapeHtml(n.body||'')}</div>
+        <div class="mono" style="font-size:11px; margin-top:2px;">${formatDateTime(n.created_at)}</div>
+      </div>`).join('')
+    : `<div style="padding:14px; color:var(--muted); font-size:13px;">No recent notifications.</div>`;
+  document.body.appendChild(dropdown);
+  // Mark as seen so these don't repeat next login
+  sb.from('profiles').update({ notifications_last_seen_at: new Date().toISOString() }).eq('id', state.user.id);
+  state.profile.notifications_last_seen_at = new Date().toISOString();
+  const closeOnOutside = (e) => {
+    if (!dropdown.contains(e.target) && e.target.id !== 'notif-bell-btn'){
+      dropdown.remove();
+      document.removeEventListener('click', closeOnOutside);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeOnOutside), 10);
 }
 
 async function showPendingPopupAnnouncement(){
@@ -640,7 +737,7 @@ async function renderCirculars(){
     document.getElementById('new-circular-btn').onclick = openNewCircularModal;
   }
 
-  let circularsQuery = sb.from('circulars').select('*, profiles!circulars_created_by_fkey(full_name)').order('created_at', {ascending:false});
+  let circularsQuery = sb.from('circulars').select('*, profiles!created_by(full_name)').order('created_at', {ascending:false});
   if (!isAdmin()) circularsQuery = circularsQuery.gte('created_at', state.profile.created_at);
   const { data: circulars } = await circularsQuery;
   const { data: myAcks } = await sb.from('circular_acks').select('circular_id').eq('user_id', state.user.id);
@@ -853,7 +950,7 @@ async function renderTasks(){
     </div>`;
   }
 
-  let query = sb.from('tasks').select('*, assignee:profiles!tasks_assigned_to_fkey(full_name), assigner:profiles!tasks_assigned_by_fkey(full_name)').order('due_date', {ascending:true, nullsFirst:false});
+  let query = sb.from('tasks').select('*, assignee:profiles!assigned_to(full_name), assigner:profiles!assigned_by(full_name)').order('due_date', {ascending:true, nullsFirst:false});
   if (!isStaff() || taskTab==='mine') query = query.eq('assigned_to', state.user.id);
   else query = query.eq('assigned_by', state.user.id);
   const { data: tasks } = await query;
@@ -978,7 +1075,7 @@ async function renderRequests(){
   }
 
   const { data: rawRequests } = await sb.from('requests')
-    .select('*, rider:profiles!requests_rider_id_fkey(full_name), poc:profiles!requests_assigned_poc_id_fkey(full_name)')
+    .select('*, rider:profiles!rider_id(full_name), poc:profiles!assigned_poc_id(full_name)')
     .order('created_at', {ascending:false});
 
   const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3 };
@@ -1003,6 +1100,7 @@ async function renderRequests(){
       </details>
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
         ${requestActionControls(r)}
+        ${(isAdmin() && !r.assigned_poc_id) ? `<button class="btn small outline" data-reassign-request="${r.id}">Assign Handler</button>` : ''}
         ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
         ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
       </div>
@@ -1027,6 +1125,26 @@ async function renderRequests(){
   });
   main.querySelectorAll('[data-edit-request]').forEach(btn => {
     btn.onclick = () => openEditRequestModal(requests.find(r=>r.id===btn.dataset.editRequest));
+  });
+  main.querySelectorAll('[data-reassign-request]').forEach(btn => {
+    btn.onclick = async () => {
+      await loadScopedProfiles();
+      const staff = state.profilesInScope.filter(p => !['rider'].includes(p.role) && p.status==='active');
+      const options = staff.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)} (${ROLE_LABEL[p.role]})</option>`).join('');
+      openModal(`
+        <h2>Assign a handler</h2>
+        <form id="reassign-form">
+          <div class="form-row"><label>Handler</label><select id="reassign-select" required>${options}</select></div>
+          <button class="btn-primary" type="submit">Assign</button>
+        </form>
+      `);
+      document.getElementById('reassign-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const { error } = await sb.from('requests').update({ assigned_poc_id: document.getElementById('reassign-select').value }).eq('id', btn.dataset.reassignRequest);
+        if (error){ toast('Could not assign: ' + error.message); return; }
+        closeModal(); toast('Handler assigned'); renderRequests();
+      };
+    };
   });
   requests.forEach(r => loadThread(r.id));
   main.querySelectorAll('.reply-form').forEach(f => {
@@ -1166,10 +1284,32 @@ function openNewRequestModal(){
     e.preventDefault();
     const categoryId = document.getElementById('r-category').value;
     const category = state.categories.find(c=>c.id===categoryId);
+    const myRegionId = state.profile.region_id;
+
+    // Work out who should handle this: a per-region override role takes
+    // priority over the category's default role.
+    let targetRole = category?.primary_role;
+    if (myRegionId){
+      const { data: override } = await sb.from('category_region_overrides')
+        .select('role').eq('category_id', categoryId).eq('region_id', myRegionId).maybeSingle();
+      if (override?.role) targetRole = override.role;
+    }
+    let assignedPocId = null;
+    if (targetRole){
+      const [{ data: candidates }, { data: regionLinks }] = await Promise.all([
+        sb.from('profiles').select('id, region_id').eq('role', targetRole).eq('status', 'active'),
+        myRegionId ? sb.from('profile_regions').select('profile_id').eq('region_id', myRegionId) : Promise.resolve({data:[]})
+      ]);
+      const linkedIds = new Set((regionLinks||[]).map(r=>r.profile_id));
+      const inRegion = (candidates||[]).find(p => linkedIds.has(p.id) || p.region_id === myRegionId);
+      assignedPocId = (inRegion || candidates?.[0])?.id || null;
+    }
+
     const { data: inserted, error } = await sb.from('requests').insert({
       rider_id: state.user.id,
       category: category?.name || 'Other',
       category_id: categoryId,
+      assigned_poc_id: assignedPocId,
       description: document.getElementById('r-desc').value.trim()
     }).select('*').single();
     if (error){ toast('Could not submit: ' + error.message); return; }
@@ -1368,9 +1508,13 @@ async function renderTeam(){
 
   if (pending.length && isAdmin()){
     html += `<div class="card"><h3>Pending approvals (${pending.length})</h3>
-    <table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>
+    <div style="margin-bottom:10px;"><button class="btn small" id="bulk-approve-btn" disabled>Approve Selected (<span id="bulk-approve-count">0</span>)</button></div>
+    <table><thead><tr><th><input type="checkbox" id="pending-select-all"></th><th>Name</th><th>Designation</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>
     ${pending.map(p=>`<tr>
-      <td>${escapeHtml(p.full_name)}</td><td class="mono">${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(p.phone||'—')}</td>
+      <td><input type="checkbox" class="pending-select" value="${p.id}"></td>
+      <td>${escapeHtml(p.full_name)}</td>
+      <td>${ROLE_LABEL[p.role]||'—'}${!p.region_id?' <span class="badge pending" title="No region set">No region</span>':''}</td>
+      <td class="mono">${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(p.phone||'—')}</td>
       <td><button class="btn small" data-approve="${p.id}">Approve</button></td>
     </tr>`).join('')}
     </tbody></table></div>`;
@@ -1379,7 +1523,11 @@ async function renderTeam(){
   const nonPending = state.profilesInScope.filter(p=>p.status!=='pending');
   const activeCount = nonPending.filter(p=>p.status==='active').length;
   const disabledCount = nonPending.filter(p=>p.status==='disabled').length;
-  html += `<div class="card"><h3>Team directory (${nonPending.length} total — ${activeCount} active, ${disabledCount} disabled)</h3>`;
+  html += `<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+      <h3 style="margin:0;">Team directory (${nonPending.length} total — ${activeCount} active, ${disabledCount} disabled)</h3>
+      <input type="text" id="team-search" placeholder="Search name, Employee ID, role, mobile…" style="min-width:240px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+    </div>`;
   const roleGroupOrder = isAdmin()
     ? ['rider','regional_poc','team_lead','coordinator','inventory_coordinator','admin','super_admin']
     : ['team_lead','coordinator','regional_poc','inventory_coordinator','rider','admin','super_admin'];
@@ -1395,7 +1543,7 @@ async function renderTeam(){
       </button>
       <div class="nav-group-items collapsed" id="${groupId}">
         <table><thead><tr><th>Name</th><th>Mobile</th><th>Employee ID</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-        ${members.map(p=>`<tr>
+        ${members.map(p=>`<tr data-team-row data-search="${escapeHtml((p.full_name+' '+(p.employee_id||'')+' '+ROLE_LABEL[role]+' '+(p.phone||'')).toLowerCase())}">
           <td>${escapeHtml(p.full_name)}</td>
           <td class="mono">${escapeHtml(p.phone||'—')}</td>
           <td class="mono">${escapeHtml(p.employee_id||'—')}</td>
@@ -1448,6 +1596,56 @@ async function renderTeam(){
       toast('Account deleted'); renderTeam();
     };
   });
+
+  // Team search — filters directory rows live, auto-expanding matching groups
+  const teamSearchBox = document.getElementById('team-search');
+  if (teamSearchBox){
+    teamSearchBox.oninput = () => {
+      const q = teamSearchBox.value.trim().toLowerCase();
+      main.querySelectorAll('[data-team-row]').forEach(row => {
+        const match = !q || (row.dataset.search||'').includes(q);
+        row.style.display = match ? '' : 'none';
+      });
+      main.querySelectorAll('.nav-group-items').forEach(group => {
+        const anyVisible = Array.from(group.querySelectorAll('[data-team-row]')).some(r => r.style.display !== 'none');
+        const header = main.querySelector(`[data-team-group-toggle="${group.id}"]`);
+        if (q && anyVisible){ group.classList.remove('collapsed'); header?.classList.remove('collapsed'); }
+        if (header) header.style.display = (q && !anyVisible) ? 'none' : '';
+      });
+    };
+  }
+
+  // Bulk approve
+  const selectAllBox = document.getElementById('pending-select-all');
+  const bulkApproveBtn = document.getElementById('bulk-approve-btn');
+  const updateBulkCount = () => {
+    const checked = main.querySelectorAll('.pending-select:checked').length;
+    if (bulkApproveBtn){
+      bulkApproveBtn.disabled = checked === 0;
+      document.getElementById('bulk-approve-count').textContent = checked;
+    }
+  };
+  if (selectAllBox){
+    selectAllBox.onchange = () => {
+      main.querySelectorAll('.pending-select').forEach(cb => cb.checked = selectAllBox.checked);
+      updateBulkCount();
+    };
+  }
+  main.querySelectorAll('.pending-select').forEach(cb => cb.onchange = updateBulkCount);
+  if (bulkApproveBtn){
+    bulkApproveBtn.onclick = async () => {
+      const ids = Array.from(main.querySelectorAll('.pending-select:checked')).map(cb=>cb.value);
+      if (!ids.length) return;
+      const noRegionCount = pending.filter(p=>ids.includes(p.id) && !p.region_id).length;
+      const confirmMsg = noRegionCount
+        ? `Approve ${ids.length} people? ${noRegionCount} of them have no region set yet — you'll need to edit those individually afterward to assign a region and add them to Roster.`
+        : `Approve ${ids.length} people? Remember to add each of them to Roster afterward.`;
+      if (!confirm(confirmMsg)) return;
+      const { error } = await sb.from('profiles').update({ status: 'active' }).in('id', ids);
+      if (error){ toast('Could not approve: ' + error.message); return; }
+      toast(`${ids.length} approved — don't forget to add them to Roster`); renderTeam();
+    };
+  }
 }
 
 function regionNamesFor(p){
@@ -1586,7 +1784,7 @@ async function openApproveModal(profileId){
     const { error } = await sb.from('profiles').update(payload).eq('id', profileId);
     if (error){
       if (error.code === '23505' || /duplicate key/i.test(error.message)){
-        const conflictField = /employee_id/i.test(error.message) ? 'Employee ID' : /phone/i.test(error.message) ? 'Mobile number' : 'value';
+        const conflictField = /employee_id/i.test(error.message) ? 'Employee ID' : /phone/i.test(error.message) ? 'Mobile number' : /email/i.test(error.message) ? 'Email' : 'value';
         toast(`Could not save — that ${conflictField} is already used by another account.`);
       } else {
         toast('Could not save: ' + error.message);
@@ -1606,6 +1804,14 @@ async function openApproveModal(profileId){
       await sb.from('profile_regions').delete().eq('profile_id', profileId);
     }
     closeModal(); toast('Saved'); renderTeam();
+    // If this was a fresh approval of a rider, prompt to add them to Roster
+    // right away rather than letting it be forgotten.
+    if (p.status === 'pending' && role === 'rider'){
+      if (confirm(`${p.full_name} is now active. Add them to the Roster now?`)){
+        openRosterModal(null);
+        setTimeout(() => { const sel = document.getElementById('ro-rider'); if (sel) sel.value = profileId; }, 200);
+      }
+    }
   };
 }
 
@@ -2137,7 +2343,7 @@ async function renderWarnings(){
     document.getElementById('topbar-actions').innerHTML = '';
   }
   const { data: warnings } = await sb.from('disciplinary_actions')
-    .select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name, employee_id, region_id), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)')
+    .select('*, rider:profiles!rider_id(full_name, employee_id, region_id), recorder:profiles!recorded_by(full_name)')
     .order('created_at', {ascending:false});
 
   if (!warnings || warnings.length===0){ main.innerHTML = emptyState('No warnings recorded.'); return; }
@@ -2620,7 +2826,7 @@ async function generateReport(){
   let rows = [];
   if (type === 'requests'){
     const { data } = await sb.from('requests')
-      .select('*, rider:profiles!requests_rider_id_fkey(full_name, employee_id), poc:profiles!requests_assigned_poc_id_fkey(full_name), categories(name, tat_hours)')
+      .select('*, rider:profiles!rider_id(full_name, employee_id), poc:profiles!assigned_poc_id(full_name), categories(name, tat_hours)')
       .gte('created_at', from).lte('created_at', to);
     rows = (data||[]).map(r => {
       const hoursToResolve = r.resolved_at ? ((new Date(r.resolved_at) - new Date(r.created_at))/3600000).toFixed(1) : '';
@@ -2634,14 +2840,14 @@ async function generateReport(){
     });
   } else if (type === 'tasks'){
     const { data } = await sb.from('tasks')
-      .select('*, assignee:profiles!tasks_assigned_to_fkey(full_name), assigner:profiles!tasks_assigned_by_fkey(full_name)')
+      .select('*, assignee:profiles!assigned_to(full_name), assigner:profiles!assigned_by(full_name)')
       .gte('created_at', from).lte('created_at', to);
     rows = (data||[]).map(t => ({
       Title: t.title, 'Assigned To': t.assignee?.full_name, 'Assigned By': t.assigner?.full_name,
       Status: t.status, 'Due Date': t.due_date||'', 'Created At': t.created_at
     }));
   } else if (type === 'circulars'){
-    const { data } = await sb.from('circulars').select('*, profiles!circulars_created_by_fkey(full_name)').gte('created_at', from).lte('created_at', to);
+    const { data } = await sb.from('circulars').select('*, profiles!created_by(full_name)').gte('created_at', from).lte('created_at', to);
     for (const c of (data||[])){
       const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
       const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
@@ -2651,7 +2857,7 @@ async function generateReport(){
     const { data } = await sb.from('expiry_items').select('*, profiles(full_name)').gte('created_at', from).lte('created_at', to);
     rows = (data||[]).map(i => ({ Rider: i.profiles?.full_name, Item: i.item_type, Label: i.item_label||'', 'Expiry Date': i.expiry_date, 'Added At': i.created_at }));
   } else if (type === 'warnings'){
-    const { data } = await sb.from('disciplinary_actions').select('*, rider:profiles!disciplinary_actions_rider_id_fkey(full_name, employee_id), recorder:profiles!disciplinary_actions_recorded_by_fkey(full_name)').gte('created_at', from).lte('created_at', to);
+    const { data } = await sb.from('disciplinary_actions').select('*, rider:profiles!rider_id(full_name, employee_id), recorder:profiles!recorded_by(full_name)').gte('created_at', from).lte('created_at', to);
     rows = (data||[]).map(w => ({ Rider: w.rider?.full_name, 'Employee ID': w.rider?.employee_id, Type: w.action_type, Description: w.description, 'Recorded By': w.recorder?.full_name, 'Created At': w.created_at }));
   } else if (type === 'active_employees'){
     const { data } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
@@ -2778,6 +2984,15 @@ async function renderHotspotsSettings(body){
       <input type="text" id="hs-name" placeholder="e.g. DHA Phase 5" required style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <button class="btn small" type="submit">Add</button>
     </form>
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Bulk add hotspots ▾</summary>
+      <p class="hint" style="margin:10px 0;">Paste rows as: <strong>Region, Sub-Region/City (optional), Hotspot name</strong> — one per line.</p>
+      <textarea id="bulk-hotspot-rows" rows="6" style="width:100%; margin-bottom:8px;" placeholder="Lahore, 1, DHA Phase 5
+Lahore, , Model Town
+Multan, , Cantt Area"></textarea>
+      <button class="btn small" id="bulk-hotspot-add">Add All</button>
+      <div id="bulk-hotspot-results" style="margin-top:10px;"></div>
+    </details>
     <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
       <input type="text" id="hotspot-search" placeholder="Search hotspots…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <select id="hotspot-sort" style="padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
@@ -2803,6 +3018,28 @@ async function renderHotspotsSettings(body){
     });
     if (error){ toast('Could not add: ' + error.message); return; }
     toast('Added'); renderSettings();
+  };
+
+  document.getElementById('bulk-hotspot-add').onclick = async () => {
+    const lines = document.getElementById('bulk-hotspot-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const resultsEl = document.getElementById('bulk-hotspot-results');
+    resultsEl.innerHTML = '<div class="mono">Processing…</div>';
+    const rows = [];
+    for (const line of lines){
+      const parts = line.split(/\t|,/).map(p=>p.trim());
+      const [regionName, subRegionName, hotspotName] = parts;
+      const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
+      if (!region){ rows.push({ label: line, ok:false, msg:`Region "${regionName}" not found` }); continue; }
+      const subRegion = subRegionName ? (subs||[]).find(s => s.region_id===region.id && s.name.toLowerCase()===subRegionName.toLowerCase()) : null;
+      if (!hotspotName){ rows.push({ label: line, ok:false, msg:'No hotspot name given' }); continue; }
+      const { error } = await sb.from('hotspots').insert({ region_id: region.id, sub_region_id: subRegion?.id || null, name: hotspotName });
+      rows.push({ label: `${region.name}${subRegion?' / '+subRegion.name:''} — ${hotspotName}`, ok: !error, msg: error ? error.message : 'Added' });
+    }
+    resultsEl.innerHTML = `<table><thead><tr><th>Hotspot</th><th>Result</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td>${escapeHtml(r.label)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
+    </tbody></table><p class="hint" style="margin-top:8px;">Switch tabs and back (or reload) to see the updated list above.</p>`;
+    toast(`${rows.filter(r=>r.ok).length} of ${rows.length} added`);
   };
 
   const applyFilters = () => {
@@ -3154,6 +3391,12 @@ async function renderMaintenanceSettings(body){
       <p class="hint">How many minutes of inactivity before someone is automatically signed out.</p>
       <div class="form-row"><label>Minutes of inactivity</label><input type="number" id="maint-session-timeout" min="1" value="${sys?.session_timeout_minutes ?? 15}"></div>
       <button class="btn" id="maint-session-btn">Save</button>
+    </div>
+    <div class="card">
+      <h3>Notification history</h3>
+      <p class="hint">How many recent notifications to keep in everyone's notification bell (near the profile/sign-out buttons).</p>
+      <div class="form-row"><label>Notifications to retain</label><input type="number" id="maint-notif-count" min="1" max="50" value="${sys?.notification_retain_count ?? 5}"></div>
+      <button class="btn" id="maint-notif-btn">Save</button>
     </div>`;
   document.getElementById('maint-toggle-btn').onclick = async () => {
     const newState = !sys?.portal_active;
@@ -3192,6 +3435,13 @@ async function renderMaintenanceSettings(body){
     const { error } = await sb.from('system_settings').update({ session_timeout_minutes: mins }).eq('id', 1);
     if (error){ toast('Could not save: ' + error.message); return; }
     state.systemSettings = { ...state.systemSettings, session_timeout_minutes: mins };
+    toast('Saved — takes effect next login (or refresh)');
+  };
+  document.getElementById('maint-notif-btn').onclick = async () => {
+    const count = parseInt(document.getElementById('maint-notif-count').value, 10) || 5;
+    const { error } = await sb.from('system_settings').update({ notification_retain_count: count }).eq('id', 1);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    state.systemSettings = { ...state.systemSettings, notification_retain_count: count };
     toast('Saved — takes effect next login (or refresh)');
   };
 }
@@ -3273,15 +3523,16 @@ async function renderTools(){
     document.getElementById('bulk-tool-issuance-btn').onclick = openBulkToolIssuanceModal;
     if (canBulkUpdate) document.getElementById('bulk-tool-update-btn').onclick = openBulkToolUpdateModal;
   }
-  const { data: issuances } = await sb.from('tool_issuances').select('*, profiles(full_name), tool_types(name)').order('next_due_date');
+  const { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id), tool_types(name)').order('next_due_date');
+  if (issuancesErr){ main.innerHTML = emptyState('Could not load tool issuances: ' + issuancesErr.message); return; }
   if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
 
   const { data: acks } = await sb.from('tool_issuance_acks').select('*');
   const ackMap = new Map((acks||[]).map(a => [a.tool_issuance_id, a]));
 
   const today = new Date();
-  main.innerHTML = `<table><thead><tr><th>Rider</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th></tr></thead><tbody>
-    ${issuances.map(i => {
+  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th></tr></thead><tbody>
+    ${list.map(i => {
       const due = new Date(i.next_due_date);
       const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
       let badge='badge active', label='OK';
@@ -3299,22 +3550,38 @@ async function renderTools(){
       }
       return `<tr>
         <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
+        <td class="mono">${escapeHtml(i.profiles?.employee_id||'—')}</td>
         <td>${escapeHtml(i.tool_types?.name||'—')}</td>
         <td class="mono">${i.issued_date}</td>
-        <td class="mono">${i.next_due_date}</td>
+        <td class="mono">${i.next_due_date||'—'}</td>
         <td><span class="${badge}">${label}</span></td>
         <td>${ackCell}</td>
       </tr>`;
     }).join('')}
   </tbody></table>`;
 
-  main.querySelectorAll('[data-ack-tool]').forEach(btn => {
-    btn.onclick = async () => {
-      const { error } = await sb.from('tool_issuance_acks').insert({ tool_issuance_id: btn.dataset.ackTool, user_id: state.user.id });
-      if (error){ toast('Could not acknowledge: ' + error.message); return; }
-      toast('Acknowledged — thank you'); renderTools();
-    };
-  });
+  main.innerHTML = `<div class="form-row" style="max-width:320px;"><input type="text" id="tool-issuance-search" placeholder="Search by rider name or Employee ID…"></div><div id="tool-issuance-list">${renderRows(issuances)}</div>`;
+
+  const applyFilters = () => {
+    const q = document.getElementById('tool-issuance-search').value.trim().toLowerCase();
+    const filtered = !q ? issuances : issuances.filter(i =>
+      (i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q)
+    );
+    document.getElementById('tool-issuance-list').innerHTML = renderRows(filtered);
+    bindAckButtons();
+  };
+  document.getElementById('tool-issuance-search').oninput = applyFilters;
+
+  function bindAckButtons(){
+    document.querySelectorAll('[data-ack-tool]').forEach(btn => {
+      btn.onclick = async () => {
+        const { error } = await sb.from('tool_issuance_acks').insert({ tool_issuance_id: btn.dataset.ackTool, user_id: state.user.id });
+        if (error){ toast('Could not acknowledge: ' + error.message); return; }
+        toast('Acknowledged — thank you'); renderTools();
+      };
+    });
+  }
+  bindAckButtons();
 }
 
 function openToolTypeModal(row){
@@ -3370,12 +3637,12 @@ function openToolTypeModal(row){
 function openBulkToolIssuanceModal(){
   openModal(`
     <h2>Bulk issue tool</h2>
-    <p class="hint">Paste one <strong>Employee ID</strong> per line — all of them will receive the same tool, issued on the same date.</p>
+    <p class="hint">Paste one <strong>Employee ID</strong> per line — all get the same tool. To backdate historical records (useful when first setting up the portal), you can optionally add a comma + date after the Employee ID to override the default date for that row: <code>EMP1001, 2025-03-15</code>.</p>
     <form id="bulk-tool-form">
       <div class="form-row"><label>Tool</label><select id="bti-tool" required></select></div>
-      <div class="form-row"><label>Issued date</label><input type="date" id="bti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
+      <div class="form-row"><label>Default issued date</label><input type="date" id="bti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
       <div class="form-row"><label>Employee IDs</label><textarea id="bti-ids" rows="8" placeholder="EMP1001
-EMP1002
+EMP1002, 2025-03-15
 EMP1003"></textarea></div>
       <button class="btn-primary" type="submit">Issue to all</button>
     </form>
@@ -3386,23 +3653,26 @@ EMP1003"></textarea></div>
   });
   document.getElementById('bulk-tool-form').onsubmit = async (e) => {
     e.preventDefault();
-    const empIds = document.getElementById('bti-ids').value.split('\n').map(s=>s.trim()).filter(Boolean);
-    if (!empIds.length){ toast('Paste at least one Employee ID'); return; }
+    const lines = document.getElementById('bti-ids').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if (!lines.length){ toast('Paste at least one Employee ID'); return; }
     const toolTypeId = document.getElementById('bti-tool').value;
-    const issuedDate = document.getElementById('bti-date').value;
+    const defaultDate = document.getElementById('bti-date').value;
     const resultsEl = document.getElementById('bulk-tool-results');
     resultsEl.innerHTML = '<div class="mono">Processing…</div>';
 
     await loadScopedProfiles();
     const rows = [];
-    for (const empId of empIds){
-      const rider = state.profilesInScope.find(p => p.employee_id === empId);
+    for (const line of lines){
+      const parts = line.split(/\t|,/).map(p=>p.trim());
+      const empId = parts[0];
+      const issuedDate = parts[1] || defaultDate;
+      const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
       const { error } = await sb.from('tool_issuances').insert({
         rider_id: rider.id, region_id: rider.region_id, tool_type_id: toolTypeId,
         issued_date: issuedDate, recorded_by: state.user.id
       });
-      rows.push({ empId, ok: !error, msg: error ? error.message : `Issued to ${rider.full_name}` });
+      rows.push({ empId, ok: !error, msg: error ? error.message : `Issued to ${rider.full_name} (${issuedDate})` });
     }
     resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
       ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
@@ -3710,7 +3980,7 @@ async function renderRoster(){
   } else {
     document.getElementById('topbar-actions').innerHTML = '';
   }
-  let query = sb.from('roster_entries').select('*, profiles!roster_entries_rider_id_fkey(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
+  let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
   const { data: entries } = await query.order('created_at', {ascending:false});
 
@@ -3747,6 +4017,7 @@ async function renderRoster(){
       ${canManage ? `<td style="white-space:nowrap;">
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
         ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Mark Resigned/Terminated/Transferred</button>` : ''}
+        ${(e.status==='removed' && isSuperAdmin()) ? `<button class="btn small outline" data-reinstate-roster="${e.id}">Reinstate (undo mistake)</button>` : ''}
       </td>` : ''}
     </tr>`).join('')}
   </tbody></table>` : emptyState('No roster entries match this filter.');
@@ -3818,6 +4089,20 @@ async function renderRoster(){
         openRosterRemovalModal(entry.id, entry.rider_id);
       };
     });
+    document.querySelectorAll('[data-reinstate-roster]').forEach(btn => {
+      btn.onclick = async () => {
+        const entry = entries.find(e=>e.id===btn.dataset.reinstateRoster);
+        if (!confirm(`Reinstate ${entry.profiles?.full_name||'this rider'}? This undoes the Resigned/Terminated/Transferred mark and re-enables their login.`)) return;
+        const { error } = await sb.from('roster_entries').update({
+          status: 'active', removal_reason: null, status_date: null, removal_note: null, replacement_pending: false
+        }).eq('id', entry.id);
+        if (error){ toast('Could not reinstate: ' + error.message); return; }
+        if (entry.rider_id){
+          await sb.from('profiles').update({ status: 'active' }).eq('id', entry.rider_id);
+        }
+        toast('Reinstated — login re-enabled'); renderRoster();
+      };
+    });
   }
   bindRowActions();
 }
@@ -3875,8 +4160,13 @@ async function openRosterModal(entry){
 
   document.getElementById('roster-form').onsubmit = async (e) => {
     e.preventDefault();
+    const riderId = document.getElementById('ro-rider').value;
+    if (!entry){
+      const { data: existingActive } = await sb.from('roster_entries').select('id').eq('rider_id', riderId).neq('status', 'removed').maybeSingle();
+      if (existingActive){ toast('This rider already has an active roster entry — edit that one instead of creating a duplicate.'); return; }
+    }
     const payload = {
-      rider_id: document.getElementById('ro-rider').value,
+      rider_id: riderId,
       region_id: document.getElementById('ro-region').value,
       sub_region_id: document.getElementById('ro-subregion').value || null,
       hotspot: document.getElementById('ro-hotspot').value || null,
@@ -3930,6 +4220,8 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       }
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
+      const { data: existingActive } = await sb.from('roster_entries').select('id').eq('rider_id', rider.id).neq('status', 'removed').maybeSingle();
+      if (existingActive){ rows.push({ empId, ok:false, msg:`${rider.full_name} already has an active roster entry — skipped` }); continue; }
       const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
       if (!region){ rows.push({ empId, ok:false, msg:`Region "${regionName}" not found — check spelling matches Settings exactly` }); continue; }
       const subRegion = subRegionName ? (allSubRegions||[]).find(s => s.region_id===region.id && s.name.toLowerCase()===subRegionName.toLowerCase()) : null;
