@@ -950,7 +950,7 @@ async function renderTasks(){
     </div>`;
   }
 
-  let query = sb.from('tasks').select('*, assignee:profiles!assigned_to(full_name), assigner:profiles!assigned_by(full_name)').order('due_date', {ascending:true, nullsFirst:false});
+  let query = sb.from('tasks').select('*, assignee:profiles!assigned_to(full_name, employee_id), assigner:profiles!assigned_by(full_name, employee_id)').order('due_date', {ascending:true, nullsFirst:false});
   if (!isStaff() || taskTab==='mine') query = query.eq('assigned_to', state.user.id);
   else query = query.eq('assigned_by', state.user.id);
   const { data: tasks } = await query;
@@ -962,8 +962,8 @@ async function renderTasks(){
         <td><strong>${escapeHtml(t.title)}</strong><div style="font-size:12.5px; color:var(--muted);">${escapeHtml(t.description||'')}</div>
           <button class="btn-text" data-view-log="${t.id}" style="font-size:12px;">View log</button>
         </td>
-        <td>${escapeHtml(t.assigner?.full_name || '—')}</td>
-        <td>${escapeHtml(t.assignee?.full_name || '—')}</td>
+        <td>${escapeHtml(t.assigner?.full_name || '—')}${t.assigner?.employee_id?' <span class="mono">('+escapeHtml(t.assigner.employee_id)+')</span>':''}</td>
+        <td>${escapeHtml(t.assignee?.full_name || '—')}${t.assignee?.employee_id?' <span class="mono">('+escapeHtml(t.assignee.employee_id)+')</span>':''}</td>
         <td class="mono">${t.due_date || '—'}</td>
         <td><span class="badge ${t.status}">${t.status.replace('_',' ')}</span></td>
         <td>${taskStatusControls(t)} ${(isSuperAdmin() || hasPermission('task_delete')) ? `<button class="btn small danger" data-delete-task="${t.id}">Delete</button>` : ''}</td>
@@ -1075,7 +1075,7 @@ async function renderRequests(){
   }
 
   const { data: rawRequests } = await sb.from('requests')
-    .select('*, rider:profiles!rider_id(full_name), poc:profiles!assigned_poc_id(full_name)')
+    .select('*, rider:profiles!rider_id(full_name, employee_id), poc:profiles!assigned_poc_id(full_name, employee_id)')
     .order('created_at', {ascending:false});
 
   const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3 };
@@ -1089,7 +1089,7 @@ async function renderRequests(){
       <div style="display:flex; justify-content:space-between; align-items:flex-start;">
         <div>
           <h3>${escapeHtml(r.category)}</h3>
-          <div class="mono">Rider: ${escapeHtml(r.rider?.full_name||'—')} · Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')} · ${formatDateTime(r.created_at)}</div>
+          <div class="mono">Rider: ${escapeHtml(r.rider?.full_name||'—')}${r.rider?.employee_id?' ('+escapeHtml(r.rider.employee_id)+')':''} · Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')}${r.poc?.employee_id?' ('+escapeHtml(r.poc.employee_id)+')':''} · ${formatDateTime(r.created_at)}</div>
         </div>
         <span class="badge ${r.status}">${r.status.replace('_',' ')}</span>
       </div>
@@ -1396,48 +1396,95 @@ async function renderExpiries(){
 
 async function openNewExpiryModal(){
   await loadScopedProfiles();
-  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const regionChecks = state.regions.map(r=>`
+    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:4px;">
+      <input type="checkbox" class="e-region-check" value="${r.id}"> ${escapeHtml(r.name)}
+    </label>`).join('');
+  const roleChecks = Object.entries(ROLE_LABEL).map(([k,v])=>`
+    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:4px;">
+      <input type="checkbox" class="e-role-check" value="${k}"> ${v}
+    </label>`).join('');
   const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Track expiry item</h2>
-    <p class="hint">Not every item belongs to one rider — leave "Specific rider" blank for something that applies to a whole region or role (e.g. an office agreement, or a role-wide certification).</p>
+    <p class="hint">Not every item belongs to one rider — leave regions/roles as your only selection for something that applies broadly (e.g. an office agreement). Select more than one region or role if the same item applies to several.</p>
     <form id="expiry-form">
-      <div class="form-row"><label>Region</label><select id="e-region" required>${regionOptions}</select></div>
-      <div class="form-row"><label>Applies to role (optional)</label><select id="e-role"><option value="">— Not role-specific —</option>${Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
-      <div class="form-row"><label>Specific rider (optional)</label><select id="e-rider"><option value="">— Not tied to a specific rider —</option></select></div>
+      <div class="form-row">
+        <label>Region(s)</label>
+        <button type="button" class="btn small outline" id="e-select-all-regions" style="margin-bottom:8px;">Select All Regions</button>
+        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${regionChecks}</div>
+      </div>
+      <div class="form-row">
+        <label>Applies to role(s) (optional)</label>
+        <button type="button" class="btn small outline" id="e-select-all-roles" style="margin-bottom:8px;">Select All Roles</button>
+        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${roleChecks}</div>
+      </div>
+      <div class="form-row" id="e-rider-wrap"><label>Specific rider (optional)</label><select id="e-rider"><option value="">— Not tied to a specific rider —</option></select>
+        <span class="field-hint">Only available when exactly one region is selected.</span>
+      </div>
       <div class="form-row"><label>Item type</label><select id="e-type">${typeOptions}</select></div>
       <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="e-label"></div>
       <div class="form-row"><label>Expiry date</label><input type="date" id="e-date" required></div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
-  const populateRiders = () => {
-    const regionId = document.getElementById('e-region').value;
-    const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.region_id===regionId);
-    document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>' +
-      riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
+  document.getElementById('e-select-all-regions').onclick = () => {
+    document.querySelectorAll('.e-region-check').forEach(cb => cb.checked = true);
+    updateRiderVisibility();
   };
-  document.getElementById('e-region').onchange = populateRiders;
-  populateRiders();
+  document.getElementById('e-select-all-roles').onclick = () => {
+    document.querySelectorAll('.e-role-check').forEach(cb => cb.checked = true);
+  };
+  const updateRiderVisibility = () => {
+    const checkedRegions = Array.from(document.querySelectorAll('.e-region-check:checked')).map(cb=>cb.value);
+    const wrap = document.getElementById('e-rider-wrap');
+    if (checkedRegions.length === 1){
+      wrap.style.display = 'block';
+      const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.region_id===checkedRegions[0]);
+      document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>' +
+        riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' ('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
+    } else {
+      wrap.style.display = 'none';
+      document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>';
+    }
+  };
+  document.querySelectorAll('.e-region-check').forEach(cb => cb.onchange = updateRiderVisibility);
+  updateRiderVisibility();
 
   document.getElementById('expiry-form').onsubmit = async (e) => {
     e.preventDefault();
-    const riderId = document.getElementById('e-rider').value || null;
+    const regionIds = Array.from(document.querySelectorAll('.e-region-check:checked')).map(cb=>cb.value);
+    if (!regionIds.length){ toast('Select at least one region'); return; }
+    const roles = Array.from(document.querySelectorAll('.e-role-check:checked')).map(cb=>cb.value);
+    const roleLabel = roles.length ? roles.map(r=>ROLE_LABEL[r]).join(', ') : null;
+    const riderId = (regionIds.length === 1) ? (document.getElementById('e-rider').value || null) : null;
     const typeSelect = document.getElementById('e-type');
     const typeId = typeSelect.value;
     const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || 'Other';
-    const { error } = await sb.from('expiry_items').insert({
-      rider_id: riderId,
-      region_id: document.getElementById('e-region').value,
-      applies_to_role: document.getElementById('e-role').value || null,
+    const itemLabel = document.getElementById('e-label').value.trim();
+    const expiryDate = document.getElementById('e-date').value;
+
+    // One row per selected region (roles are stored per-row as a joined label)
+    const payloads = regionIds.map(regionId => ({
+      rider_id: regionId === regionIds[0] ? riderId : null,
+      region_id: regionId,
+      applies_to_role: roleLabel,
       item_type_id: typeId,
       item_type: typeName,
-      item_label: document.getElementById('e-label').value.trim(),
-      expiry_date: document.getElementById('e-date').value,
+      item_label: itemLabel,
+      expiry_date: expiryDate,
       created_by: state.user.id
-    });
-    if (error){ toast('Could not save: ' + error.message); return; }
-    closeModal(); toast('Item added'); renderExpiries();
+    }));
+    const { error } = await sb.from('expiry_items').insert(payloads);
+    if (error){
+      if (/created_by/i.test(error.message)){
+        toast('Could not save — the database is missing a recent update. Ask your developer to run Migration 16 (schema cache fix), then try again.');
+      } else {
+        toast('Could not save: ' + error.message);
+      }
+      return;
+    }
+    closeModal(); toast(`${payloads.length} item(s) added`); renderExpiries();
   };
 }
 
@@ -2840,7 +2887,7 @@ async function generateReport(){
     });
   } else if (type === 'tasks'){
     const { data } = await sb.from('tasks')
-      .select('*, assignee:profiles!assigned_to(full_name), assigner:profiles!assigned_by(full_name)')
+      .select('*, assignee:profiles!assigned_to(full_name, employee_id), assigner:profiles!assigned_by(full_name, employee_id)')
       .gte('created_at', from).lte('created_at', to);
     rows = (data||[]).map(t => ({
       Title: t.title, 'Assigned To': t.assignee?.full_name, 'Assigned By': t.assigner?.full_name,
@@ -3531,7 +3578,7 @@ async function renderTools(){
   const ackMap = new Map((acks||[]).map(a => [a.tool_issuance_id, a]));
 
   const today = new Date();
-  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th></tr></thead><tbody>
+  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
     ${list.map(i => {
       const due = new Date(i.next_due_date);
       const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
@@ -3556,6 +3603,10 @@ async function renderTools(){
         <td class="mono">${i.next_due_date||'—'}</td>
         <td><span class="${badge}">${label}</span></td>
         <td>${ackCell}</td>
+        ${isSuperAdmin() ? `<td style="white-space:nowrap;">
+          <button class="btn small outline" data-edit-issuance="${i.id}">Edit</button>
+          <button class="btn small danger" data-delete-issuance="${i.id}">Delete</button>
+        </td>` : ''}
       </tr>`;
     }).join('')}
   </tbody></table>`;
@@ -3569,8 +3620,25 @@ async function renderTools(){
     );
     document.getElementById('tool-issuance-list').innerHTML = renderRows(filtered);
     bindAckButtons();
+    bindSuperAdminActions();
   };
   document.getElementById('tool-issuance-search').oninput = applyFilters;
+
+  function bindSuperAdminActions(){
+    if (!isSuperAdmin()) return;
+    document.querySelectorAll('[data-edit-issuance]').forEach(btn => {
+      btn.onclick = () => openEditToolIssuanceModal(issuances.find(i=>i.id===btn.dataset.editIssuance));
+    });
+    document.querySelectorAll('[data-delete-issuance]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Permanently delete this tool issuance record? This cannot be undone.')) return;
+        const { error } = await sb.from('tool_issuances').delete().eq('id', btn.dataset.deleteIssuance);
+        if (error){ toast('Could not delete: ' + error.message); return; }
+        toast('Deleted'); renderTools();
+      };
+    });
+  }
+  bindSuperAdminActions();
 
   function bindAckButtons(){
     document.querySelectorAll('[data-ack-tool]').forEach(btn => {
@@ -3745,6 +3813,27 @@ EMP1003"></textarea></div>
   };
 }
 
+function openEditToolIssuanceModal(issuance){
+  openModal(`
+    <h2>Edit tool issuance</h2>
+    <p class="mono" style="margin-bottom:12px;">${escapeHtml(issuance.profiles?.full_name||'—')} — ${escapeHtml(issuance.tool_types?.name||'—')}</p>
+    <form id="ei-form">
+      <div class="form-row"><label>Issued date</label><input type="date" id="ei-issued" value="${issuance.issued_date}" required></div>
+      <div class="form-row"><label>Next due date (leave blank for no fixed schedule)</label><input type="date" id="ei-due" value="${issuance.next_due_date||''}"></div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>
+  `);
+  document.getElementById('ei-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('tool_issuances').update({
+      issued_date: document.getElementById('ei-issued').value,
+      next_due_date: document.getElementById('ei-due').value || null
+    }).eq('id', issuance.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Updated'); renderTools();
+  };
+}
+
 async function openNewToolIssuanceModal(){
   await loadScopedProfiles();
   const riderOptions = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
@@ -3914,17 +4003,63 @@ Barcode Install Video | How-To Videos | https://youtube.com/..."></textarea>
 // ---------------------------------------------------------
 async function renderActivityLog(){
   const main = document.getElementById('main-content');
-  const { data: log } = await sb.from('activity_log').select('*, profiles(full_name)').order('created_at', {ascending:false}).limit(200);
-  if (!log || !log.length){ main.innerHTML = emptyState('No activity recorded yet.'); return; }
-  main.innerHTML = `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
-    ${log.map(l => `<tr>
-      <td class="mono">${formatDateTime(l.created_at)}</td>
-      <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
-      <td>${escapeHtml(l.action)}</td>
-      <td>${escapeHtml(l.entity_type)}</td>
-      <td>${escapeHtml(l.entity_label||'—')}</td>
-    </tr>`).join('')}
-  </tbody></table>`;
+  const { data: log } = await sb.from('activity_log').select('*, profiles(full_name)').eq('archived', false).order('created_at', {ascending:false}).limit(200);
+
+  main.innerHTML = `
+    <div class="card">
+      <h3>Clean up the list</h3>
+      <p class="hint">This hides old entries from this page to make it easier to scan — the records themselves are kept in the database, not deleted, so nothing is lost for audit purposes. This does <strong>not</strong> reduce database storage usage.</p>
+      <div class="two-col">
+        <div class="form-row"><label>From</label><input type="date" id="al-from"></div>
+        <div class="form-row"><label>To</label><input type="date" id="al-to"></div>
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:12px;">
+        <input type="checkbox" id="al-confirm-archive"> I understand this only hides entries from view, it doesn't free up storage
+      </label>
+      <button class="btn outline" id="al-archive-btn">Hide entries in this date range</button>
+      <button class="btn small outline" id="al-show-archived-btn" style="margin-left:8px;">View hidden entries</button>
+    </div>
+    <div id="activity-log-list">${log && log.length ? `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
+      ${log.map(l => `<tr>
+        <td class="mono">${formatDateTime(l.created_at)}</td>
+        <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
+        <td>${escapeHtml(l.action)}</td>
+        <td>${escapeHtml(l.entity_type)}</td>
+        <td>${escapeHtml(l.entity_label||'—')}</td>
+      </tr>`).join('')}
+    </tbody></table>` : emptyState('No activity recorded yet (or everything is currently hidden — use "View hidden entries" to check).')}</div>`;
+
+  document.getElementById('al-archive-btn').onclick = async () => {
+    const from = document.getElementById('al-from').value;
+    const to = document.getElementById('al-to').value;
+    if (!from || !to){ toast('Pick both a From and To date'); return; }
+    if (!document.getElementById('al-confirm-archive').checked){ toast('Please check the confirmation box first'); return; }
+    if (!confirm(`Hide all Activity Log entries between ${from} and ${to} from this page? They stay in the database.`)) return;
+    const { error, count } = await sb.from('activity_log').update({ archived: true })
+      .gte('created_at', from).lte('created_at', to + 'T23:59:59').select('id', {count:'exact'});
+    if (error){ toast('Could not hide: ' + error.message); return; }
+    toast(`${count ?? ''} entries hidden`); renderActivityLog();
+  };
+  document.getElementById('al-show-archived-btn').onclick = async () => {
+    const { data: archived } = await sb.from('activity_log').select('*, profiles(full_name)').eq('archived', true).order('created_at', {ascending:false}).limit(200);
+    document.getElementById('activity-log-list').innerHTML = `
+      <p class="hint" style="margin-bottom:10px;">Showing hidden entries (still in the database, just not shown on the main list above).</p>
+      <button class="btn small outline" id="al-unhide-all-btn" style="margin-bottom:10px;">Unhide these</button>
+      ${archived && archived.length ? `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
+        ${archived.map(l => `<tr>
+          <td class="mono">${formatDateTime(l.created_at)}</td>
+          <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
+          <td>${escapeHtml(l.action)}</td>
+          <td>${escapeHtml(l.entity_type)}</td>
+          <td>${escapeHtml(l.entity_label||'—')}</td>
+        </tr>`).join('')}
+      </tbody></table>` : emptyState('No hidden entries.')}`;
+    const unhideBtn = document.getElementById('al-unhide-all-btn');
+    if (unhideBtn) unhideBtn.onclick = async () => {
+      await sb.from('activity_log').update({ archived: false }).eq('archived', true);
+      toast('Unhidden'); renderActivityLog();
+    };
+  };
 }
 
 // ---------------------------------------------------------
@@ -4018,6 +4153,7 @@ async function renderRoster(){
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
         ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Mark Resigned/Terminated/Transferred</button>` : ''}
         ${(e.status==='removed' && isSuperAdmin()) ? `<button class="btn small outline" data-reinstate-roster="${e.id}">Reinstate (undo mistake)</button>` : ''}
+        ${isSuperAdmin() ? `<button class="btn small danger" data-delete-roster="${e.id}">Delete Permanently</button>` : ''}
       </td>` : ''}
     </tr>`).join('')}
   </tbody></table>` : emptyState('No roster entries match this filter.');
@@ -4037,7 +4173,7 @@ async function renderRoster(){
       <select id="rf-dayoff"><option value="">All Day-Offs</option>${dayOffs.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}</select>
       <select id="rf-status"><option value="">All Statuses</option><option value="active">Approved / Working</option><option value="removed">Resigned/Terminated/Transferred</option></select>
       ${reasons.length ? `<select id="rf-reason"><option value="">All Reasons</option>${reasons.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>` : ''}
-      <input type="text" id="rf-search" placeholder="Search rider name…" style="flex:1; min-width:160px;">
+      <input type="text" id="rf-search" placeholder="Search rider name or Employee ID…" style="flex:1; min-width:160px;">
     </div>
     <div id="roster-list">${renderRows(entries)}</div>`;
 
@@ -4054,7 +4190,7 @@ async function renderRoster(){
       (!dayOff || e.day_off === dayOff) &&
       (!status || (status==='removed' ? e.status==='removed' : e.status!=='removed')) &&
       (!reason || e.removal_reason === reason) &&
-      (!q || (e.profiles?.full_name||'').toLowerCase().includes(q))
+      (!q || (e.profiles?.full_name||'').toLowerCase().includes(q) || (e.profiles?.employee_id||'').toLowerCase().includes(q))
     );
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
@@ -4101,6 +4237,15 @@ async function renderRoster(){
           await sb.from('profiles').update({ status: 'active' }).eq('id', entry.rider_id);
         }
         toast('Reinstated — login re-enabled'); renderRoster();
+      };
+    });
+    document.querySelectorAll('[data-delete-roster]').forEach(btn => {
+      btn.onclick = async () => {
+        const entry = entries.find(e=>e.id===btn.dataset.deleteRoster);
+        if (!confirm(`Permanently delete this roster entry for ${entry.profiles?.full_name||'this rider'}? This cannot be undone (their login status is not affected).`)) return;
+        const { error } = await sb.from('roster_entries').delete().eq('id', entry.id);
+        if (error){ toast('Could not delete: ' + error.message); return; }
+        toast('Roster entry deleted'); renderRoster();
       };
     });
   }
