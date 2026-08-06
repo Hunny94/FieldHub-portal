@@ -195,25 +195,71 @@ function setupSessionTimeout(){
   reset();
 }
 
-function setupDesktopNotifications(){
-  if (!('Notification' in window)) return;
-  if (Notification.permission === 'default') Notification.requestPermission();
-  if (Notification.permission !== 'granted') return;
+async function setupDesktopNotifications(){
+  const desktopOk = ('Notification' in window);
+  if (desktopOk && Notification.permission === 'default') Notification.requestPermission();
+  const canDesktop = desktopOk && Notification.permission === 'granted';
+  const fire = (title, body) => { if (canDesktop) new Notification(title, { body }); };
 
   // New circulars — notify everyone
   sb.channel('circulars-notify')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'circulars' }, (payload) => {
       if (payload.new.created_by === state.user.id) return;
-      new Notification('FieldHub: New Circular', { body: payload.new.title });
+      fire('FieldHub: New Circular', payload.new.title);
+      pushNotification({ type:'Circular', title:'New circular', body:payload.new.title, created_at:payload.new.created_at });
     })
     .subscribe();
 
   // New requests assigned directly to me — notify the handler
   sb.channel('requests-notify-' + state.user.id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'requests', filter: `assigned_poc_id=eq.${state.user.id}` }, (payload) => {
-      new Notification('FieldHub: New Request', { body: `New "${payload.new.category}" request needs your attention.` });
+      fire('FieldHub: New Request', `New "${payload.new.category}" request needs your attention.`);
+      pushNotification({ type:'Request', title:'New request assigned to you', body:payload.new.category, created_at:payload.new.created_at });
     })
     .subscribe();
+
+  // Status updates on requests/tasks I care about, and warnings issued
+  // to me — these can't be filtered server-side by "my request IDs"
+  // (Realtime filters only support one column), so we keep a live set
+  // of relevant IDs and check client-side.
+  const refreshMyIds = async () => {
+    const { data: myRequests } = await sb.from('requests').select('id').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
+    const { data: myTasks } = await sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`);
+    return {
+      requestIds: new Set((myRequests||[]).map(r=>r.id)),
+      taskIds: new Set((myTasks||[]).map(t=>t.id))
+    };
+  };
+  let { requestIds, taskIds } = await refreshMyIds();
+
+  sb.channel('request-updates-notify-' + state.user.id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'request_updates' }, (payload) => {
+      if (payload.new.created_by === state.user.id) return;
+      if (!requestIds.has(payload.new.request_id)) return;
+      fire('FieldHub: Request updated', payload.new.message || 'Status changed');
+      pushNotification({ type:'Request update', title:'A request you follow was updated', body: payload.new.new_status ? `Status → ${payload.new.new_status.replace('_',' ')}: ${payload.new.message}` : payload.new.message, created_at:payload.new.created_at });
+    })
+    .subscribe();
+
+  sb.channel('task-updates-notify-' + state.user.id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'task_updates' }, (payload) => {
+      if (payload.new.created_by === state.user.id) return;
+      if (!taskIds.has(payload.new.task_id)) return;
+      fire('FieldHub: Task updated', payload.new.message || 'Status changed');
+      pushNotification({ type:'Task update', title:'A task you follow was updated', body: payload.new.new_status ? `Status → ${payload.new.new_status.replace('_',' ')}: ${payload.new.message}` : payload.new.message, created_at:payload.new.created_at });
+    })
+    .subscribe();
+
+  sb.channel('warnings-notify-' + state.user.id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'disciplinary_actions', filter: `rider_id=eq.${state.user.id}` }, (payload) => {
+      fire('FieldHub: Warning issued', payload.new.action_type);
+      pushNotification({ type:'Warning', title:'A warning was issued to you', body:payload.new.action_type, created_at:payload.new.created_at });
+    })
+    .subscribe();
+
+  // New requests/tasks change the relevant-ID sets — refresh periodically
+  // rather than trying to keep them perfectly live.
+  setInterval(async () => { ({ requestIds, taskIds } = await refreshMyIds()); }, 5*60*1000);
 }
 
 async function showLatestUnackedCircularPopup(){
@@ -302,6 +348,14 @@ function ensureNotificationBell(){
   btn.innerHTML = `🔔<span id="notif-badge" style="display:none; position:absolute; top:2px; right:2px; background:#c0392b; color:#fff; border-radius:50%; font-size:10px; line-height:1; padding:2px 5px;">0</span>`;
   actions.insertBefore(btn, logoutBtn);
   btn.onclick = (e) => { e.stopPropagation(); toggleNotificationDropdown(); };
+}
+
+function pushNotification(item){
+  ensureNotificationBell();
+  const retainCount = state.systemSettings?.notification_retain_count || 5;
+  state.notifications = [item, ...state.notifications].slice(0, retainCount);
+  updateNotificationBadge();
+  toast(`${item.title}: ${item.body || ''}`);
 }
 
 function updateNotificationBadge(){
