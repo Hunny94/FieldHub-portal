@@ -1089,7 +1089,7 @@ function openTaskStatusModal(taskId, newStatus){
 
 async function openNewTaskModal(){
   await loadScopedProfiles();
-  const options = state.profilesInScope.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)} (${ROLE_LABEL[p.role]||p.role})</option>`).join('');
+  const options = state.profilesInScope.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]||p.role})</option>`).join('');
   openModal(`
     <h2>Assign task</h2>
     <form id="task-form">
@@ -1184,7 +1184,7 @@ async function renderRequests(){
     btn.onclick = async () => {
       await loadScopedProfiles();
       const staff = state.profilesInScope.filter(p => !['rider'].includes(p.role) && p.status==='active');
-      const options = staff.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)} (${ROLE_LABEL[p.role]})</option>`).join('');
+      const options = staff.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]})</option>`).join('');
       openModal(`
         <h2>Assign a handler</h2>
         <form id="reassign-form">
@@ -1451,13 +1451,15 @@ async function renderExpiries(){
 async function openNewExpiryModal(){
   await loadScopedProfiles();
   const regionChecks = state.regions.map(r=>`
-    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:4px;">
-      <input type="checkbox" class="e-region-check" value="${r.id}"> ${escapeHtml(r.name)}
-    </label>`).join('');
+    <div style="display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="e-region-check" value="${r.id}" id="e-region-${r.id}">
+      <label for="e-region-${r.id}" style="font-weight:400; margin:0; text-align:left; cursor:pointer;">${escapeHtml(r.name)}</label>
+    </div>`).join('');
   const roleChecks = Object.entries(ROLE_LABEL).map(([k,v])=>`
-    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:4px;">
-      <input type="checkbox" class="e-role-check" value="${k}"> ${v}
-    </label>`).join('');
+    <div style="display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="e-role-check" value="${k}" id="e-role-${k}">
+      <label for="e-role-${k}" style="font-weight:400; margin:0; text-align:left; cursor:pointer;">${v}</label>
+    </div>`).join('');
   const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Track expiry item</h2>
@@ -1465,13 +1467,27 @@ async function openNewExpiryModal(){
     <form id="expiry-form">
       <div class="form-row">
         <label>Region(s)</label>
-        <button type="button" class="btn small outline" id="e-select-all-regions" style="margin-bottom:8px;">Select All Regions</button>
-        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${regionChecks}</div>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="e-region-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="e-region-summary">Select region(s)</span><span>▾</span>
+          </button>
+          <div id="e-region-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">
+            <button type="button" class="btn small outline" id="e-select-all-regions" style="margin-bottom:6px; width:100%;">Select All Regions</button>
+            ${regionChecks}
+          </div>
+        </div>
       </div>
       <div class="form-row">
         <label>Applies to role(s) (optional)</label>
-        <button type="button" class="btn small outline" id="e-select-all-roles" style="margin-bottom:8px;">Select All Roles</button>
-        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${roleChecks}</div>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="e-role-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="e-role-summary">Select role(s)</span><span>▾</span>
+          </button>
+          <div id="e-role-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">
+            <button type="button" class="btn small outline" id="e-select-all-roles" style="margin-bottom:6px; width:100%;">Select All Roles</button>
+            ${roleChecks}
+          </div>
+        </div>
       </div>
       <div class="form-row" id="e-rider-wrap"><label>Specific rider (optional)</label><select id="e-rider"><option value="">— Not tied to a specific rider —</option></select>
         <span class="field-hint">Only available when exactly one region is selected.</span>
@@ -1482,12 +1498,46 @@ async function openNewExpiryModal(){
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+
+  // Generic open/close wiring for both dropdowns
+  const setupDropdown = (triggerId, panelId) => {
+    const trigger = document.getElementById(triggerId);
+    const panel = document.getElementById(panelId);
+    trigger.onclick = (e) => {
+      e.stopPropagation();
+      const isOpen = panel.style.display === 'block';
+      document.querySelectorAll('#e-region-panel, #e-role-panel').forEach(p => p.style.display = 'none');
+      panel.style.display = isOpen ? 'none' : 'block';
+    };
+  };
+  setupDropdown('e-region-trigger', 'e-region-panel');
+  setupDropdown('e-role-trigger', 'e-role-panel');
+  document.addEventListener('click', (e) => {
+    if (!document.getElementById('active-modal')) return;
+    if (!e.target.closest('#e-region-panel, #e-region-trigger')) document.getElementById('e-region-panel').style.display = 'none';
+    if (!e.target.closest('#e-role-panel, #e-role-trigger')) document.getElementById('e-role-panel').style.display = 'none';
+  });
+
+  const updateRegionSummary = () => {
+    const checked = state.regions.filter(r => document.getElementById(`e-region-${r.id}`)?.checked);
+    document.getElementById('e-region-summary').textContent = checked.length
+      ? (checked.length <= 2 ? checked.map(r=>r.name).join(', ') : `${checked.length} regions selected`)
+      : 'Select region(s)';
+  };
+  const updateRoleSummary = () => {
+    const checked = Array.from(document.querySelectorAll('.e-role-check:checked'));
+    document.getElementById('e-role-summary').textContent = checked.length
+      ? (checked.length <= 2 ? checked.map(cb=>ROLE_LABEL[cb.value]).join(', ') : `${checked.length} roles selected`)
+      : 'Select role(s)';
+  };
+
   document.getElementById('e-select-all-regions').onclick = () => {
     document.querySelectorAll('.e-region-check').forEach(cb => cb.checked = true);
-    updateRiderVisibility();
+    updateRiderVisibility(); updateRegionSummary();
   };
   document.getElementById('e-select-all-roles').onclick = () => {
     document.querySelectorAll('.e-role-check').forEach(cb => cb.checked = true);
+    updateRoleSummary();
   };
   const updateRiderVisibility = () => {
     const checkedRegions = Array.from(document.querySelectorAll('.e-region-check:checked')).map(cb=>cb.value);
@@ -1502,7 +1552,8 @@ async function openNewExpiryModal(){
       document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>';
     }
   };
-  document.querySelectorAll('.e-region-check').forEach(cb => cb.onchange = updateRiderVisibility);
+  document.querySelectorAll('.e-region-check').forEach(cb => cb.onchange = () => { updateRiderVisibility(); updateRegionSummary(); });
+  document.querySelectorAll('.e-role-check').forEach(cb => cb.onchange = updateRoleSummary);
   updateRiderVisibility();
 
   document.getElementById('expiry-form').onsubmit = async (e) => {
@@ -2488,7 +2539,7 @@ async function openEditWarningModal(w){
   await loadScopedProfiles();
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
   const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role));
-  const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)} (${ROLE_LABEL[p.role]})</option>`).join('');
+  const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]})</option>`).join('');
   openModal(`
     <h2>Edit warning</h2>
     <form id="warning-edit-form">
@@ -3890,7 +3941,7 @@ function openEditToolIssuanceModal(issuance){
 
 async function openNewToolIssuanceModal(){
   await loadScopedProfiles();
-  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('');
+  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''}</option>`).join('');
   const { data: toolTypes } = await sb.from('tool_types').select('*').eq('active', true).order('name');
   const toolOptions = (toolTypes||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
@@ -4058,11 +4109,21 @@ Barcode Install Video | How-To Videos | https://youtube.com/..."></textarea>
 async function renderActivityLog(){
   const main = document.getElementById('main-content');
   const { data: log } = await sb.from('activity_log').select('*, profiles(full_name)').eq('archived', false).order('created_at', {ascending:false}).limit(200);
+  const renderRows = (list, allowDelete) => list && list.length ? `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th>${allowDelete?'<th></th>':''}</tr></thead><tbody>
+      ${list.map(l => `<tr>
+        <td class="mono">${formatDateTime(l.created_at)}</td>
+        <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
+        <td>${escapeHtml(l.action)}</td>
+        <td>${escapeHtml(l.entity_type)}</td>
+        <td>${escapeHtml(l.entity_label||'—')}</td>
+        ${allowDelete ? `<td><button class="btn small danger" data-delete-log-row="${l.id}">Delete Permanently</button></td>` : ''}
+      </tr>`).join('')}
+    </tbody></table>` : emptyState('No entries here.');
 
   main.innerHTML = `
     <div class="card">
-      <h3>Clean up the list</h3>
-      <p class="hint">This hides old entries from this page to make it easier to scan — the records themselves are kept in the database, not deleted, so nothing is lost for audit purposes. This does <strong>not</strong> reduce database storage usage.</p>
+      <h3>Hide old entries (recommended)</h3>
+      <p class="hint">Hides entries from this page to make it easier to scan — the records themselves are kept in the database, not deleted, so nothing is lost for audit purposes. This does <strong>not</strong> reduce database storage usage.</p>
       <div class="two-col">
         <div class="form-row"><label>From</label><input type="date" id="al-from"></div>
         <div class="form-row"><label>To</label><input type="date" id="al-to"></div>
@@ -4073,15 +4134,19 @@ async function renderActivityLog(){
       <button class="btn outline" id="al-archive-btn">Hide entries in this date range</button>
       <button class="btn small outline" id="al-show-archived-btn" style="margin-left:8px;">View hidden entries</button>
     </div>
-    <div id="activity-log-list">${log && log.length ? `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
-      ${log.map(l => `<tr>
-        <td class="mono">${formatDateTime(l.created_at)}</td>
-        <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
-        <td>${escapeHtml(l.action)}</td>
-        <td>${escapeHtml(l.entity_type)}</td>
-        <td>${escapeHtml(l.entity_label||'—')}</td>
-      </tr>`).join('')}
-    </tbody></table>` : emptyState('No activity recorded yet (or everything is currently hidden — use "View hidden entries" to check).')}</div>`;
+    <div class="card" style="border-left:4px solid var(--clay);">
+      <h3>Permanently delete (real space savings)</h3>
+      <p class="hint">This genuinely removes entries from the database — unlike "Hide" above, this <strong>cannot be undone</strong> and there is no audit trail left. Only use this if you specifically need to reduce storage, not just to declutter the page.</p>
+      <div class="two-col">
+        <div class="form-row"><label>From</label><input type="date" id="al-del-from"></div>
+        <div class="form-row"><label>To</label><input type="date" id="al-del-to"></div>
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-bottom:12px;">
+        <input type="checkbox" id="al-confirm-delete"> I understand this permanently deletes these records with no way to recover them
+      </label>
+      <button class="btn danger" id="al-delete-range-btn">Permanently Delete Entries in This Range</button>
+    </div>
+    <div id="activity-log-list">${renderRows(log, true)}</div>`;
 
   document.getElementById('al-archive-btn').onclick = async () => {
     const from = document.getElementById('al-from').value;
@@ -4094,25 +4159,47 @@ async function renderActivityLog(){
     if (error){ toast('Could not hide: ' + error.message); return; }
     toast(`${count ?? ''} entries hidden`); renderActivityLog();
   };
+
+  document.getElementById('al-delete-range-btn').onclick = async () => {
+    const from = document.getElementById('al-del-from').value;
+    const to = document.getElementById('al-del-to').value;
+    if (!from || !to){ toast('Pick both a From and To date'); return; }
+    if (!document.getElementById('al-confirm-delete').checked){ toast('Please check the confirmation box first'); return; }
+    if (!confirm(`PERMANENTLY delete all Activity Log entries between ${from} and ${to}? This cannot be undone.`)) return;
+    const { error, count } = await sb.from('activity_log').delete()
+      .gte('created_at', from).lte('created_at', to + 'T23:59:59').select('id', {count:'exact'});
+    if (error){ toast('Could not delete: ' + error.message); return; }
+    toast(`${count ?? ''} entries permanently deleted`); renderActivityLog();
+  };
+
+  main.querySelectorAll('[data-delete-log-row]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Permanently delete this single entry? This cannot be undone.')) return;
+      const { error } = await sb.from('activity_log').delete().eq('id', btn.dataset.deleteLogRow);
+      if (error){ toast('Could not delete: ' + error.message); return; }
+      toast('Deleted'); renderActivityLog();
+    };
+  });
+
   document.getElementById('al-show-archived-btn').onclick = async () => {
     const { data: archived } = await sb.from('activity_log').select('*, profiles(full_name)').eq('archived', true).order('created_at', {ascending:false}).limit(200);
     document.getElementById('activity-log-list').innerHTML = `
       <p class="hint" style="margin-bottom:10px;">Showing hidden entries (still in the database, just not shown on the main list above).</p>
       <button class="btn small outline" id="al-unhide-all-btn" style="margin-bottom:10px;">Unhide these</button>
-      ${archived && archived.length ? `<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Type</th><th>Item</th></tr></thead><tbody>
-        ${archived.map(l => `<tr>
-          <td class="mono">${formatDateTime(l.created_at)}</td>
-          <td>${escapeHtml(l.profiles?.full_name||'—')}</td>
-          <td>${escapeHtml(l.action)}</td>
-          <td>${escapeHtml(l.entity_type)}</td>
-          <td>${escapeHtml(l.entity_label||'—')}</td>
-        </tr>`).join('')}
-      </tbody></table>` : emptyState('No hidden entries.')}`;
+      ${renderRows(archived, true)}`;
     const unhideBtn = document.getElementById('al-unhide-all-btn');
     if (unhideBtn) unhideBtn.onclick = async () => {
       await sb.from('activity_log').update({ archived: false }).eq('archived', true);
       toast('Unhidden'); renderActivityLog();
     };
+    main.querySelectorAll('[data-delete-log-row]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Permanently delete this single entry? This cannot be undone.')) return;
+        const { error } = await sb.from('activity_log').delete().eq('id', btn.dataset.deleteLogRow);
+        if (error){ toast('Could not delete: ' + error.message); return; }
+        toast('Deleted'); document.getElementById('al-show-archived-btn').click();
+      };
+    });
   };
 }
 
