@@ -398,16 +398,17 @@ function toggleNotificationDropdown(){
 async function showPendingPopupAnnouncement(){
   const { data: popups } = await sb.from('popup_announcements').select('*').eq('active', true).order('created_at', {ascending:false});
   if (!popups || !popups.length) return;
-  const { data: dismissed } = await sb.from('popup_dismissals').select('popup_id').eq('user_id', state.user.id);
-  const dismissedSet = new Set((dismissed||[]).map(d=>d.popup_id));
-  const next = popups.find(p => !dismissedSet.has(p.id));
+  const startOfToday = new Date(); startOfToday.setHours(0,0,0,0);
+  const { data: dismissed } = await sb.from('popup_dismissals').select('popup_id, dismissed_at').eq('user_id', state.user.id).gte('dismissed_at', startOfToday.toISOString());
+  const dismissedTodaySet = new Set((dismissed||[]).map(d=>d.popup_id));
+  const next = popups.find(p => !dismissedTodaySet.has(p.id));
   if (!next) return;
   openModal(`
     <h2>${escapeHtml(next.title)}</h2>
     <p style="font-size:14px; white-space:pre-wrap;">${escapeHtml(next.body)}</p>
     <button class="btn-primary" id="popup-announcement-dismiss">Got it</button>
   `);
-  const dismiss = async () => { await sb.from('popup_dismissals').insert({ popup_id: next.id, user_id: state.user.id }); };
+  const dismiss = async () => { await sb.from('popup_dismissals').upsert({ popup_id: next.id, user_id: state.user.id, dismissed_at: new Date().toISOString() }, { onConflict: 'popup_id,user_id' }); };
   document.getElementById('popup-announcement-dismiss').onclick = async () => { await dismiss(); closeModal(); };
   // Also record dismissal if they close via the modal's own ✕ button
   const modalCloseBtn = document.querySelector('#active-modal .modal-close');
@@ -741,7 +742,7 @@ async function renderDashboard(){
     sb.from('circulars').select('id'),
     sb.from('expiry_items').select('id, expiry_date'),
     isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
-    sb.from('home_notices').select('*').eq('active', true).order('created_at', {ascending:false}),
+    sb.from('home_notices').select('*').eq('active', true).or(`expires_at.is.null,expires_at.gte.${new Date().toISOString().slice(0,10)}`).order('created_at', {ascending:false}),
     sb.from('home_banner').select('*').eq('id', 1).maybeSingle()
   ]);
 
@@ -760,7 +761,10 @@ async function renderDashboard(){
   const expiringSoon = (expiring.data||[]).filter(i => new Date(i.expiry_date) <= soonCutoff).length;
 
   main.innerHTML = `
-    ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden;"><img src="${escapeHtml(banner.data.image_url)}" style="width:100%; max-height:220px; object-fit:cover; display:block;"></div>` : ''}
+    ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden; cursor:pointer;" id="dashboard-banner-click">
+      <img src="${escapeHtml(banner.data.image_url)}" style="width:100%; max-height:280px; object-fit:contain; background:#f4f4f4; display:block;">
+      ${banner.data.title ? `<div style="padding:8px 12px; font-weight:600;">${escapeHtml(banner.data.title)}</div>` : ''}
+    </div>` : ''}
     ${(notices.data||[]).map(n => `<div class="card" style="border-left:4px solid var(--amber); background:#FFF8EC;"><strong>📌 ${escapeHtml(n.message)}</strong></div>`).join('')}
     <div class="grid grid-4">
       <div class="card stat-card clay" style="cursor:pointer;" onclick="navigateTo('requests')"><div class="stat-number">${openReq.count ?? 0}</div><div class="stat-label">Open requests</div></div>
@@ -779,6 +783,15 @@ async function renderDashboard(){
       <p style="color:var(--muted); font-size:13.5px;">Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.</p>
     </div>
   `;
+
+  if (bannerVisible){
+    document.getElementById('dashboard-banner-click').onclick = () => {
+      openModal(`
+        <h2>${banner.data.title ? escapeHtml(banner.data.title) : 'Home Banner'}</h2>
+        <img src="${escapeHtml(banner.data.image_url)}" style="width:100%; border-radius:8px;">
+      `);
+    };
+  }
 }
 
 // ---------------------------------------------------------
@@ -2448,24 +2461,37 @@ function brandingImageRow(key, label, currentUrl){
 async function renderHomeNoticeSettings(body){
   const { data: notices } = await sb.from('home_notices').select('*').order('created_at', {ascending:false});
   body.innerHTML = `<button class="btn small" id="new-notice-btn" style="margin-bottom:14px;">+ Add Notice</button>
-  <table><thead><tr><th>Message</th><th>Status</th><th></th></tr></thead><tbody>
-    ${(notices||[]).map(n=>`<tr>
+  <table><thead><tr><th>Message</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(notices||[]).map(n=>{
+      const expired = n.expires_at && new Date(n.expires_at) < new Date();
+      return `<tr>
       <td>${escapeHtml(n.message)}</td>
-      <td><span class="badge ${n.active?'active':'closed'}">${n.active?'Active':'Inactive'}</span></td>
+      <td class="mono">${n.expires_at ? formatDate(n.expires_at) : 'No expiry'}</td>
+      <td><span class="badge ${(n.active && !expired)?'active':'closed'}">${expired ? 'Expired' : (n.active?'Active':'Inactive')}</span></td>
       <td>
         <button class="btn small outline" data-toggle-notice="${n.id}" data-active="${n.active}">${n.active?'Disable':'Enable'}</button>
         <button class="btn small outline" data-delete-notice="${n.id}">Remove</button>
       </td>
-    </tr>`).join('')}
+    </tr>`;
+    }).join('')}
   </tbody></table>`;
   document.getElementById('new-notice-btn').onclick = () => {
-    const message = prompt('Notice text to highlight on everyone\'s Dashboard:');
-    if (message && message.trim()){
-      sb.from('home_notices').insert({ message: message.trim(), created_by: state.user.id }).then(({error}) => {
-        if (error){ toast('Could not add: ' + error.message); return; }
-        toast('Notice added'); renderSettings();
-      });
-    }
+    openModal(`
+      <h2>New Home Notice</h2>
+      <form id="notice-form">
+        <div class="form-row"><label>Message</label><textarea id="hn-message" required placeholder="Highlighted on everyone's Dashboard"></textarea></div>
+        <div class="form-row"><label>Auto-disable on (optional)</label><input type="date" id="hn-expiry"></div>
+        <button class="btn-primary" type="submit">Add Notice</button>
+      </form>
+    `);
+    document.getElementById('notice-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const message = document.getElementById('hn-message').value.trim();
+      const expiresAt = document.getElementById('hn-expiry').value || null;
+      const { error } = await sb.from('home_notices').insert({ message, expires_at: expiresAt, created_by: state.user.id });
+      if (error){ toast('Could not add: ' + error.message); return; }
+      closeModal(); toast('Notice added'); renderSettings();
+    };
   };
   body.querySelectorAll('[data-toggle-notice]').forEach(btn => {
     btn.onclick = async () => {
@@ -2837,9 +2863,10 @@ async function renderCompliance(){
     </div>
     <div class="card">
       <p class="hint">${pendingCount} item(s) still pending across all riders this month. Click "Mark as Received" for a pending item${canCorrect ? ', or click a ✓ received item to correct a mistaken click' : ''}.</p>
-      <table><thead><tr><th>Rider</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
+      <table><thead><tr><th>Rider</th><th>Employee ID</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
       ${riders.map(r => `<tr>
         <td>${escapeHtml(r.full_name)}</td>
+        <td class="mono">${escapeHtml(r.employee_id||'—')}</td>
         <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
         ${state.complianceItemTypes.map(t => {
           const submitted = subMap.get(r.id+'|'+t.id);
@@ -2976,10 +3003,12 @@ async function generateReport(){
   statusEl.textContent = 'Generating…';
 
   let rows = [];
+  let queryError = null;
   if (type === 'requests'){
-    const { data } = await sb.from('requests')
+    const { data, error } = await sb.from('requests')
       .select('*, rider:profiles!rider_id(full_name, employee_id), poc:profiles!assigned_poc_id(full_name), categories(name, tat_hours)')
       .gte('created_at', from).lte('created_at', to);
+    queryError = error;
     rows = (data||[]).map(r => {
       const hoursToResolve = r.resolved_at ? ((new Date(r.resolved_at) - new Date(r.created_at))/3600000).toFixed(1) : '';
       const hoursToClose = r.closed_at ? ((new Date(r.closed_at) - new Date(r.created_at))/3600000).toFixed(1) : '';
@@ -2991,28 +3020,34 @@ async function generateReport(){
       };
     });
   } else if (type === 'tasks'){
-    const { data } = await sb.from('tasks')
+    const { data, error } = await sb.from('tasks')
       .select('*, assignee:profiles!assigned_to(full_name, employee_id), assigner:profiles!assigned_by(full_name, employee_id)')
       .gte('created_at', from).lte('created_at', to);
+    queryError = error;
     rows = (data||[]).map(t => ({
       Title: t.title, 'Assigned To': t.assignee?.full_name, 'Assigned By': t.assigner?.full_name,
       Status: t.status, 'Due Date': t.due_date||'', 'Created At': t.created_at
     }));
   } else if (type === 'circulars'){
-    const { data } = await sb.from('circulars').select('*, profiles!created_by(full_name)').gte('created_at', from).lte('created_at', to);
+    const { data, error } = await sb.from('circulars').select('*, profiles!created_by(full_name)').gte('created_at', from).lte('created_at', to);
+    queryError = error;
     for (const c of (data||[])){
       const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
       const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
       rows.push({ Title: c.title, 'Posted By': c.profiles?.full_name, 'Posted At': c.created_at, Audience: audience, Acknowledged: ackCount ?? 0, Pending: audience - (ackCount??0) });
     }
   } else if (type === 'expiry'){
-    const { data } = await sb.from('expiry_items').select('*, profiles(full_name)').gte('created_at', from).lte('created_at', to);
+    const { data, error } = await sb.from('expiry_items').select('*, profiles(full_name)').gte('created_at', from).lte('created_at', to);
+    queryError = error;
     rows = (data||[]).map(i => ({ Rider: i.profiles?.full_name, Item: i.item_type, Label: i.item_label||'', 'Expiry Date': i.expiry_date, 'Added At': i.created_at }));
   } else if (type === 'warnings'){
-    const { data } = await sb.from('disciplinary_actions').select('*, rider:profiles!rider_id(full_name, employee_id), recorder:profiles!recorded_by(full_name)').gte('created_at', from).lte('created_at', to);
+    const { data, error } = await sb.from('disciplinary_actions').select('*, rider:profiles!rider_id(full_name, employee_id), recorder:profiles!recorded_by(full_name)').gte('created_at', from).lte('created_at', to);
+    queryError = error;
     rows = (data||[]).map(w => ({ Rider: w.rider?.full_name, 'Employee ID': w.rider?.employee_id, Type: w.action_type, Description: w.description, 'Recorded By': w.recorder?.full_name, 'Created At': w.created_at }));
   } else if (type === 'active_employees'){
-    const { data } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
+    // No date range applies here — this is a current snapshot, not filtered by when someone joined.
+    const { data, error } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
+    queryError = error;
     rows = (data||[]).map(p => ({
       'Full Name': p.full_name, 'Employee ID': p.employee_id||'', Role: ROLE_LABEL[p.role]||p.role,
       'Mobile Number': p.phone||'', Email: p.email||'', Region: p.regions?.name||'', 'Bike Number': p.bike_number||'',
@@ -3020,7 +3055,11 @@ async function generateReport(){
     }));
   }
 
-  if (!rows.length){ statusEl.textContent = 'No records found for that range.'; return; }
+  if (queryError){ statusEl.textContent = 'Could not generate: ' + queryError.message; return; }
+  if (!rows.length){
+    statusEl.textContent = type === 'active_employees' ? 'No active employees found.' : 'No records found for that date range.';
+    return;
+  }
   downloadCSV(`fieldhub-${type}-${from}-to-${to.slice(0,10)}.csv`, toCSV(rows));
   statusEl.textContent = `Downloaded ${rows.length} rows.`;
 }
@@ -3179,8 +3218,15 @@ Multan, , Cantt Area"></textarea>
     resultsEl.innerHTML = '<div class="mono">Processing…</div>';
     const rows = [];
     for (const line of lines){
-      const parts = line.split(/\t|,/).map(p=>p.trim());
-      const [regionName, subRegionName, hotspotName] = parts;
+      const cleanParts = line.split(/\t|,/).map(p=>p.trim());
+      let regionName, subRegionName, hotspotName;
+      if (cleanParts.length >= 3){
+        [regionName, subRegionName, hotspotName] = cleanParts;
+      } else {
+        // No sub-region given — just Region, Hotspot name
+        [regionName, hotspotName] = cleanParts;
+        subRegionName = '';
+      }
       const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
       if (!region){ rows.push({ label: line, ok:false, msg:`Region "${regionName}" not found` }); continue; }
       const subRegion = subRegionName ? (subs||[]).find(s => s.region_id===region.id && s.name.toLowerCase()===subRegionName.toLowerCase()) : null;
@@ -3487,6 +3533,7 @@ async function renderHomeBannerSettings(body){
     <p class="hint" style="margin-bottom:14px;">Shows a picture at the top of everyone's Dashboard until the expiry time you set — after that it's automatically hidden, and the old file is cleaned up the next time you upload a new one (so it never lingers taking up space).</p>
     ${b?.image_url ? `<img src="${escapeHtml(b.image_url)}" style="max-width:300px; border-radius:8px; border:1px solid var(--line); margin-bottom:14px; display:block;">
       <p class="mono" style="margin-bottom:14px;">${isLive ? `Live until ${formatDateTime(b.expires_at)}` : 'Expired (hidden from Dashboard)'}</p>` : ''}
+    <div class="form-row"><label>Title (shown under the picture, and in the full-size popup)</label><input type="text" id="banner-title" value="${b?.title?escapeHtml(b.title):''}" placeholder="e.g. Independence Day Notice"></div>
     <div class="form-row"><label>New picture</label><input type="file" id="banner-file" accept="image/*"></div>
     <div class="form-row"><label>Show until</label><input type="datetime-local" id="banner-expiry"></div>
     <button class="btn" id="banner-save-btn">Upload &amp; Show</button>
@@ -3495,6 +3542,7 @@ async function renderHomeBannerSettings(body){
   document.getElementById('banner-save-btn').onclick = async () => {
     const file = document.getElementById('banner-file').files[0];
     const expiryVal = document.getElementById('banner-expiry').value;
+    const title = document.getElementById('banner-title').value.trim();
     if (!file){ toast('Choose a picture first'); return; }
     if (!expiryVal){ toast('Set when it should stop showing'); return; }
     toast('Uploading…');
@@ -3504,7 +3552,7 @@ async function renderHomeBannerSettings(body){
     if (upErr){ toast('Could not upload: ' + upErr.message); return; }
     const { data: pub } = sb.storage.from('branding').getPublicUrl(newPath);
     const { error: dbErr } = await sb.from('home_banner').update({
-      image_url: pub.publicUrl, image_path: newPath,
+      image_url: pub.publicUrl, image_path: newPath, title: title || null,
       expires_at: new Date(expiryVal).toISOString(), updated_by: state.user.id
     }).eq('id', 1);
     if (dbErr){ toast('Uploaded, but could not save: ' + dbErr.message); return; }
@@ -4250,11 +4298,14 @@ async function renderRoster(){
   if (canManage){
     document.getElementById('topbar-actions').innerHTML = `
       <button class="btn outline" id="bulk-roster-btn">+ Bulk Add</button>
+      <button class="btn outline" id="bulk-roster-update-btn">Bulk Update</button>
+      <button class="btn outline" id="roster-download-btn">Download</button>
       <button class="btn" id="new-roster-btn">+ Add to Roster</button>`;
     document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
     document.getElementById('bulk-roster-btn').onclick = openBulkRosterModal;
+    document.getElementById('bulk-roster-update-btn').onclick = openBulkUpdateRosterModal;
   } else {
-    document.getElementById('topbar-actions').innerHTML = '';
+    document.getElementById('topbar-actions').innerHTML = canManage ? '' : `<button class="btn outline" id="roster-download-btn">Download</button>`;
   }
   let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
@@ -4276,6 +4327,14 @@ async function renderRoster(){
   const shiftNames = [...new Set(entries.map(e=>e.shift_types?.name).filter(Boolean))];
   const dayOffs = [...new Set(entries.map(e=>e.day_off).filter(Boolean))];
   const reasons = [...new Set(entries.filter(e=>e.status==='removed').map(e=>e.removal_reason).filter(Boolean))];
+
+  const regionCounts = {};
+  entries.forEach(e => {
+    const name = e.regions?.name || 'Unknown';
+    if (!regionCounts[name]) regionCounts[name] = { total:0, working:0 };
+    regionCounts[name].total++;
+    if (e.status !== 'removed') regionCounts[name].working++;
+  });
 
   const renderRows = (list) => list.length ? `<table><thead><tr><th>Rider</th><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Shift</th><th>Day Off</th><th>Official Mobile</th><th>Personal Mobile</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
     ${list.map(e => `<tr>
@@ -4308,6 +4367,12 @@ async function renderRoster(){
       <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer;"><div class="stat-number">${replacementPending}</div><div class="stat-label">Replacement Needed</div></div>
     </div>
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
+    <details style="margin-bottom:14px;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Region-wise counts ▾</summary>
+      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th></tr></thead><tbody>
+        ${Object.entries(regionCounts).map(([name,c]) => `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td></tr>`).join('')}
+      </tbody></table>
+    </details>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
       <select id="rf-region"><option value="">All Regions</option>${state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
       <select id="rf-shift"><option value="">All Shifts</option>${shiftNames.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select>
@@ -4317,6 +4382,21 @@ async function renderRoster(){
       <input type="text" id="rf-search" placeholder="Search rider name or Employee ID…" style="flex:1; min-width:160px;">
     </div>
     <div id="roster-list">${renderRows(entries)}</div>`;
+
+  const downloadBtn = document.getElementById('roster-download-btn');
+  if (downloadBtn){
+    downloadBtn.onclick = () => {
+      const rows = entries.map(e => ({
+        Rider: e.profiles?.full_name||'', 'Employee ID': e.profiles?.employee_id||'',
+        Region: e.regions?.name||'', 'Sub-Region': e.sub_regions?.name||'', Hotspot: e.hotspot||'',
+        Shift: e.shift_types?.name||'', 'Day Off': e.day_off||'',
+        'Official Mobile': e.official_mobile||'', 'Personal Mobile': e.personal_mobile||'',
+        Status: e.status==='removed' ? (e.removal_reason||'Removed') : 'Working',
+        'Status Date': e.status_date||''
+      }));
+      downloadCSV(`roster-${new Date().toISOString().slice(0,10)}.csv`, toCSV(rows));
+    };
+  }
 
   const applyFilters = () => {
     const region = document.getElementById('rf-region').value;
@@ -4444,6 +4524,23 @@ async function openRosterModal(entry){
     await loadHotspots(entry.region_id, entry.sub_region_id, entry.hotspot);
   }
 
+  // Auto-fetch the rider's mobile number (and region) from their Team
+  // profile when adding a fresh entry, so it doesn't need retyping.
+  if (!entry){
+    const applyRiderDefaults = (riderId) => {
+      const rider = riders.find(p=>p.id===riderId);
+      if (!rider) return;
+      if (rider.phone) document.getElementById('ro-official').value = rider.phone.replace('+92','0');
+      if (rider.region_id){
+        document.getElementById('ro-region').value = rider.region_id;
+        loadSubRegions(rider.region_id, null);
+        loadHotspots(rider.region_id, null, null);
+      }
+    };
+    document.getElementById('ro-rider').onchange = (e) => applyRiderDefaults(e.target.value);
+    if (document.getElementById('ro-rider').value) applyRiderDefaults(document.getElementById('ro-rider').value);
+  }
+
   document.getElementById('roster-form').onsubmit = async (e) => {
     e.preventDefault();
     const riderId = document.getElementById('ro-rider').value;
@@ -4516,12 +4613,63 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
         rider_id: rider.id, region_id: region.id, sub_region_id: subRegion?.id || null,
         shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspot || null, created_by: state.user.id
       });
-      rows.push({ empId, ok: !error, msg: error ? error.message : `Added — ${rider.full_name}` });
+      let warnings = [];
+      if (shiftName && !shift) warnings.push(`shift "${shiftName}" didn't match any Shift Type exactly — left blank`);
+      if (subRegionName && !subRegion) warnings.push(`sub-region "${subRegionName}" didn't match — left blank`);
+      const successMsg = `Added — ${rider.full_name}` + (warnings.length ? ` (⚠️ ${warnings.join('; ')})` : '');
+      rows.push({ empId, ok: !error, msg: error ? error.message : successMsg });
     }
     resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
       ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
     </tbody></table>`;
     toast(`${rows.filter(r=>r.ok).length} of ${rows.length} added`);
+    renderRoster();
+  };
+}
+
+function openBulkUpdateRosterModal(){
+  openModal(`
+    <h2>Bulk update existing roster entries</h2>
+    <p class="hint">Use this to fix Shift/Hotspot on rows that already exist (e.g. after a Bulk Add where the names didn't match exactly). Paste: <strong>Employee ID, Shift name, Hotspot</strong> — one per line. Leave a field blank to leave that one unchanged.</p>
+    <form id="bulk-roster-update-form">
+      <textarea id="bru-rows" rows="8" placeholder="EMP1001, 7:00 AM - 7:00 PM, DHA Phase 5
+EMP1002, 8:00 AM - 8:00 PM, "></textarea>
+      <button class="btn-primary" type="submit" style="margin-top:12px;">Update All</button>
+    </form>
+    <div id="bulk-roster-update-results" style="margin-top:14px;"></div>
+  `);
+  document.getElementById('bulk-roster-update-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const lines = document.getElementById('bru-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const resultsEl = document.getElementById('bulk-roster-update-results');
+    resultsEl.innerHTML = '<div class="mono">Processing…</div>';
+
+    await loadScopedProfiles();
+    const { data: allShifts } = await sb.from('shift_types').select('*');
+    const rows = [];
+    for (const line of lines){
+      const parts = line.split(/\t|,/).map(p=>p.trim());
+      const [empId, shiftName, hotspot] = parts;
+      const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
+      if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID' }); continue; }
+      const { data: entry } = await sb.from('roster_entries').select('id').eq('rider_id', rider.id).neq('status', 'removed').maybeSingle();
+      if (!entry){ rows.push({ empId, ok:false, msg:'No active roster entry to update — use Bulk Add instead' }); continue; }
+      const payload = {};
+      if (shiftName){
+        const shift = (allShifts||[]).find(s => s.name.toLowerCase() === shiftName.toLowerCase());
+        if (!shift){ rows.push({ empId, ok:false, msg:`Shift "${shiftName}" not found — check Settings → Shift Types spelling` }); continue; }
+        payload.shift_id = shift.id;
+      }
+      if (hotspot) payload.hotspot = hotspot;
+      if (!Object.keys(payload).length){ rows.push({ empId, ok:false, msg:'Nothing to update on this row' }); continue; }
+      const { error } = await sb.from('roster_entries').update(payload).eq('id', entry.id);
+      rows.push({ empId, ok: !error, msg: error ? error.message : `Updated — ${rider.full_name}` });
+    }
+    resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
+    </tbody></table>`;
+    toast(`${rows.filter(r=>r.ok).length} of ${rows.length} updated`);
     renderRoster();
   };
 }
@@ -4676,4 +4824,3 @@ function escapeHtml(str){
   if (str === null || str === undefined) return '';
   return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
-
