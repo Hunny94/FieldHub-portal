@@ -285,9 +285,11 @@ async function showPendingRemindersBanner(){
   if (!['inventory_coordinator','regional_poc','team_lead','coordinator','admin','super_admin'].includes(state.profile.role)) return;
   const cutoff = new Date(); cutoff.setDate(cutoff.getDate()+30);
   const cutoffStr = cutoff.toISOString().slice(0,10);
-  let expiryQ = sb.from('expiry_items').select('id', {count:'exact', head:true}).lte('expiry_date', cutoffStr);
-  let toolQ = sb.from('tool_issuances').select('id', {count:'exact', head:true}).lte('next_due_date', cutoffStr);
-  const [{count: expCount}, {count: toolCount}] = await Promise.all([expiryQ, toolQ]);
+  const [{ data: expiryRows }, { count: toolCount }] = await Promise.all([
+    sb.from('expiry_items').select('id, group_id').lte('expiry_date', cutoffStr),
+    sb.from('tool_issuances').select('id', {count:'exact', head:true}).lte('next_due_date', cutoffStr)
+  ]);
+  const expCount = new Set((expiryRows||[]).map(i => i.group_id || i.id)).size;
   if (expCount) toast(`⚠️ ${expCount} expiry item(s) due/overdue — check Expiry Tracker`);
   if (toolCount) toast(`⚠️ ${toolCount} tool(s) due/overdue for reissue — check Tool Issuance`);
 }
@@ -305,25 +307,25 @@ async function loadAndShowNotifications(){
 
   const items = [];
   const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').gt('created_at', since).order('created_at', {ascending:false}).limit(20);
-  (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ type:'Circular', title:'New circular', body:c.title, created_at:c.created_at }));
+  (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ id:'circ-'+c.id, type:'Circular', title:'New circular', body:c.title, created_at:c.created_at, read:false }));
 
   const { data: myRequests } = await sb.from('requests').select('id, category').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
   const myRequestIds = (myRequests||[]).map(r=>r.id);
   if (myRequestIds.length){
     const { data: reqUpdates } = await sb.from('request_updates').select('*, profiles(full_name)').in('request_id', myRequestIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
-    (reqUpdates||[]).forEach(u => items.push({ type:'Request update', title:`${u.profiles?.full_name||'Someone'} updated a request`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at }));
+    (reqUpdates||[]).forEach(u => items.push({ id:'req-'+u.id, type:'Request update', title:`${u.profiles?.full_name||'Someone'} updated a request`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
   const { data: myTasks } = await sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`);
   const myTaskIds = (myTasks||[]).map(t=>t.id);
   if (myTaskIds.length){
     const { data: taskUpdates } = await sb.from('task_updates').select('*, profiles(full_name)').in('task_id', myTaskIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
-    (taskUpdates||[]).forEach(u => items.push({ type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at }));
+    (taskUpdates||[]).forEach(u => items.push({ id:'task-'+u.id, type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
     const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
-    (myWarnings||[]).forEach(w => items.push({ type:'Warning', title:`Warning issued by ${w.recorder?.full_name||'—'}`, body: w.action_type, created_at:w.created_at }));
+    (myWarnings||[]).forEach(w => items.push({ id:'warn-'+w.id, type:'Warning', title:`Warning issued by ${w.recorder?.full_name||'—'}`, body: w.action_type, created_at:w.created_at, read:false }));
   }
 
   items.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
@@ -334,6 +336,11 @@ async function loadAndShowNotifications(){
 
   ensureNotificationBell();
   updateNotificationBadge();
+  // From now on, "since" moves forward so the same items don't repeat
+  // on the next login — but staying unread in the dropdown (see below)
+  // is a separate, per-item concept from this login-window cutoff.
+  sb.from('profiles').update({ notifications_last_seen_at: new Date().toISOString() }).eq('id', state.user.id);
+  state.profile.notifications_last_seen_at = new Date().toISOString();
 }
 
 function ensureNotificationBell(){
@@ -353,6 +360,8 @@ function ensureNotificationBell(){
 function pushNotification(item){
   ensureNotificationBell();
   const retainCount = state.systemSettings?.notification_retain_count || 5;
+  item.id = item.id || ('live-' + Date.now() + '-' + Math.random());
+  item.read = false;
   state.notifications = [item, ...state.notifications].slice(0, retainCount);
   updateNotificationBadge();
   toast(`${item.title}: ${item.body || ''}`);
@@ -361,38 +370,68 @@ function pushNotification(item){
 function updateNotificationBadge(){
   const badge = document.getElementById('notif-badge');
   if (!badge) return;
-  const n = state.notifications.length;
+  const n = state.notifications.filter(x=>!x.read).length;
   badge.style.display = n ? 'block' : 'none';
   badge.textContent = n;
 }
 
+// Notifications are grouped by type into expandable sections. Clicking
+// one marks it read (dims it, moves the unread count down) but it stays
+// visible in the list — nothing disappears just from being read.
 function toggleNotificationDropdown(){
   const existing = document.getElementById('notif-dropdown');
   if (existing){ existing.remove(); return; }
   const bell = document.getElementById('notif-bell-btn');
   if (!bell) return;
+  renderNotificationDropdown(bell);
+}
+
+function renderNotificationDropdown(bell){
   const rect = bell.getBoundingClientRect();
-  const dropdown = document.createElement('div');
-  dropdown.id = 'notif-dropdown';
-  dropdown.style.cssText = `position:fixed; top:${rect.bottom+6}px; right:${window.innerWidth-rect.right}px; width:320px; max-height:400px; overflow-y:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.15); z-index:5000; padding:10px;`;
+  let dropdown = document.getElementById('notif-dropdown');
+  const isNew = !dropdown;
+  if (isNew){
+    dropdown = document.createElement('div');
+    dropdown.id = 'notif-dropdown';
+    dropdown.style.cssText = `position:fixed; top:${rect.bottom+6}px; right:${window.innerWidth-rect.right}px; width:340px; max-height:440px; overflow-y:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.15); z-index:5000; padding:10px;`;
+    document.body.appendChild(dropdown);
+  }
+
+  const groups = new Map();
+  state.notifications.forEach(n => { if (!groups.has(n.type)) groups.set(n.type, []); groups.get(n.type).push(n); });
+
   dropdown.innerHTML = state.notifications.length
-    ? state.notifications.map(n => `<div style="padding:9px 6px; border-bottom:1px solid var(--line);">
-        <div style="font-weight:600; font-size:13px;">${escapeHtml(n.title)}</div>
-        <div style="font-size:12.5px; color:var(--muted);">${escapeHtml(n.body||'')}</div>
-        <div class="mono" style="font-size:11px; margin-top:2px;">${formatDateTime(n.created_at)}</div>
-      </div>`).join('')
+    ? Array.from(groups.entries()).map(([type, list]) => {
+        const unreadCount = list.filter(n=>!n.read).length;
+        return `<details ${unreadCount?'open':''} style="margin-bottom:6px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:13px; padding:6px 4px; list-style:none;">
+            ${escapeHtml(type)} ${unreadCount ? `<span class="badge pending" style="margin-left:4px;">${unreadCount} new</span>` : ''}
+          </summary>
+          ${list.map(n => `<div data-notif-item="${n.id}" style="padding:8px 6px; border-bottom:1px solid var(--line); cursor:pointer; ${n.read?'opacity:0.55;':''}">
+            <div style="font-weight:${n.read?'400':'600'}; font-size:13px;">${escapeHtml(n.title)}</div>
+            <div style="font-size:12.5px; color:var(--muted);">${escapeHtml(n.body||'')}</div>
+            <div class="mono" style="font-size:11px; margin-top:2px;">${formatDateTime(n.created_at)}</div>
+          </div>`).join('')}
+        </details>`;
+      }).join('')
     : `<div style="padding:14px; color:var(--muted); font-size:13px;">No recent notifications.</div>`;
-  document.body.appendChild(dropdown);
-  // Mark as seen so these don't repeat next login
-  sb.from('profiles').update({ notifications_last_seen_at: new Date().toISOString() }).eq('id', state.user.id);
-  state.profile.notifications_last_seen_at = new Date().toISOString();
-  const closeOnOutside = (e) => {
-    if (!dropdown.contains(e.target) && e.target.id !== 'notif-bell-btn'){
-      dropdown.remove();
-      document.removeEventListener('click', closeOnOutside);
-    }
-  };
-  setTimeout(() => document.addEventListener('click', closeOnOutside), 10);
+
+  dropdown.querySelectorAll('[data-notif-item]').forEach(el => {
+    el.onclick = () => {
+      const n = state.notifications.find(x=>x.id===el.dataset.notifItem);
+      if (n && !n.read){ n.read = true; updateNotificationBadge(); renderNotificationDropdown(bell); }
+    };
+  });
+
+  if (isNew){
+    const closeOnOutside = (e) => {
+      if (!dropdown.contains(e.target) && e.target.id !== 'notif-bell-btn'){
+        dropdown.remove();
+        document.removeEventListener('click', closeOnOutside);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', closeOnOutside), 10);
+  }
 }
 
 async function showPendingPopupAnnouncement(){
@@ -598,13 +637,13 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes'],
-  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes'],
-  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes'],
-  rider: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes']
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes','hierarchy'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes','hierarchy'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes','hierarchy'],
+  rider: ['dashboard','circulars','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes','hierarchy']
 };
 // A granted custom_permission can unlock a whole nav item (e.g. Settings,
 // Regions, Reports) for a role that wouldn't normally see it at all —
@@ -625,14 +664,14 @@ const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
   expiries:'Expiry Tracker', tools:'Tool Issuance', roster:'Roster', team:'Team', regions:'Regions', settings:'Settings',
   warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
-  compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New"
+  compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
   { label: null, items: ['dashboard'] },
   { label: 'Operations', items: ['circulars','tasks','requests'] },
   { label: 'Inventory', items: ['expiries','tools'] },
-  { label: 'People', items: ['team','warnings','compliance','roster'] },
+  { label: 'People', items: ['team','warnings','compliance','roster','hierarchy'] },
   { label: 'Knowledge', items: ['knowledgebase','resources','releasenotes'] },
   { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
 ];
@@ -714,6 +753,7 @@ async function navigateTo(view){
     else if (view==='activitylog') await renderActivityLog();
     else if (view==='roster') await renderRoster();
     else if (view==='releasenotes') await renderReleaseNotes();
+    else if (view==='hierarchy') await renderHierarchy();
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -740,7 +780,7 @@ async function renderDashboard(){
     sb.from('requests').select('id', {count:'exact', head:true}).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
     sb.from('circulars').select('id'),
-    sb.from('expiry_items').select('id, expiry_date'),
+    sb.from('expiry_items').select('id, group_id, expiry_date'),
     isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
     sb.from('home_notices').select('*').eq('active', true).or(`expires_at.is.null,expires_at.gte.${new Date().toISOString().slice(0,10)}`).order('created_at', {ascending:false}),
     sb.from('home_banner').select('*').eq('id', 1).maybeSingle()
@@ -758,7 +798,8 @@ async function renderDashboard(){
 
   const today = new Date();
   const soonCutoff = new Date(); soonCutoff.setDate(today.getDate()+30);
-  const expiringSoon = (expiring.data||[]).filter(i => new Date(i.expiry_date) <= soonCutoff).length;
+  const expiringDueRows = (expiring.data||[]).filter(i => new Date(i.expiry_date) <= soonCutoff);
+  const expiringSoon = new Set(expiringDueRows.map(i => i.group_id || i.id)).size;
 
   main.innerHTML = `
     ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden; cursor:pointer;" id="dashboard-banner-click">
@@ -804,7 +845,7 @@ async function renderCirculars(){
     document.getElementById('new-circular-btn').onclick = openNewCircularModal;
   }
 
-  let circularsQuery = sb.from('circulars').select('*, profiles!created_by(full_name)').order('created_at', {ascending:false});
+  let circularsQuery = sb.from('circulars').select('*, profiles!created_by(full_name)').is('deleted_at', null).order('created_at', {ascending:false});
   if (!isAdmin()) circularsQuery = circularsQuery.gte('created_at', state.profile.created_at);
   const { data: circulars } = await circularsQuery;
   const { data: myAcks } = await sb.from('circular_acks').select('circular_id').eq('user_id', state.user.id);
@@ -847,6 +888,7 @@ function openCircularPopup(c, acked){
       ${(!acked && !isCreator) ? `<button class="btn" id="popup-ack-btn2">Acknowledge</button>` : ''}
       ${(isAdmin() || isCreator) ? `<button class="btn outline" id="popup-tracker-btn">View Tracker</button>` : ''}
       ${isSuperAdmin() ? `<button class="btn outline" id="popup-kb-toggle-btn">${c.push_to_kb ? 'Remove from Knowledge Base' : 'Push to Knowledge Base'}</button>` : ''}
+      ${isSuperAdmin() ? `<button class="btn outline" id="popup-edit-btn">Edit</button>` : ''}
       ${isSuperAdmin() ? `<button class="btn danger" id="popup-delete-btn">Delete Permanently</button>` : ''}
     </div>
     <div id="popup-tracker-area" style="margin-top:14px;"></div>
@@ -861,6 +903,7 @@ function openCircularPopup(c, acked){
     document.getElementById('popup-tracker-btn').onclick = () => showCircularTracker(c.id, c, document.getElementById('popup-tracker-area'));
   }
   if (isSuperAdmin()){
+    document.getElementById('popup-edit-btn').onclick = () => { closeModal(); openEditCircularModal(c); };
     document.getElementById('popup-kb-toggle-btn').onclick = async () => {
       const newVal = !c.push_to_kb;
       const { error } = await sb.from('circulars').update({ push_to_kb: newVal }).eq('id', c.id);
@@ -870,19 +913,69 @@ function openCircularPopup(c, acked){
       closeModal(); openCircularPopup(c, acked);
     };
     document.getElementById('popup-delete-btn').onclick = async () => {
-      if (!confirm('Permanently delete this circular? This cannot be undone.')) return;
-      const { error } = await sb.from('circulars').delete().eq('id', c.id);
+      if (!confirm('Delete this circular? It can be restored from Settings → Trash within 48 hours.')) return;
+      const { error } = await sb.from('circulars').update({ deleted_at: new Date().toISOString(), deleted_by: state.user.id }).eq('id', c.id);
       if (error){ toast('Could not delete: ' + error.message); return; }
-      closeModal(); toast('Circular deleted'); renderCirculars();
+      closeModal(); toast('Circular deleted — restorable from Trash for 48 hours'); renderCirculars();
     };
   }
+}
+
+async function openEditCircularModal(c){
+  const currentRegionIds = new Set(c.target_region_ids || (c.target_region_id ? [c.target_region_id] : []));
+  const currentRoles = new Set(c.target_roles || (c.target_role ? [c.target_role] : []));
+  const { data: cats } = await sb.from('circular_categories').select('*').eq('active', true).order('name');
+  const catOptions = `<option value="">— None —</option>` + (cats||[]).map(cat=>`<option value="${cat.id}" ${cat.id===c.category_id?'selected':''}>${escapeHtml(cat.name)}</option>`).join('');
+  const regionChecks = state.regions.map(r=>`
+    <div style="display:flex; align-items:center; gap:8px; padding:6px 4px;">
+      <input type="checkbox" class="ec-region-check" value="${r.id}" id="ec-region-${r.id}" ${currentRegionIds.has(r.id)?'checked':''}>
+      <label for="ec-region-${r.id}" style="font-weight:400; margin:0; cursor:pointer;">${escapeHtml(r.name)}</label>
+    </div>`).join('');
+  const roleChecks = Object.entries(ROLE_LABEL).map(([k,v])=>`
+    <div style="display:flex; align-items:center; gap:8px; padding:6px 4px;">
+      <input type="checkbox" class="ec-role-check" value="${k}" id="ec-role-${k}" ${currentRoles.has(k)?'checked':''}>
+      <label for="ec-role-${k}" style="font-weight:400; margin:0; cursor:pointer;">${v}</label>
+    </div>`).join('');
+  openModal(`
+    <h2>Edit circular</h2>
+    <form id="circular-edit-form">
+      <div class="form-row"><label>Title</label><input type="text" id="ec-title" value="${escapeHtml(c.title)}" required></div>
+      <div class="form-row"><label>Category</label><select id="ec-category">${catOptions}</select></div>
+      <div class="form-row"><label>Message</label><textarea id="ec-body" required>${escapeHtml(c.body)}</textarea></div>
+      <div class="form-row"><label>Target region(s) — none checked = all</label>
+        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${regionChecks}</div>
+      </div>
+      <div class="form-row"><label>Target role(s) — none checked = all</label>
+        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${roleChecks}</div>
+      </div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>
+  `);
+  document.getElementById('circular-edit-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const regionIds = Array.from(document.querySelectorAll('.ec-region-check:checked')).map(cb=>cb.value);
+    const roles = Array.from(document.querySelectorAll('.ec-role-check:checked')).map(cb=>cb.value);
+    const { error } = await sb.from('circulars').update({
+      title: document.getElementById('ec-title').value.trim(),
+      body: document.getElementById('ec-body').value.trim(),
+      category_id: document.getElementById('ec-category').value || null,
+      target_region_id: regionIds.length === 1 ? regionIds[0] : null,
+      target_role: roles.length === 1 ? roles[0] : null,
+      target_region_ids: regionIds.length ? regionIds : null,
+      target_roles: roles.length ? roles : null
+    }).eq('id', c.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Updated'); renderCirculars();
+  };
 }
 
 async function showCircularTracker(circularId, circular, el){
   el.innerHTML = '<div class="mono">Loading…</div>';
   let q = sb.from('profiles').select('id, full_name, role').eq('status','active').neq('id', circular.created_by);
-  if (circular.target_region_id) q = q.eq('region_id', circular.target_region_id);
-  if (circular.target_role) q = q.eq('role', circular.target_role);
+  const regionIds = circular.target_region_ids || (circular.target_region_id ? [circular.target_region_id] : []);
+  const roles = circular.target_roles || (circular.target_role ? [circular.target_role] : []);
+  if (regionIds.length) q = q.in('region_id', regionIds);
+  if (roles.length) q = q.in('role', roles);
   const { data: audience } = await q;
   const { data: acks } = await sb.from('circular_acks').select('user_id, acknowledged_at').eq('circular_id', circularId);
   const ackMap = new Map((acks||[]).map(a=>[a.user_id, a.acknowledged_at]));
@@ -907,10 +1000,12 @@ async function showCircularTracker(circularId, circular, el){
   };
 }
 
-async function countAudience(targetRegionId, targetRole, excludeId){
+async function countAudience(targetRegionId, targetRole, excludeId, targetRegionIds, targetRoles){
   let q = sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','active');
-  if (targetRegionId) q = q.eq('region_id', targetRegionId);
-  if (targetRole) q = q.eq('role', targetRole);
+  const regionIds = targetRegionIds || (targetRegionId ? [targetRegionId] : []);
+  const roles = targetRoles || (targetRole ? [targetRole] : []);
+  if (regionIds.length) q = q.in('region_id', regionIds);
+  if (roles.length) q = q.in('role', roles);
   if (excludeId) q = q.neq('id', excludeId);
   const { count } = await q;
   return count ?? 0;
@@ -926,18 +1021,24 @@ async function acknowledgeCircular(circularId){
 async function openNewCircularModal(){
   const isRegionLocked = ['regional_poc','team_lead','coordinator'].includes(state.profile.role);
   const myRegions = state.myRegionIds.map(id => state.regions.find(r=>r.id===id)).filter(Boolean);
-  const regionOptions = isRegionLocked
-    ? (myRegions.length
-        ? myRegions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')
-        : `<option value="">⚠️ No region assigned to you — ask Admin to fix this in Team</option>`)
-    : `<option value="">All regions</option>` + state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const regionChoices = isRegionLocked ? myRegions : state.regions;
   const isRoleLockedToFieldStaff = state.profile.role === 'team_lead';
-  const roleOptions = isRoleLockedToFieldStaff
-    ? `<option value="rider">${ROLE_LABEL.rider}</option><option value="coordinator">${ROLE_LABEL.coordinator}</option>`
-    : Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+  const roleChoices = isRoleLockedToFieldStaff ? [['rider',ROLE_LABEL.rider],['coordinator',ROLE_LABEL.coordinator]] : Object.entries(ROLE_LABEL);
   const { data: cats } = await sb.from('circular_categories').select('*').eq('active', true).order('name');
   const catOptions = `<option value="">— None —</option>` + (cats||[]).map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   const wordLimit = state.systemSettings?.circular_word_limit;
+
+  const regionChecks = regionChoices.length ? regionChoices.map(r=>`
+    <div style="display:flex; align-items:center; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="c-region-check" value="${r.id}" id="c-region-${r.id}">
+      <label for="c-region-${r.id}" style="font-weight:400; margin:0; cursor:pointer;">${escapeHtml(r.name)}</label>
+    </div>`).join('') : `<p class="hint">⚠️ No region assigned to you — ask Admin to fix this in Team.</p>`;
+  const roleChecks = roleChoices.map(([k,v])=>`
+    <div style="display:flex; align-items:center; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="c-role-check" value="${k}" id="c-role-${k}">
+      <label for="c-role-${k}" style="font-weight:400; margin:0; cursor:pointer;">${v}</label>
+    </div>`).join('');
+
   openModal(`
     <h2>New circular</h2>
     <form id="circular-form">
@@ -946,13 +1047,27 @@ async function openNewCircularModal(){
       <div class="form-row"><label>Message</label><textarea id="c-body" required></textarea>
         <span class="field-hint" id="c-word-count">0 words${wordLimit?` / ${wordLimit} max`:''}</span>
       </div>
-      <div class="two-col">
-        <div class="form-row"><label>Target region</label><select id="c-region">${regionOptions}</select></div>
-        <div class="form-row"><label>Target role</label><select id="c-role">${isRoleLockedToFieldStaff ? '' : '<option value="">All roles</option>'}${roleOptions}</select></div>
+      <div class="form-row">
+        <label>Target region(s)</label>
+        ${!isRegionLocked ? `<button type="button" class="btn small outline" id="c-select-all-regions" style="margin-bottom:6px;">Select All (all regions)</button>` : ''}
+        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${regionChecks}</div>
+        <span class="field-hint">Leave all unchecked to target every region.</span>
+      </div>
+      <div class="form-row">
+        <label>Target role(s)</label>
+        <button type="button" class="btn small outline" id="c-select-all-roles" style="margin-bottom:6px;">Select All Roles</button>
+        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${roleChecks}</div>
+        <span class="field-hint">Leave all unchecked to target every role.</span>
       </div>
       <button class="btn-primary" type="submit">Post circular</button>
     </form>
   `);
+  document.getElementById('c-select-all-regions')?.addEventListener('click', () => {
+    document.querySelectorAll('.c-region-check').forEach(cb => cb.checked = true);
+  });
+  document.getElementById('c-select-all-roles').onclick = () => {
+    document.querySelectorAll('.c-role-check').forEach(cb => cb.checked = true);
+  };
   const bodyEl = document.getElementById('c-body');
   const counterEl = document.getElementById('c-word-count');
   bodyEl.oninput = () => {
@@ -969,22 +1084,27 @@ async function openNewCircularModal(){
       toast(`This circular is too long — please keep it under ${sys.circular_word_limit} words.`);
       return;
     }
-    const targetRegionId = document.getElementById('c-region').value || null;
-    const targetRole = document.getElementById('c-role').value || null;
+    let targetRegionIds = Array.from(document.querySelectorAll('.c-region-check:checked')).map(cb=>cb.value);
+    let targetRoles = Array.from(document.querySelectorAll('.c-role-check:checked')).map(cb=>cb.value);
+    if (isRegionLocked && !targetRegionIds.length) targetRegionIds = state.myRegionIds;
+    if (isRoleLockedToFieldStaff && !targetRoles.length) targetRoles = ['rider','coordinator'];
+
     const { error } = await sb.from('circulars').insert({
       title,
-      body: document.getElementById('c-body').value.trim(),
+      body,
       created_by: state.user.id,
-      target_region_id: targetRegionId,
-      target_role: targetRole,
+      target_region_id: targetRegionIds.length === 1 ? targetRegionIds[0] : null,
+      target_role: targetRoles.length === 1 ? targetRoles[0] : null,
+      target_region_ids: targetRegionIds.length ? targetRegionIds : null,
+      target_roles: targetRoles.length ? targetRoles : null,
       category_id: document.getElementById('c-category').value || null
     });
     if (error){ toast('Could not post: ' + error.message); return; }
     closeModal(); toast('Circular posted'); renderCirculars();
     // Best-effort WhatsApp broadcast to everyone targeted
     let q = sb.from('profiles').select('phone').eq('status','active');
-    if (targetRegionId) q = q.eq('region_id', targetRegionId);
-    if (targetRole) q = q.eq('role', targetRole);
+    if (targetRegionIds.length) q = q.in('region_id', targetRegionIds);
+    if (targetRoles.length) q = q.in('role', targetRoles);
     const { data: audience } = await q;
     const phones = (audience || []).map(p=>p.phone).filter(Boolean);
     if (phones.length){
@@ -1010,15 +1130,18 @@ async function renderTasks(){
   const canSeeAssignedByMe = isStaff() && state.profile.role !== 'team_lead';
   if (!canSeeAssignedByMe) taskTab = 'mine';
   let tabsHtml = '';
-  if (canSeeAssignedByMe){
+  if (canSeeAssignedByMe || isAdmin()){
     tabsHtml = `<div class="tabs">
       <button class="tab ${taskTab==='mine'?'active':''}" data-tab="mine">Assigned to me</button>
-      <button class="tab ${taskTab==='assignedByMe'?'active':''}" data-tab="assignedByMe">I assigned</button>
+      ${canSeeAssignedByMe ? `<button class="tab ${taskTab==='assignedByMe'?'active':''}" data-tab="assignedByMe">I assigned</button>` : ''}
+      ${isAdmin() ? `<button class="tab ${taskTab==='all'?'active':''}" data-tab="all">All Tasks (org-wide)</button>` : ''}
     </div>`;
   }
 
-  let query = sb.from('tasks').select('*, assignee:profiles!assigned_to(full_name, employee_id), assigner:profiles!assigned_by(full_name, employee_id)').order('due_date', {ascending:true, nullsFirst:false});
-  if (!isStaff() || taskTab==='mine') query = query.eq('assigned_to', state.user.id);
+  let query = sb.from('tasks').select('*, assignee:profiles!assigned_to(full_name, employee_id), assigner:profiles!assigned_by(full_name, employee_id)').is('deleted_at', null).order('due_date', {ascending:true, nullsFirst:false});
+  if (taskTab === 'all' && isAdmin()){
+    // no filter — Super Admin/Admin see every task in the system
+  } else if (!isStaff() || taskTab==='mine') query = query.eq('assigned_to', state.user.id);
   else query = query.eq('assigned_by', state.user.id);
   const { data: tasks } = await query;
 
@@ -1033,18 +1156,21 @@ async function renderTasks(){
         <td>${escapeHtml(t.assignee?.full_name || '—')}${t.assignee?.employee_id?' <span class="mono">('+escapeHtml(t.assignee.employee_id)+')</span>':''}</td>
         <td class="mono">${t.due_date || '—'}</td>
         <td><span class="badge ${t.status}">${t.status.replace('_',' ')}</span></td>
-        <td>${taskStatusControls(t)} ${(isSuperAdmin() || hasPermission('task_delete')) ? `<button class="btn small danger" data-delete-task="${t.id}">Delete</button>` : ''}</td>
+        <td>${taskStatusControls(t)} ${isSuperAdmin() ? `<button class="btn small outline" data-edit-task="${t.id}">Edit</button>` : ''} ${(isSuperAdmin() || hasPermission('task_delete')) ? `<button class="btn small danger" data-delete-task="${t.id}">Delete</button>` : ''}</td>
       </tr>
       <tr class="task-log-row" data-log-row="${t.id}" style="display:none;"><td colspan="6"><div id="task-log-${t.id}" class="mono" style="font-size:12.5px; padding:10px 0;">Loading…</div></td></tr>`).join('')}</tbody></table>
   ` : emptyState('No tasks here yet.'));
 
   main.querySelectorAll('.tab').forEach(tb => tb.onclick = () => { taskTab = tb.dataset.tab; renderTasks(); });
+  main.querySelectorAll('[data-edit-task]').forEach(btn => {
+    btn.onclick = () => openEditTaskModal(tasks.find(t=>t.id===btn.dataset.editTask));
+  });
   main.querySelectorAll('[data-delete-task]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('Permanently delete this task? This cannot be undone.')) return;
-      const { error } = await sb.from('tasks').delete().eq('id', btn.dataset.deleteTask);
+      if (!confirm('Delete this task? It can be restored from Settings → Trash within 48 hours.')) return;
+      const { error } = await sb.from('tasks').update({ deleted_at: new Date().toISOString(), deleted_by: state.user.id }).eq('id', btn.dataset.deleteTask);
       if (error){ toast('Could not delete: ' + error.message); return; }
-      toast('Task deleted'); renderTasks();
+      toast('Task deleted — restorable from Trash for 48 hours'); renderTasks();
     };
   });
   main.querySelectorAll('[data-task-status]').forEach(btn => {
@@ -1100,9 +1226,44 @@ function openTaskStatusModal(taskId, newStatus){
   };
 }
 
+function openEditTaskModal(task){
+  openModal(`
+    <h2>Edit task</h2>
+    <form id="task-edit-form">
+      <div class="form-row"><label>Title</label><input type="text" id="et-title" value="${escapeHtml(task.title)}" required></div>
+      <div class="form-row"><label>Details</label><textarea id="et-desc">${escapeHtml(task.description||'')}</textarea></div>
+      <div class="form-row"><label>Due date</label><input type="date" id="et-due" value="${task.due_date||''}"></div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>
+  `);
+  document.getElementById('task-edit-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('tasks').update({
+      title: document.getElementById('et-title').value.trim(),
+      description: document.getElementById('et-desc').value.trim(),
+      due_date: document.getElementById('et-due').value || null
+    }).eq('id', task.id);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Updated'); renderTasks();
+  };
+}
+
 async function openNewTaskModal(){
   await loadScopedProfiles();
-  const options = state.profilesInScope.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]||p.role})</option>`).join('');
+  // Tasks are not for riders. Who you can assign to also depends on your
+  // own role: Super Admin/Admin can assign to anyone else on staff;
+  // an Area Incharge/Regional POC can only assign to their own Coordinators.
+  let assignableRoles;
+  if (isAdmin()){
+    assignableRoles = ['team_lead','regional_poc','coordinator','inventory_coordinator'];
+  } else if (['team_lead','regional_poc'].includes(state.profile.role)){
+    assignableRoles = ['coordinator'];
+  } else {
+    assignableRoles = [];
+  }
+  const assignable = state.profilesInScope.filter(p => assignableRoles.includes(p.role) && p.status==='active');
+  const options = assignable.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]||p.role})</option>`).join('');
+  if (!assignable.length){ toast('No one available for you to assign a task to.'); return; }
   openModal(`
     <h2>Assign task</h2>
     <form id="task-form">
@@ -1143,6 +1304,7 @@ async function renderRequests(){
 
   const { data: rawRequests } = await sb.from('requests')
     .select('*, rider:profiles!rider_id(full_name, employee_id), poc:profiles!assigned_poc_id(full_name, employee_id)')
+    .is('deleted_at', null)
     .order('created_at', {ascending:false});
 
   const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3 };
@@ -1183,11 +1345,11 @@ async function renderRequests(){
 
   main.querySelectorAll('[data-delete-request]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('Permanently delete this request and its whole thread? This cannot be undone.')) return;
-      const { data, error } = await sb.from('requests').delete().eq('id', btn.dataset.deleteRequest).select();
+      if (!confirm('Delete this request? It can be restored from Settings → Trash within 48 hours.')) return;
+      const { data, error } = await sb.from('requests').update({ deleted_at: new Date().toISOString(), deleted_by: state.user.id }).eq('id', btn.dataset.deleteRequest).select();
       if (error){ toast('Could not delete: ' + error.message); return; }
       if (!data || !data.length){ toast('Delete was blocked by a permissions rule — nothing was removed. Ask Super Admin to check the request_delete database policy.'); return; }
-      toast('Request deleted'); renderRequests();
+      toast('Request deleted — restorable from Trash for 48 hours'); renderRequests();
     };
   });
   main.querySelectorAll('[data-edit-request]').forEach(btn => {
@@ -1353,13 +1515,22 @@ function openNewRequestModal(){
     const category = state.categories.find(c=>c.id===categoryId);
     const myRegionId = state.profile.region_id;
 
-    // Work out who should handle this: a per-region override role takes
-    // priority over the category's default role.
+    // Work out who should handle this. Priority: a specific Super-Admin
+    // configured routing rule for this region+category, then a region-wide
+    // rule (no category), then the old category-region override, then the
+    // category's own default role.
     let targetRole = category?.primary_role;
     if (myRegionId){
-      const { data: override } = await sb.from('category_region_overrides')
-        .select('role').eq('category_id', categoryId).eq('region_id', myRegionId).maybeSingle();
-      if (override?.role) targetRole = override.role;
+      const { data: rules } = await sb.from('request_routing_rules').select('category_id, target_role').eq('region_id', myRegionId);
+      const specific = (rules||[]).find(r => r.category_id === categoryId);
+      const regionWide = (rules||[]).find(r => !r.category_id);
+      if (specific) targetRole = specific.target_role;
+      else if (regionWide) targetRole = regionWide.target_role;
+      else {
+        const { data: override } = await sb.from('category_region_overrides')
+          .select('role').eq('category_id', categoryId).eq('region_id', myRegionId).maybeSingle();
+        if (override?.role) targetRole = override.role;
+      }
     }
     let assignedPocId = null;
     if (targetRole){
@@ -1403,8 +1574,21 @@ async function renderExpiries(){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-expiry-btn">+ Add Item</button>`;
     document.getElementById('new-expiry-btn').onclick = openNewExpiryModal;
   }
-  const { data: items } = await sb.from('expiry_items').select('*, profiles!rider_id(full_name, phone), added_by:profiles!created_by(full_name)').order('expiry_date');
+  const { data: items } = await sb.from('expiry_items').select('*, profiles!rider_id(full_name, phone), added_by:profiles!created_by(full_name)').is('deleted_at', null).order('expiry_date');
   if (!items || items.length===0){ main.innerHTML = emptyState('No expiry items tracked yet.'); return; }
+
+  // Group rows that were added together (multi-region/role submissions)
+  // into one visual row, instead of one row per region.
+  const groups = new Map();
+  items.forEach(i => {
+    const key = i.group_id || i.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(i);
+  });
+  const groupedItems = Array.from(groups.values()).map(rows => {
+    const first = rows[0];
+    return { rows, first, expiry_date: first.expiry_date, item_type: first.item_type, item_label: first.item_label, added_by: first.added_by };
+  }).sort((a,b) => new Date(a.expiry_date) - new Date(b.expiry_date));
 
   const canRemind = isAdmin() || state.profile.role === 'inventory_coordinator';
   const canEdit = isAdmin() || hasPermission('expiry_edit');
@@ -1412,40 +1596,53 @@ async function renderExpiries(){
   const showActionsCol = canRemind || canEdit || canDelete;
   const today = new Date();
   main.innerHTML = `<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
-    ${items.map(i=>{
-      const d = new Date(i.expiry_date);
+    ${groupedItems.map(g=>{
+      const d = new Date(g.expiry_date);
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
       let badge = 'badge active', label='OK';
       if (daysLeft < 0){ badge='badge open'; label='Overdue'; }
       else if (daysLeft <= 30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
-      const appliesTo = i.profiles?.full_name
-        ? escapeHtml(i.profiles.full_name)
-        : `${escapeHtml(state.regions.find(r=>r.id===i.region_id)?.name || '—')}${i.applies_to_role ? ' · ' + (ROLE_LABEL[i.applies_to_role]||i.applies_to_role) : ' (whole region)'}`;
+      let appliesTo;
+      if (g.rows.length === 1 && g.first.profiles?.full_name){
+        appliesTo = escapeHtml(g.first.profiles.full_name);
+      } else {
+        const regionNames = g.rows.map(r => state.regions.find(rg=>rg.id===r.region_id)?.name).filter(Boolean);
+        const roleLabel = g.first.applies_to_role;
+        appliesTo = `${escapeHtml(regionNames.join(', ') || '—')}${roleLabel ? ' · ' + escapeHtml(roleLabel) : ' (whole region)'}${g.rows.length>1 ? ` <span class="mono">(${g.rows.length} regions)</span>` : ''}`;
+      }
+      const remindPhone = g.rows.length===1 ? g.first.profiles?.phone : null;
       return `<tr>
         <td>${appliesTo}</td>
-        <td>${escapeHtml(i.item_type)}${i.item_label?' — '+escapeHtml(i.item_label):''}</td>
-        <td>${escapeHtml(i.added_by?.full_name||'—')}</td>
-        <td class="mono">${i.expiry_date}</td>
+        <td>${escapeHtml(g.item_type)}${g.item_label?' — '+escapeHtml(g.item_label):''}</td>
+        <td>${escapeHtml(g.added_by?.full_name||'—')}</td>
+        <td class="mono">${g.expiry_date}</td>
         <td><span class="${badge}">${label}</span></td>
         ${showActionsCol ? `<td style="white-space:nowrap;">
-          ${(canRemind && daysLeft<=30 && i.profiles?.phone) ? `<button class="btn small outline" data-remind="${i.id}" data-remind-phone="${i.profiles?.phone||''}" data-remind-item="${escapeHtml(i.item_type)}">Send Reminder</button>` : ''}
-          ${canEdit ? `<button class="btn small outline" data-edit-expiry="${i.id}">Edit</button>` : ''}
-          ${canDelete ? `<button class="btn small danger" data-delete-expiry="${i.id}">Delete</button>` : ''}
+          ${(canRemind && daysLeft<=30 && remindPhone) ? `<button class="btn small outline" data-remind="${g.first.id}" data-remind-phone="${remindPhone}" data-remind-item="${escapeHtml(g.item_type)}">Send Reminder</button>` : ''}
+          ${canEdit ? `<button class="btn small outline" data-edit-expiry-group="${g.first.group_id || g.first.id}">Edit</button>` : ''}
+          ${canDelete ? `<button class="btn small danger" data-delete-expiry-group="${g.first.group_id || g.first.id}">Delete</button>` : ''}
         </td>` : ''}
       </tr>`;
     }).join('')}
   </tbody></table>`;
 
-  main.querySelectorAll('[data-delete-expiry]').forEach(btn => {
+  main.querySelectorAll('[data-delete-expiry-group]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('Permanently delete this expiry item? This cannot be undone.')) return;
-      const { error } = await sb.from('expiry_items').delete().eq('id', btn.dataset.deleteExpiry);
+      const key = btn.dataset.deleteExpiryGroup;
+      if (!confirm('Delete this expiry item? It can be restored from Settings → Trash within 48 hours.')) return;
+      const group = groupedItems.find(g => (g.first.group_id || g.first.id) === key);
+      const ids = group.rows.map(r=>r.id);
+      const { error } = await sb.from('expiry_items').update({ deleted_at: new Date().toISOString(), deleted_by: state.user.id }).in('id', ids);
       if (error){ toast('Could not delete: ' + error.message); return; }
-      toast('Deleted'); renderExpiries();
+      toast('Deleted — restorable from Trash for 48 hours'); renderExpiries();
     };
   });
-  main.querySelectorAll('[data-edit-expiry]').forEach(btn => {
-    btn.onclick = () => openEditExpiryModal(items.find(i=>i.id===btn.dataset.editExpiry));
+  main.querySelectorAll('[data-edit-expiry-group]').forEach(btn => {
+    btn.onclick = () => {
+      const key = btn.dataset.editExpiryGroup;
+      const group = groupedItems.find(g => (g.first.group_id || g.first.id) === key);
+      openEditExpiryModal(group);
+    };
   });
   main.querySelectorAll('[data-remind]').forEach(btn => {
     btn.onclick = async () => {
@@ -1582,7 +1779,9 @@ async function openNewExpiryModal(){
     const itemLabel = document.getElementById('e-label').value.trim();
     const expiryDate = document.getElementById('e-date').value;
 
-    // One row per selected region (roles are stored per-row as a joined label)
+    // One row per selected region (roles are stored per-row as a joined
+    // label), all sharing a group_id so they display/edit as one item.
+    const groupId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now()+'-'+Math.random()));
     const payloads = regionIds.map(regionId => ({
       rider_id: regionId === regionIds[0] ? riderId : null,
       region_id: regionId,
@@ -1591,7 +1790,8 @@ async function openNewExpiryModal(){
       item_type: typeName,
       item_label: itemLabel,
       expiry_date: expiryDate,
-      created_by: state.user.id
+      created_by: state.user.id,
+      group_id: groupId
     }));
     const { error } = await sb.from('expiry_items').insert(payloads);
     if (error){
@@ -1606,28 +1806,69 @@ async function openNewExpiryModal(){
   };
 }
 
-function openEditExpiryModal(item){
-  if (!item) return;
-  const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}" ${t.id===item.item_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
+function openEditExpiryModal(group){
+  if (!group) return;
+  const currentRegionIds = new Set(group.rows.map(r=>r.region_id));
+  const currentRoles = new Set((group.first.applies_to_role||'').split(',').map(s=>s.trim()).filter(Boolean));
+  const regionChecks = state.regions.map(r=>`
+    <div style="display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="ee-region-check" value="${r.id}" id="ee-region-${r.id}" ${currentRegionIds.has(r.id)?'checked':''}>
+      <label for="ee-region-${r.id}" style="font-weight:400; margin:0; text-align:left; cursor:pointer;">${escapeHtml(r.name)}</label>
+    </div>`).join('');
+  const roleChecks = Object.entries(ROLE_LABEL).map(([k,v])=>`
+    <div style="display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:6px 4px; text-align:left;">
+      <input type="checkbox" class="ee-role-check" value="${k}" id="ee-role-${k}" ${currentRoles.has(v)?'checked':''}>
+      <label for="ee-role-${k}" style="font-weight:400; margin:0; text-align:left; cursor:pointer;">${v}</label>
+    </div>`).join('');
+  const typeOptions = state.expiryItemTypes.map(t=>`<option value="${t.id}" data-name="${escapeHtml(t.name)}" ${t.id===group.first.item_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
   openModal(`
     <h2>Edit expiry item</h2>
+    <p class="hint">Select/deselect regions or roles as needed — this applies to the whole item.</p>
     <form id="expiry-edit-form">
-      <div class="form-row"><label>Applies to</label><input type="text" value="${escapeHtml(item.profiles?.full_name || (state.regions.find(r=>r.id===item.region_id)?.name||'—'))}" disabled></div>
+      <div class="form-row">
+        <label>Region(s)</label>
+        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${regionChecks}</div>
+      </div>
+      <div class="form-row">
+        <label>Applies to role(s)</label>
+        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${roleChecks}</div>
+      </div>
       <div class="form-row"><label>Item type</label><select id="ee-type">${typeOptions}</select></div>
-      <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="ee-label" value="${escapeHtml(item.item_label||'')}"></div>
-      <div class="form-row"><label>Expiry date</label><input type="date" id="ee-date" value="${item.expiry_date}" required></div>
+      <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="ee-label" value="${escapeHtml(group.item_label||'')}"></div>
+      <div class="form-row"><label>Expiry date</label><input type="date" id="ee-date" value="${group.expiry_date}" required></div>
       <button class="btn-primary" type="submit">Save changes</button>
     </form>
   `);
   document.getElementById('expiry-edit-form').onsubmit = async (e) => {
     e.preventDefault();
+    const regionIds = Array.from(document.querySelectorAll('.ee-region-check:checked')).map(cb=>cb.value);
+    if (!regionIds.length){ toast('Select at least one region'); return; }
+    const roles = Array.from(document.querySelectorAll('.ee-role-check:checked')).map(cb=>cb.value);
+    const roleLabel = roles.length ? roles.map(r=>ROLE_LABEL[r]).join(', ') : null;
     const typeSelect = document.getElementById('ee-type');
-    const { error } = await sb.from('expiry_items').update({
-      item_type_id: typeSelect.value,
-      item_type: typeSelect.options[typeSelect.selectedIndex]?.dataset.name || item.item_type,
-      item_label: document.getElementById('ee-label').value.trim(),
-      expiry_date: document.getElementById('ee-date').value
-    }).eq('id', item.id);
+    const typeId = typeSelect.value;
+    const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || group.item_type;
+    const itemLabel = document.getElementById('ee-label').value.trim();
+    const expiryDate = document.getElementById('ee-date').value;
+    const groupId = group.first.group_id || group.first.id;
+    // Keep a specific rider tied to this item only when it stays a single region
+    const keptRider = (regionIds.length === 1 && group.rows.length === 1) ? group.first.rider_id : null;
+
+    const oldIds = group.rows.map(r=>r.id);
+    const { error: delErr } = await sb.from('expiry_items').delete().in('id', oldIds);
+    if (delErr){ toast('Could not save: ' + delErr.message); return; }
+    const payloads = regionIds.map((regionId, idx) => ({
+      rider_id: idx===0 ? keptRider : null,
+      region_id: regionId,
+      applies_to_role: roleLabel,
+      item_type_id: typeId,
+      item_type: typeName,
+      item_label: itemLabel,
+      expiry_date: expiryDate,
+      created_by: group.first.created_by || state.user.id,
+      group_id: groupId
+    }));
+    const { error } = await sb.from('expiry_items').insert(payloads);
     if (error){ toast('Could not save: ' + error.message); return; }
     closeModal(); toast('Updated'); renderExpiries();
   };
@@ -1639,7 +1880,8 @@ function openEditExpiryModal(item){
 // ---------------------------------------------------------
 async function renderTeam(){
   const main = document.getElementById('main-content');
-  if (isAdmin()){
+  const canBulkAddTeam = isAdmin() || hasPermission('team_bulk_add');
+  if (canBulkAddTeam){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="bulk-add-btn">+ Bulk Add Riders</button>`;
     document.getElementById('bulk-add-btn').onclick = openBulkUploadModal;
   }
@@ -1671,7 +1913,8 @@ async function renderTeam(){
     }
   }
 
-  if (pending.length && isAdmin()){
+  const canBulkApprove = isAdmin() || hasPermission('team_bulk_approve');
+  if (pending.length && canBulkApprove){
     html += `<div class="card"><h3>Pending approvals (${pending.length})</h3>
     <div style="margin-bottom:10px;"><button class="btn small" id="bulk-approve-btn" disabled>Approve Selected (<span id="bulk-approve-count">0</span>)</button></div>
     <table><thead><tr><th><input type="checkbox" id="pending-select-all"></th><th>Name</th><th>Designation</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>
@@ -2124,6 +2367,7 @@ async function renderSettings(){
     { label: 'Workflow', items: [
       ['categories','Request Categories', () => isAdmin() || hasPermission('categories_add') || hasPermission('categories_edit') || hasPermission('categories_remove')],
       ['circularcategories','Circular Categories', () => isAdmin() || hasPermission('circular_categories_manage')],
+      ['requestrouting','Request Auto-Routing', () => isSuperAdmin()],
     ]},
     { label: 'Types & Categories', items: [
       ['warningtypes','Warning Types', () => isAdmin() || hasPermission('manage_types')],
@@ -2145,6 +2389,7 @@ async function renderSettings(){
     { label: 'System', items: [
       ['permissions','Permissions', () => isSuperAdmin()],
       ['storage','Storage Usage', () => isSuperAdmin()],
+      ['trash','Trash (restore deleted items)', () => isSuperAdmin()],
       ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
       ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
     ]}
@@ -2179,12 +2424,14 @@ async function renderSettings(){
   else if (settingsTab === 'hotspots') await renderHotspotsSettings(body);
   else if (settingsTab === 'shifttypes') await renderSimpleTypeList(body, 'shift_types', 'Shift');
   else if (settingsTab === 'circularcategories') await renderSimpleTypeList(body, 'circular_categories', 'Circular Category');
+  else if (settingsTab === 'requestrouting') await renderRequestRoutingSettings(body);
   else if (settingsTab === 'notice') await renderHomeNoticeSettings(body);
   else if (settingsTab === 'branding') await renderBrandingSettings(body);
   else if (settingsTab === 'homebanner') await renderHomeBannerSettings(body);
   else if (settingsTab === 'popups') await renderPopupsSettings(body);
   else if (settingsTab === 'permissions') await renderPermissionsSettings(body);
   else if (settingsTab === 'storage') await renderStorageSettings(body);
+  else if (settingsTab === 'trash') await renderTrashSettings(body);
   else if (settingsTab === 'maintenance') await renderMaintenanceSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
 }
@@ -2675,10 +2922,9 @@ async function renderKnowledgeBase(){
   }
   let circularsQuery = sb.from('circulars').select('id, title, body, created_at').eq('push_to_kb', true).order('created_at', {ascending:false});
   let articlesQuery = sb.from('knowledge_base_articles').select('*, profiles(full_name)').order('created_at', {ascending:false});
-  if (!isAdmin()){
-    circularsQuery = circularsQuery.gte('created_at', state.profile.created_at);
-    articlesQuery = articlesQuery.gte('created_at', state.profile.created_at);
-  }
+  // Full Knowledge Base history is available to everyone regardless of when
+  // they joined (previously new members only saw items from their join
+  // date onward — removed per explicit request).
   const [circularsRes, articlesRes] = await Promise.all([circularsQuery, articlesQuery]);
   const combined = [
     ...(circularsRes.data||[]).map(c => ({ type:'Circular', title:c.title, body:c.body, created_at:c.created_at })),
@@ -3032,7 +3278,7 @@ async function generateReport(){
     const { data, error } = await sb.from('circulars').select('*, profiles!created_by(full_name)').gte('created_at', from).lte('created_at', to);
     queryError = error;
     for (const c of (data||[])){
-      const audience = await countAudience(c.target_region_id, c.target_role, c.created_by);
+      const audience = await countAudience(c.target_region_id, c.target_role, c.created_by, c.target_region_ids, c.target_roles);
       const { count: ackCount } = await sb.from('circular_acks').select('id',{count:'exact',head:true}).eq('circular_id', c.id).neq('user_id', c.created_by);
       rows.push({ Title: c.title, 'Posted By': c.profiles?.full_name, 'Posted At': c.created_at, Audience: audience, Acknowledged: ackCount ?? 0, Pending: audience - (ackCount??0) });
     }
@@ -3377,7 +3623,12 @@ const GRANTABLE_PERMISSIONS = [
   ['circular_push_kb', 'Push a Circular to Knowledge Base'],
   ['warnings_issue_to_coordinator', 'Area Incharge: issue warnings to Coordinators'],
   ['export_active_employees', 'Download active-employee list (e.g. for salary processing)'],
-  ['tool_bulk_update', 'Bulk-update Tool records']
+  ['tool_bulk_update', 'Bulk-update Tool records'],
+  ['roster_bulk_add', 'Roster — Bulk Add'],
+  ['roster_bulk_update', 'Roster — Bulk Update'],
+  ['team_bulk_add', 'Team — Bulk Add Riders'],
+  ['team_bulk_approve', 'Team — Bulk Approve pending members'],
+  ['hotspot_bulk_add', 'Hotspots — Bulk Add']
 ];
 async function renderPermissionsSettings(body){
   await loadScopedProfiles();
@@ -3486,6 +3737,94 @@ async function listStorageFolderRecursive(bucket, path){
   }
   return files;
 }
+async function renderRequestRoutingSettings(body){
+  const { data: rules } = await sb.from('request_routing_rules').select('*, regions(name), categories(name)').order('created_at');
+  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+  const categoryOptions = `<option value="">— All categories in this region —</option>` + state.categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  const roleOptions = Object.entries(ROLE_LABEL).filter(([k])=>k!=='rider').map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">Decide who automatically receives a new request based on the rider's region (and optionally the category). A rule with no category applies to every category in that region unless a more specific rule exists. If no rule matches, the request category's own default role is used instead.</p>
+    <form id="routing-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <select id="rr-region" required>${regionOptions}</select>
+      <select id="rr-category">${categoryOptions}</select>
+      <select id="rr-role" required>${roleOptions}</select>
+      <button class="btn small" type="submit">Add Rule</button>
+    </form>
+    <table><thead><tr><th>Region</th><th>Category</th><th>Auto-assigned to</th><th></th></tr></thead><tbody>
+      ${(rules||[]).map(r=>`<tr>
+        <td>${escapeHtml(r.regions?.name||'—')}</td>
+        <td>${r.categories?.name ? escapeHtml(r.categories.name) : '<em>All categories</em>'}</td>
+        <td>${ROLE_LABEL[r.target_role]||r.target_role}</td>
+        <td><button class="btn small outline" data-delete-rule="${r.id}">Remove</button></td>
+      </tr>`).join('') || `<tr><td colspan="4">${emptyState('No rules yet — requests fall back to each category\'s default role.')}</td></tr>`}
+    </tbody></table>`;
+
+  document.getElementById('routing-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.from('request_routing_rules').insert({
+      region_id: document.getElementById('rr-region').value,
+      category_id: document.getElementById('rr-category').value || null,
+      target_role: document.getElementById('rr-role').value
+    });
+    if (error){ toast('Could not add: ' + error.message); return; }
+    toast('Rule added'); renderSettings();
+  };
+  body.querySelectorAll('[data-delete-rule]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this routing rule?')) return;
+      await sb.from('request_routing_rules').delete().eq('id', btn.dataset.deleteRule);
+      renderSettings();
+    };
+  });
+}
+
+async function renderTrashSettings(body){
+  body.innerHTML = `<div class="mono">Loading…</div>`;
+  const cutoff = new Date(Date.now() - 48*60*60*1000).toISOString();
+
+  const [reqRes, taskRes, circRes, expRes] = await Promise.all([
+    sb.from('requests').select('*, rider:profiles!rider_id(full_name), deleter:profiles!deleted_by(full_name)').not('deleted_at','is',null).order('deleted_at',{ascending:false}),
+    sb.from('tasks').select('*, deleter:profiles!deleted_by(full_name)').not('deleted_at','is',null).order('deleted_at',{ascending:false}),
+    sb.from('circulars').select('*, deleter:profiles!deleted_by(full_name)').not('deleted_at','is',null).order('deleted_at',{ascending:false}),
+    sb.from('expiry_items').select('*, deleter:profiles!deleted_by(full_name)').not('deleted_at','is',null).order('deleted_at',{ascending:false})
+  ]);
+
+  const rows = [
+    ...(reqRes.data||[]).map(r => ({ table:'requests', id:r.id, label:`Request: ${r.category} (${r.rider?.full_name||'—'})`, deleted_at:r.deleted_at, deleter:r.deleter?.full_name })),
+    ...(taskRes.data||[]).map(t => ({ table:'tasks', id:t.id, label:`Task: ${t.title}`, deleted_at:t.deleted_at, deleter:t.deleter?.full_name })),
+    ...(circRes.data||[]).map(c => ({ table:'circulars', id:c.id, label:`Circular: ${c.title}`, deleted_at:c.deleted_at, deleter:c.deleter?.full_name })),
+    ...(expRes.data||[]).map(e => ({ table:'expiry_items', id:e.id, label:`Expiry Item: ${e.item_type}${e.item_label?' — '+e.item_label:''}`, deleted_at:e.deleted_at, deleter:e.deleter?.full_name }))
+  ].sort((a,b) => new Date(b.deleted_at) - new Date(a.deleted_at));
+
+  const withinWindow = rows.filter(r => r.deleted_at >= cutoff);
+  const expired = rows.filter(r => r.deleted_at < cutoff);
+
+  const renderRow = (r, restorable) => `<tr>
+    <td>${escapeHtml(r.label)}</td>
+    <td class="mono">${formatDateTime(r.deleted_at)}</td>
+    <td>${escapeHtml(r.deleter||'—')}</td>
+    <td>${restorable ? `<button class="btn small outline" data-restore="${r.table}|${r.id}">Restore</button>` : '<span class="mono" style="color:var(--muted);">Restore window passed</span>'}</td>
+  </tr>`;
+
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">Deleted Requests, Tasks, Circulars, and Expiry items land here and can be restored within 48 hours. After that, they're no longer restorable through this page (the records still exist in the database, but this UI stops offering a one-click undo).</p>
+    <h3>Restorable now (${withinWindow.length})</h3>
+    ${withinWindow.length ? `<table><thead><tr><th>Item</th><th>Deleted at</th><th>Deleted by</th><th></th></tr></thead><tbody>${withinWindow.map(r=>renderRow(r,true)).join('')}</tbody></table>` : emptyState('Nothing in the restorable window right now.')}
+    ${expired.length ? `<h3 style="margin-top:20px;">Past 48 hours (${expired.length})</h3>
+    <table><thead><tr><th>Item</th><th>Deleted at</th><th>Deleted by</th><th></th></tr></thead><tbody>${expired.slice(0,50).map(r=>renderRow(r,false)).join('')}</tbody></table>` : ''}
+  `;
+
+  body.querySelectorAll('[data-restore]').forEach(btn => {
+    btn.onclick = async () => {
+      const [table, id] = btn.dataset.restore.split('|');
+      const { error } = await sb.from(table).update({ deleted_at: null, deleted_by: null }).eq('id', id);
+      if (error){ toast('Could not restore: ' + error.message); return; }
+      toast('Restored'); renderSettings();
+    };
+  });
+}
+
 async function renderStorageSettings(body){
   body.innerHTML = `<div class="mono">Calculating usage…</div>`;
   const DB_CEILING = 500 * 1024 * 1024;
@@ -4254,6 +4593,64 @@ async function renderActivityLog(){
 // ---------------------------------------------------------
 // RELEASE NOTES — "What's New", Super Admin posts updates
 // ---------------------------------------------------------
+// ---------------------------------------------------------
+// HIERARCHY — read-only org chart so everyone can see their team
+// and supervisors, with contact info.
+// ---------------------------------------------------------
+async function renderHierarchy(){
+  const main = document.getElementById('main-content');
+  document.getElementById('topbar-actions').innerHTML = '';
+  main.innerHTML = `<div class="mono">Loading…</div>`;
+
+  const { data: profiles } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
+  const { data: regionLinks } = await sb.from('profile_regions').select('profile_id, region_id');
+  const linksByProfile = new Map();
+  (regionLinks||[]).forEach(l => { if (!linksByProfile.has(l.profile_id)) linksByProfile.set(l.profile_id, []); linksByProfile.get(l.profile_id).push(l.region_id); });
+
+  const superAdmins = (profiles||[]).filter(p=>p.role==='super_admin');
+  const inventoryCoords = (profiles||[]).filter(p=>p.role==='inventory_coordinator');
+
+  const personCard = (p) => `<div style="padding:8px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px;">
+    <strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${escapeHtml(p.employee_id||'—')}</span>
+    <div class="mono" style="font-size:12.5px; color:var(--muted);">${escapeHtml(p.phone||'—')}</div>
+  </div>`;
+
+  let html = `
+    <div class="card">
+      <h3>Super Admin</h3>
+      ${superAdmins.map(personCard).join('') || emptyState('None on file')}
+    </div>
+    <div class="card">
+      <h3>Inventory Coordinator (Lahore &amp; Raiwind — reports directly to Super Admin)</h3>
+      ${inventoryCoords.map(personCard).join('') || emptyState('None on file')}
+    </div>
+  `;
+
+  state.regions.filter(r => r.active !== false).forEach(region => {
+    const inRegion = (p) => p.region_id === region.id || (linksByProfile.get(p.id)||[]).includes(region.id);
+    const leads = (profiles||[]).filter(p => ['team_lead','regional_poc'].includes(p.role) && inRegion(p));
+    const coordinators = (profiles||[]).filter(p => p.role==='coordinator' && inRegion(p));
+    const riders = (profiles||[]).filter(p => p.role==='rider' && inRegion(p));
+    if (!leads.length && !coordinators.length && !riders.length) return;
+    html += `
+    <div class="card">
+      <h3>${escapeHtml(region.name)}</h3>
+      <div style="font-size:12.5px; color:var(--muted); margin-bottom:8px;">Area Incharge / Regional POC → Coordinators → Riders</div>
+      <div style="margin-left:0;">${leads.map(personCard).join('') || `<p class="hint">No Area Incharge/Regional POC assigned yet</p>`}</div>
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer; font-size:13px; color:var(--muted);">Coordinators (${coordinators.length}) ▾</summary>
+        <div style="margin-top:8px; margin-left:16px;">${coordinators.map(personCard).join('') || `<p class="hint">None yet</p>`}</div>
+      </details>
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer; font-size:13px; color:var(--muted);">Riders (${riders.length}) ▾</summary>
+        <div style="margin-top:8px; margin-left:16px;">${riders.map(personCard).join('') || `<p class="hint">None yet</p>`}</div>
+      </details>
+    </div>`;
+  });
+
+  main.innerHTML = html;
+}
+
 async function renderReleaseNotes(){
   const main = document.getElementById('main-content');
   if (isSuperAdmin()){
@@ -4295,17 +4692,19 @@ async function renderReleaseNotes(){
 async function renderRoster(){
   const main = document.getElementById('main-content');
   const canManage = isAdmin() || hasPermission('roster_manage');
-  if (canManage){
+  const canBulkAdd = isAdmin() || hasPermission('roster_bulk_add') || canManage;
+  const canBulkUpdate = isAdmin() || hasPermission('roster_bulk_update') || canManage;
+  if (canManage || canBulkAdd || canBulkUpdate){
     document.getElementById('topbar-actions').innerHTML = `
-      <button class="btn outline" id="bulk-roster-btn">+ Bulk Add</button>
-      <button class="btn outline" id="bulk-roster-update-btn">Bulk Update</button>
+      ${canBulkAdd ? `<button class="btn outline" id="bulk-roster-btn">+ Bulk Add</button>` : ''}
+      ${canBulkUpdate ? `<button class="btn outline" id="bulk-roster-update-btn">Bulk Update</button>` : ''}
       <button class="btn outline" id="roster-download-btn">Download</button>
-      <button class="btn" id="new-roster-btn">+ Add to Roster</button>`;
-    document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
-    document.getElementById('bulk-roster-btn').onclick = openBulkRosterModal;
-    document.getElementById('bulk-roster-update-btn').onclick = openBulkUpdateRosterModal;
+      ${canManage ? `<button class="btn" id="new-roster-btn">+ Add to Roster</button>` : ''}`;
+    if (canManage) document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
+    if (canBulkAdd) document.getElementById('bulk-roster-btn').onclick = openBulkRosterModal;
+    if (canBulkUpdate) document.getElementById('bulk-roster-update-btn').onclick = openBulkUpdateRosterModal;
   } else {
-    document.getElementById('topbar-actions').innerHTML = canManage ? '' : `<button class="btn outline" id="roster-download-btn">Download</button>`;
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="roster-download-btn">Download</button>`;
   }
   let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
