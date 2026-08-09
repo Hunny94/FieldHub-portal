@@ -263,7 +263,7 @@ async function setupDesktopNotifications(){
 }
 
 async function showLatestUnackedCircularPopup(){
-  const { data: circulars } = await sb.from('circulars').select('*').order('created_at', {ascending:false}).limit(1);
+  const { data: circulars } = await sb.from('circulars').select('*').is('deleted_at', null).order('created_at', {ascending:false}).limit(1);
   if (!circulars || !circulars.length) return;
   const c = circulars[0];
   if (c.created_by === state.user.id) return;
@@ -303,10 +303,15 @@ async function showPendingRemindersBanner(){
 // ---------------------------------------------------------
 async function loadAndShowNotifications(){
   const retainCount = state.systemSettings?.notification_retain_count || 5;
-  const since = state.profile.notifications_last_seen_at || new Date(Date.now() - 3*24*60*60*1000).toISOString();
+  const sinceKey = `fieldhub_notif_since_${state.user.id}`;
+  // localStorage is the reliable source of truth here — the DB column
+  // round-trip was silently failing for some users (e.g. if a migration
+  // hadn't landed yet), which made the same notifications keep
+  // reappearing on every reload. This can't fail silently the same way.
+  const since = localStorage.getItem(sinceKey) || state.profile.notifications_last_seen_at || new Date(Date.now() - 3*24*60*60*1000).toISOString();
 
   const items = [];
-  const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+  const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').is('deleted_at', null).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
   (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ id:'circ-'+c.id, type:'Circular', title:'New circular', body:c.title, created_at:c.created_at, read:false }));
 
   const { data: myRequests } = await sb.from('requests').select('id, category').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
@@ -336,11 +341,15 @@ async function loadAndShowNotifications(){
 
   ensureNotificationBell();
   updateNotificationBadge();
-  // From now on, "since" moves forward so the same items don't repeat
-  // on the next login — but staying unread in the dropdown (see below)
-  // is a separate, per-item concept from this login-window cutoff.
-  sb.from('profiles').update({ notifications_last_seen_at: new Date().toISOString() }).eq('id', state.user.id);
-  state.profile.notifications_last_seen_at = new Date().toISOString();
+
+  // Advance the cutoff immediately so a reload right after doesn't
+  // re-show the same items — this is the fix that actually matters.
+  const now = new Date().toISOString();
+  localStorage.setItem(sinceKey, now);
+  // Best-effort DB write too (for potential future multi-device sync) —
+  // failures here are fine since localStorage is already the source of truth.
+  sb.from('profiles').update({ notifications_last_seen_at: now }).eq('id', state.user.id).then(()=>{}, ()=>{});
+  state.profile.notifications_last_seen_at = now;
 }
 
 function ensureNotificationBell(){
@@ -779,7 +788,7 @@ async function renderDashboard(){
   const [openReq, myTasks, circularsRes, expiring, pendingApprovals, notices, banner] = await Promise.all([
     sb.from('requests').select('id', {count:'exact', head:true}).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
-    sb.from('circulars').select('id'),
+    sb.from('circulars').select('id').is('deleted_at', null),
     sb.from('expiry_items').select('id, group_id, expiry_date'),
     isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
     sb.from('home_notices').select('*').eq('active', true).or(`expires_at.is.null,expires_at.gte.${new Date().toISOString().slice(0,10)}`).order('created_at', {ascending:false}),
@@ -942,15 +951,52 @@ async function openEditCircularModal(c){
       <div class="form-row"><label>Title</label><input type="text" id="ec-title" value="${escapeHtml(c.title)}" required></div>
       <div class="form-row"><label>Category</label><select id="ec-category">${catOptions}</select></div>
       <div class="form-row"><label>Message</label><textarea id="ec-body" required>${escapeHtml(c.body)}</textarea></div>
-      <div class="form-row"><label>Target region(s) — none checked = all</label>
-        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${regionChecks}</div>
+      <div class="form-row">
+        <label>Target region(s) — none checked = all</label>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="ec-region-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="ec-region-summary">${currentRegionIds.size ? `${currentRegionIds.size} selected` : 'All regions'}</span><span>▾</span>
+          </button>
+          <div id="ec-region-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">${regionChecks}</div>
+        </div>
       </div>
-      <div class="form-row"><label>Target role(s) — none checked = all</label>
-        <div style="max-height:150px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${roleChecks}</div>
+      <div class="form-row">
+        <label>Target role(s) — none checked = all</label>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="ec-role-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="ec-role-summary">${currentRoles.size ? `${currentRoles.size} selected` : 'All roles'}</span><span>▾</span>
+          </button>
+          <div id="ec-role-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">${roleChecks}</div>
+        </div>
       </div>
       <button class="btn-primary" type="submit">Save changes</button>
     </form>
   `);
+  const setupDropdown = (triggerId, panelId) => {
+    const trigger = document.getElementById(triggerId);
+    const panel = document.getElementById(panelId);
+    trigger.onclick = (e) => {
+      e.stopPropagation();
+      const isOpen = panel.style.display === 'block';
+      document.querySelectorAll('#ec-region-panel, #ec-role-panel').forEach(p => p.style.display = 'none');
+      panel.style.display = isOpen ? 'none' : 'block';
+    };
+  };
+  setupDropdown('ec-region-trigger', 'ec-region-panel');
+  setupDropdown('ec-role-trigger', 'ec-role-panel');
+  document.addEventListener('click', (e) => {
+    if (!document.getElementById('active-modal')) return;
+    if (!e.target.closest('#ec-region-panel, #ec-region-trigger')) document.getElementById('ec-region-panel').style.display = 'none';
+    if (!e.target.closest('#ec-role-panel, #ec-role-trigger')) document.getElementById('ec-role-panel').style.display = 'none';
+  });
+  document.querySelectorAll('.ec-region-check').forEach(cb => cb.onchange = () => {
+    const n = document.querySelectorAll('.ec-region-check:checked').length;
+    document.getElementById('ec-region-summary').textContent = n ? `${n} selected` : 'All regions';
+  });
+  document.querySelectorAll('.ec-role-check').forEach(cb => cb.onchange = () => {
+    const n = document.querySelectorAll('.ec-role-check:checked').length;
+    document.getElementById('ec-role-summary').textContent = n ? `${n} selected` : 'All roles';
+  });
   document.getElementById('circular-edit-form').onsubmit = async (e) => {
     e.preventDefault();
     const regionIds = Array.from(document.querySelectorAll('.ec-region-check:checked')).map(cb=>cb.value);
@@ -1048,26 +1094,74 @@ async function openNewCircularModal(){
         <span class="field-hint" id="c-word-count">0 words${wordLimit?` / ${wordLimit} max`:''}</span>
       </div>
       <div class="form-row">
-        <label>Target region(s)</label>
-        ${!isRegionLocked ? `<button type="button" class="btn small outline" id="c-select-all-regions" style="margin-bottom:6px;">Select All (all regions)</button>` : ''}
-        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${regionChecks}</div>
-        <span class="field-hint">Leave all unchecked to target every region.</span>
+        <label>Target region(s) — none checked = all regions</label>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="c-region-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="c-region-summary">${isRegionLocked ? 'Your region(s)' : 'All regions'}</span><span>▾</span>
+          </button>
+          <div id="c-region-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">
+            ${!isRegionLocked ? `<button type="button" class="btn small outline" id="c-select-all-regions" style="margin-bottom:6px; width:100%;">Select All Regions</button>` : ''}
+            ${regionChecks}
+          </div>
+        </div>
       </div>
       <div class="form-row">
-        <label>Target role(s)</label>
-        <button type="button" class="btn small outline" id="c-select-all-roles" style="margin-bottom:6px;">Select All Roles</button>
-        <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">${roleChecks}</div>
-        <span class="field-hint">Leave all unchecked to target every role.</span>
+        <label>Target role(s) — none checked = all roles</label>
+        <div style="position:relative;">
+          <button type="button" class="btn outline" id="c-role-trigger" style="width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center;">
+            <span id="c-role-summary">All roles</span><span>▾</span>
+          </button>
+          <div id="c-role-panel" style="display:none; position:absolute; z-index:50; top:calc(100% + 4px); left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto; padding:8px; box-shadow:0 8px 20px rgba(0,0,0,0.15);">
+            <button type="button" class="btn small outline" id="c-select-all-roles" style="margin-bottom:6px; width:100%;">Select All Roles</button>
+            ${roleChecks}
+          </div>
+        </div>
       </div>
       <button class="btn-primary" type="submit">Post circular</button>
     </form>
   `);
+
+  const setupDropdown = (triggerId, panelId) => {
+    const trigger = document.getElementById(triggerId);
+    const panel = document.getElementById(panelId);
+    trigger.onclick = (e) => {
+      e.stopPropagation();
+      const isOpen = panel.style.display === 'block';
+      document.querySelectorAll('#c-region-panel, #c-role-panel').forEach(p => p.style.display = 'none');
+      panel.style.display = isOpen ? 'none' : 'block';
+    };
+  };
+  setupDropdown('c-region-trigger', 'c-region-panel');
+  setupDropdown('c-role-trigger', 'c-role-panel');
+  document.addEventListener('click', (e) => {
+    if (!document.getElementById('active-modal')) return;
+    if (!e.target.closest('#c-region-panel, #c-region-trigger')) document.getElementById('c-region-panel').style.display = 'none';
+    if (!e.target.closest('#c-role-panel, #c-role-trigger')) document.getElementById('c-role-panel').style.display = 'none';
+  });
+
+  const updateRegionSummary = () => {
+    const checked = regionChoices.filter(r => document.getElementById(`c-region-${r.id}`)?.checked);
+    document.getElementById('c-region-summary').textContent = checked.length
+      ? (checked.length <= 2 ? checked.map(r=>r.name).join(', ') : `${checked.length} regions selected`)
+      : (isRegionLocked ? 'Your region(s)' : 'All regions');
+  };
+  const updateRoleSummary = () => {
+    const checked = Array.from(document.querySelectorAll('.c-role-check:checked'));
+    document.getElementById('c-role-summary').textContent = checked.length
+      ? (checked.length <= 2 ? checked.map(cb=>ROLE_LABEL[cb.value]).join(', ') : `${checked.length} roles selected`)
+      : 'All roles';
+  };
   document.getElementById('c-select-all-regions')?.addEventListener('click', () => {
     document.querySelectorAll('.c-region-check').forEach(cb => cb.checked = true);
+    updateRegionSummary();
   });
   document.getElementById('c-select-all-roles').onclick = () => {
     document.querySelectorAll('.c-role-check').forEach(cb => cb.checked = true);
+    updateRoleSummary();
   };
+  document.querySelectorAll('.c-region-check').forEach(cb => cb.onchange = updateRegionSummary);
+  document.querySelectorAll('.c-role-check').forEach(cb => cb.onchange = updateRoleSummary);
+
   const bodyEl = document.getElementById('c-body');
   const counterEl = document.getElementById('c-word-count');
   bodyEl.oninput = () => {
@@ -2920,7 +3014,7 @@ async function renderKnowledgeBase(){
     document.getElementById('new-kb-btn').onclick = openNewKbModal;
     document.getElementById('kb-excel-btn').onclick = openKbExcelModal;
   }
-  let circularsQuery = sb.from('circulars').select('id, title, body, created_at').eq('push_to_kb', true).order('created_at', {ascending:false});
+  let circularsQuery = sb.from('circulars').select('id, title, body, created_at').eq('push_to_kb', true).is('deleted_at', null).order('created_at', {ascending:false});
   let articlesQuery = sb.from('knowledge_base_articles').select('*, profiles(full_name)').order('created_at', {ascending:false});
   // Full Knowledge Base history is available to everyone regardless of when
   // they joined (previously new members only saw items from their join
