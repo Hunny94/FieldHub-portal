@@ -45,6 +45,16 @@ function toE164(raw){
   if (digits.startsWith('92')) return '+' + digits;
   return '+92' + digits;
 }
+// The database always stores phone numbers in E.164 (+92...) for
+// Supabase Auth, but everyone in this portal is used to seeing the
+// local 03XXXXXXXXX format — this converts purely for display.
+function toLocalPhone(raw){
+  if (!raw) return raw;
+  let digits = raw.replace(/[^0-9]/g, '');
+  if (digits.startsWith('92')) digits = digits.slice(2);
+  if (!digits.startsWith('0')) digits = '0' + digits;
+  return digits;
+}
 
 // Calls the Edge Function (bulk rider upload / WhatsApp). Fails quietly
 // if FUNCTIONS_URL hasn't been configured yet.
@@ -545,7 +555,7 @@ function bindAuthForms(){
 
     const { data: existing } = await sb.rpc('check_employee_id', { p_employee_id: employee_id });
     if (existing && existing.length){
-      showAuthMessage(`Employee ID "${employee_id}" is already registered to ${existing[0].full_name} (${existing[0].phone}). Each Employee ID can only be used once.`);
+      showAuthMessage(`Employee ID "${employee_id}" is already registered to ${existing[0].full_name} (${toLocalPhone(existing[0].phone)}). Each Employee ID can only be used once.`);
       return;
     }
 
@@ -605,6 +615,7 @@ function bindForcePasswordForm(){
     const { error } = await sb.auth.updateUser({ password: pw });
     if (error){ toast('Could not update password: ' + error.message); return; }
     await sb.from('profiles').update({ must_change_password: false }).eq('id', state.user.id);
+    await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'changed their own password', entity_type: 'Account', entity_label: state.profile?.full_name || '' });
     toast('Password updated');
     const { data: { session } } = await sb.auth.getSession();
     await afterLogin(session.user);
@@ -1171,6 +1182,7 @@ async function openNewCircularModal(){
   };
   document.getElementById('circular-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm('Post this circular now? Everyone it targets will be notified.')) return;
     const title = document.getElementById('c-title').value.trim();
     const body = document.getElementById('c-body').value.trim();
     const { data: sys } = await sb.from('system_settings').select('circular_word_limit').eq('id', 1).maybeSingle();
@@ -2016,7 +2028,7 @@ async function renderTeam(){
       <td><input type="checkbox" class="pending-select" value="${p.id}"></td>
       <td>${escapeHtml(p.full_name)}</td>
       <td>${ROLE_LABEL[p.role]||'—'}${!p.region_id?' <span class="badge pending" title="No region set">No region</span>':''}</td>
-      <td class="mono">${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(p.phone||'—')}</td>
+      <td class="mono">${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(toLocalPhone(p.phone)||'—')}</td>
       <td><button class="btn small" data-approve="${p.id}">Approve</button></td>
     </tr>`).join('')}
     </tbody></table></div>`;
@@ -2047,7 +2059,7 @@ async function renderTeam(){
         <table><thead><tr><th>Name</th><th>Mobile</th><th>Employee ID</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
         ${members.map(p=>`<tr data-team-row data-search="${escapeHtml((p.full_name+' '+(p.employee_id||'')+' '+ROLE_LABEL[role]+' '+(p.phone||'')).toLowerCase())}">
           <td>${escapeHtml(p.full_name)}</td>
-          <td class="mono">${escapeHtml(p.phone||'—')}</td>
+          <td class="mono">${escapeHtml(toLocalPhone(p.phone)||'—')}</td>
           <td class="mono">${escapeHtml(p.employee_id||'—')}</td>
           <td>${escapeHtml(regionNamesFor(p))}</td>
           <td><span class="badge ${p.status}">${p.status}</span></td>
@@ -2187,7 +2199,7 @@ function openResetPasswordModal(profileId, resetRequestId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
   openModal(`
     <h2>Reset password</h2>
-    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.phone||'')}</p>
+    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(toLocalPhone(p.phone)||'')}</p>
     <form id="reset-pw-form">
       <div class="form-row"><label>New temporary password</label><input type="text" id="reset-pw-value" value="Test@123" required></div>
       <p class="hint">They'll be required to set their own password the next time they log in.</p>
@@ -2196,12 +2208,14 @@ function openResetPasswordModal(profileId, resetRequestId){
   `);
   document.getElementById('reset-pw-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm(`Reset ${p.full_name}'s password? They'll need this new password to log in, then will be required to set their own.`)) return;
     const resp = await callEdgeFunction('reset_password', { user_id: profileId, new_password: document.getElementById('reset-pw-value').value });
     if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
     if (resp.error){ toast(resp.error); return; }
     if (resetRequestId){
       await sb.from('password_reset_requests').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', resetRequestId);
     }
+    await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'reset password for', entity_type: 'Team Member', entity_label: p.full_name });
     closeModal(); toast('Password reset'); renderTeam();
   };
 }
@@ -2223,7 +2237,7 @@ async function openApproveModal(profileId){
 
   openModal(`
     <h2>${p.status==='pending'?'Approve':'Edit'} team member</h2>
-    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.email||p.phone||'')}</p>
+    <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(p.email||toLocalPhone(p.phone)||'')}</p>
     <form id="approve-form">
       ${canEditCredentials ? `
       <div class="two-col">
@@ -2231,7 +2245,7 @@ async function openApproveModal(profileId){
         <div class="form-row"><label>Employee ID</label><input type="text" id="ap-empid" value="${escapeHtml(p.employee_id||'')}"></div>
       </div>
       <div class="two-col">
-        <div class="form-row"><label>Mobile number</label><input type="text" id="ap-phone" value="${escapeHtml((p.phone||'').replace('+92','0'))}" maxlength="11" placeholder="03XXXXXXXXX"></div>
+        <div class="form-row"><label>Mobile number</label><input type="text" id="ap-phone" value="${escapeHtml(toLocalPhone(p.phone)||'')}" maxlength="11" placeholder="03XXXXXXXXX"></div>
         <div class="form-row"><label>Email (optional)</label><input type="email" id="ap-email" value="${escapeHtml(p.email||'')}"></div>
       </div>` : ''}
       <div class="form-row"><label>Role</label><select id="ap-role">${roleOptions}</select></div>
@@ -2267,6 +2281,7 @@ async function openApproveModal(profileId){
 
   document.getElementById('approve-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm('Save these changes to this team member\'s account?')) return;
     const role = document.getElementById('ap-role').value;
     const status = document.getElementById('ap-status').value;
     const isMulti = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(role);
@@ -2388,15 +2403,26 @@ async function renderRegions(){
   const { data: allSubs } = await sb.from('sub_regions').select('*').eq('active', true).order('name');
   const subsByRegion = {};
   (allSubs||[]).forEach(s => { (subsByRegion[s.region_id] ||= []).push(s); });
+  const { data: rosterCounts } = await sb.from('roster_entries').select('region_id, status, replacement_pending');
+  const countsByRegion = {};
+  (rosterCounts||[]).forEach(e => {
+    if (!countsByRegion[e.region_id]) countsByRegion[e.region_id] = { working:0, replacement:0 };
+    if (e.status !== 'removed') countsByRegion[e.region_id].working++;
+    if (e.status === 'removed' && e.replacement_pending) countsByRegion[e.region_id].replacement++;
+  });
 
-  main.innerHTML = `<table><thead><tr><th>Region</th><th>Sub-Regions / Cities</th><th>Status</th>${(canEdit||canRemove)?'<th></th>':''}</tr></thead><tbody>
+  main.innerHTML = `<table><thead><tr><th>Region</th><th>Sub-Regions / Cities</th><th>Approved</th><th>Working</th><th>Replacement Needed</th><th>Status</th>${(canEdit||canRemove)?'<th></th>':''}</tr></thead><tbody>
     ${(allRegions||[]).map(r=>{
       const subs = subsByRegion[r.id] || [];
+      const counts = countsByRegion[r.id] || { working:0, replacement:0 };
       return `<tr>
       <td>${escapeHtml(r.name)}</td>
       <td>${subs.length
         ? `<select style="max-width:220px;"><option>${subs.length} sub-region${subs.length>1?'s':''} ▾</option>${subs.map(s=>`<option disabled>${escapeHtml(s.name)}</option>`).join('')}</select>`
         : `<span class="mono" style="color:var(--muted);">None yet</span>`}</td>
+      <td class="mono">${r.approved_headcount ?? '—'}</td>
+      <td class="mono">${counts.working}</td>
+      <td class="mono">${counts.replacement || '—'}</td>
       <td><span class="badge ${r.active!==false?'active':'closed'}">${r.active!==false?'Active':'Deactivated'}</span></td>
       ${(canEdit||canRemove) ? `<td style="white-space:nowrap;">
         ${canEdit ? `<button class="btn small outline" data-edit-region="${r.id}">Edit</button>` : ''}
@@ -2405,7 +2431,7 @@ async function renderRegions(){
     </tr>`;
     }).join('')}
   </tbody></table>
-  <p class="hint" style="margin-top:12px;">To add or rename sub-regions/cities, go to Settings → Sub-Regions / Cities.</p>`;
+  <p class="hint" style="margin-top:12px;">To add or rename sub-regions/cities, go to Settings → Sub-Regions / Cities. To set the Approved headcount, click Edit on a region.</p>`;
 
   main.querySelectorAll('[data-edit-region]').forEach(btn => {
     btn.onclick = () => openRegionModal((allRegions||[]).find(r=>r.id===btn.dataset.editRegion));
@@ -2438,6 +2464,7 @@ function openRegionModal(region){
   `);
   document.getElementById('region-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm('Save these region changes?')) return;
     const name = document.getElementById('reg-name').value.trim();
     const headcountVal = document.getElementById('reg-headcount').value;
     const payload = { name, approved_headcount: headcountVal ? parseInt(headcountVal,10) : null };
@@ -2987,6 +3014,7 @@ async function openNewWarningModal(){
     e.preventDefault();
     const description = document.getElementById('w-desc').value.trim();
     if (wordLimit && countWords(description) > wordLimit){ toast(`Please keep details under ${wordLimit} words`); return; }
+    if (!confirm('Record this warning? It will be visible to the person and Super Admin.')) return;
     const typeId = document.getElementById('w-type').value;
     const typeName = state.warningTypes.find(t=>t.id===typeId)?.name || 'Other';
     const { error } = await sb.from('disciplinary_actions').insert({
@@ -3386,11 +3414,11 @@ async function generateReport(){
     rows = (data||[]).map(w => ({ Rider: w.rider?.full_name, 'Employee ID': w.rider?.employee_id, Type: w.action_type, Description: w.description, 'Recorded By': w.recorder?.full_name, 'Created At': w.created_at }));
   } else if (type === 'active_employees'){
     // No date range applies here — this is a current snapshot, not filtered by when someone joined.
-    const { data, error } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
+    const { data, error } = await sb.from('profiles').select('*, regions!region_id(name)').eq('status', 'active').order('full_name');
     queryError = error;
     rows = (data||[]).map(p => ({
       'Full Name': p.full_name, 'Employee ID': p.employee_id||'', Role: ROLE_LABEL[p.role]||p.role,
-      'Mobile Number': p.phone||'', Email: p.email||'', Region: p.regions?.name||'', 'Bike Number': p.bike_number||'',
+      'Mobile Number': toLocalPhone(p.phone)||'', Email: p.email||'', Region: p.regions?.name||'', 'Bike Number': p.bike_number||'',
       'Joined On': p.created_at ? p.created_at.slice(0,10) : ''
     }));
   }
@@ -4483,6 +4511,7 @@ async function openNewToolIssuanceModal(){
   document.getElementById('tool-issuance-form').onsubmit = async (e) => {
     e.preventDefault();
     if (blocked && !(isSuperAdmin() && overrideBox?.checked)){ toast('This rider is not yet eligible for reissuance'); return; }
+    if (!confirm('Confirm this tool issuance?')) return;
     const riderId = riderSelect.value;
     const rider = state.profilesInScope.find(p=>p.id===riderId);
     const { error } = await sb.from('tool_issuances').insert({
@@ -4696,7 +4725,7 @@ async function renderHierarchy(){
   document.getElementById('topbar-actions').innerHTML = '';
   main.innerHTML = `<div class="mono">Loading…</div>`;
 
-  const { data: profiles } = await sb.from('profiles').select('*, regions(name)').eq('status', 'active').order('full_name');
+  const { data: profiles } = await sb.from('profiles').select('*, regions!region_id(name)').eq('status', 'active').order('full_name');
   const { data: regionLinks } = await sb.from('profile_regions').select('profile_id, region_id');
   const linksByProfile = new Map();
   (regionLinks||[]).forEach(l => { if (!linksByProfile.has(l.profile_id)) linksByProfile.set(l.profile_id, []); linksByProfile.get(l.profile_id).push(l.region_id); });
@@ -4706,7 +4735,7 @@ async function renderHierarchy(){
 
   const personCard = (p) => `<div style="padding:8px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px;">
     <strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${escapeHtml(p.employee_id||'—')}</span>
-    <div class="mono" style="font-size:12.5px; color:var(--muted);">${escapeHtml(p.phone||'—')}</div>
+    <div class="mono" style="font-size:12.5px; color:var(--muted);">${escapeHtml(toLocalPhone(p.phone)||'—')}</div>
   </div>`;
 
   let html = `
@@ -4792,13 +4821,12 @@ async function renderRoster(){
     document.getElementById('topbar-actions').innerHTML = `
       ${canBulkAdd ? `<button class="btn outline" id="bulk-roster-btn">+ Bulk Add</button>` : ''}
       ${canBulkUpdate ? `<button class="btn outline" id="bulk-roster-update-btn">Bulk Update</button>` : ''}
-      <button class="btn outline" id="roster-download-btn">Download</button>
       ${canManage ? `<button class="btn" id="new-roster-btn">+ Add to Roster</button>` : ''}`;
     if (canManage) document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
     if (canBulkAdd) document.getElementById('bulk-roster-btn').onclick = openBulkRosterModal;
     if (canBulkUpdate) document.getElementById('bulk-roster-update-btn').onclick = openBulkUpdateRosterModal;
   } else {
-    document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="roster-download-btn">Download</button>`;
+    document.getElementById('topbar-actions').innerHTML = '';
   }
   let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
@@ -4844,26 +4872,35 @@ async function renderRoster(){
         : '<span class="badge active">Approved / Working</span>'}</td>
       ${canManage ? `<td style="white-space:nowrap;">
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
-        ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}">Mark Resigned/Terminated/Transferred</button>` : ''}
+        ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}" title="Mark Resigned / Terminated / Transferred">Change Status</button>` : ''}
         ${(e.status==='removed' && isSuperAdmin()) ? `<button class="btn small outline" data-reinstate-roster="${e.id}">Reinstate (undo mistake)</button>` : ''}
         ${isSuperAdmin() ? `<button class="btn small danger" data-delete-roster="${e.id}">Delete Permanently</button>` : ''}
       </td>` : ''}
     </tr>`).join('')}
   </tbody></table>` : emptyState('No roster entries match this filter.');
 
+  const renderStats = (list) => {
+    const total = list.length;
+    const active = list.filter(e=>e.status!=='removed').length;
+    const replacementPending = list.filter(e=>e.status==='removed' && e.replacement_pending).length;
+    return `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px;">
+      <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer; padding:12px;"><div class="stat-number">${total}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Total Riders</div></div>
+      <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer; padding:12px;"><div class="stat-number">${active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Approved / Working</div></div>
+      <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer; padding:12px;"><div class="stat-number">${total-active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Resigned/Terminated/Transferred</div></div>
+      <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer; padding:12px;"><div class="stat-number">${replacementPending}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Replacement Needed</div></div>
+    </div>`;
+  };
+
   main.innerHTML = `
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:16px;">
-      <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer;"><div class="stat-number">${total}</div><div class="stat-label">Total on Roster</div></div>
-      <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer;"><div class="stat-number">${active}</div><div class="stat-label">Approved / Currently Working</div></div>
-      ${approvedHeadcount ? `<div class="card stat-card sky"><div class="stat-number">${approvedHeadcount}</div><div class="stat-label">Approved Headcount (Regions shown)</div></div>` : ''}
-      <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer;"><div class="stat-number">${total-active}</div><div class="stat-label">Resigned/Terminated/Transferred</div></div>
-      <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer;"><div class="stat-number">${replacementPending}</div><div class="stat-label">Replacement Needed</div></div>
-    </div>
+    <div id="roster-stats">${renderStats(entries)}</div>
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <details style="margin-bottom:14px;">
       <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Region-wise counts ▾</summary>
-      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th></tr></thead><tbody>
-        ${Object.entries(regionCounts).map(([name,c]) => `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td></tr>`).join('')}
+      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th><th>Approved Headcount</th></tr></thead><tbody>
+        ${Object.entries(regionCounts).map(([name,c]) => {
+          const region = state.regions.find(r=>r.name===name);
+          return `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td><td class="mono">${region?.approved_headcount ?? '—'}</td></tr>`;
+        }).join('')}
       </tbody></table>
     </details>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
@@ -4874,22 +4911,27 @@ async function renderRoster(){
       ${reasons.length ? `<select id="rf-reason"><option value="">All Reasons</option>${reasons.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>` : ''}
       <input type="text" id="rf-search" placeholder="Search rider name or Employee ID…" style="flex:1; min-width:160px;">
     </div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <button class="btn small outline" id="roster-download-filtered-btn">Download Filtered</button>
+      <button class="btn small outline" id="roster-download-all-btn">Download All</button>
+    </div>
     <div id="roster-list">${renderRows(entries)}</div>`;
 
-  const downloadBtn = document.getElementById('roster-download-btn');
-  if (downloadBtn){
-    downloadBtn.onclick = () => {
-      const rows = entries.map(e => ({
-        Rider: e.profiles?.full_name||'', 'Employee ID': e.profiles?.employee_id||'',
-        Region: e.regions?.name||'', 'Sub-Region': e.sub_regions?.name||'', Hotspot: e.hotspot||'',
-        Shift: e.shift_types?.name||'', 'Day Off': e.day_off||'',
-        'Official Mobile': e.official_mobile||'', 'Personal Mobile': e.personal_mobile||'',
-        Status: e.status==='removed' ? (e.removal_reason||'Removed') : 'Working',
-        'Status Date': e.status_date||''
-      }));
-      downloadCSV(`roster-${new Date().toISOString().slice(0,10)}.csv`, toCSV(rows));
-    };
-  }
+  const toCsvRows = (list) => list.map(e => ({
+    Rider: e.profiles?.full_name||'', 'Employee ID': e.profiles?.employee_id||'',
+    Region: e.regions?.name||'', 'Sub-Region': e.sub_regions?.name||'', Hotspot: e.hotspot||'',
+    Shift: e.shift_types?.name||'', 'Day Off': e.day_off||'',
+    'Official Mobile': toLocalPhone(e.official_mobile)||e.official_mobile||'', 'Personal Mobile': toLocalPhone(e.personal_mobile)||e.personal_mobile||'',
+    Status: e.status==='removed' ? (e.removal_reason||'Removed') : 'Working',
+    'Status Date': e.status_date||''
+  }));
+  let currentFiltered = entries;
+  document.getElementById('roster-download-all-btn').onclick = () => {
+    downloadCSV(`roster-all-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(entries)));
+  };
+  document.getElementById('roster-download-filtered-btn').onclick = () => {
+    downloadCSV(`roster-filtered-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(currentFiltered)));
+  };
 
   const applyFilters = () => {
     const region = document.getElementById('rf-region').value;
@@ -4906,6 +4948,9 @@ async function renderRoster(){
       (!reason || e.removal_reason === reason) &&
       (!q || (e.profiles?.full_name||'').toLowerCase().includes(q) || (e.profiles?.employee_id||'').toLowerCase().includes(q))
     );
+    currentFiltered = filtered;
+    document.getElementById('roster-stats').innerHTML = renderStats(filtered);
+    bindStatClicks();
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
   };
@@ -4915,19 +4960,23 @@ async function renderRoster(){
   });
   document.getElementById('rf-search').oninput = applyFilters;
 
-  main.querySelectorAll('[data-stat-filter]').forEach(card => {
-    card.onclick = () => {
-      const which = card.dataset.statFilter;
-      document.getElementById('rf-status').value = which === 'replacement' ? 'removed' : which;
-      if (document.getElementById('rf-reason')) document.getElementById('rf-reason').value = '';
-      applyFilters();
-      if (which === 'replacement'){
-        document.getElementById('roster-list').innerHTML = renderRows(entries.filter(e=>e.status==='removed' && e.replacement_pending));
-        bindRowActions();
-      }
-      document.getElementById('roster-list').scrollIntoView({behavior:'smooth', block:'start'});
-    };
-  });
+  function bindStatClicks(){
+    document.querySelectorAll('[data-stat-filter]').forEach(card => {
+      card.onclick = () => {
+        const which = card.dataset.statFilter;
+        document.getElementById('rf-status').value = which === 'replacement' ? 'removed' : which;
+        if (document.getElementById('rf-reason')) document.getElementById('rf-reason').value = '';
+        applyFilters();
+        if (which === 'replacement'){
+          const replacementList = currentFiltered.filter(e=>e.status==='removed' && e.replacement_pending);
+          document.getElementById('roster-list').innerHTML = renderRows(replacementList);
+          bindRowActions();
+        }
+        document.getElementById('roster-list').scrollIntoView({behavior:'smooth', block:'start'});
+      };
+    });
+  }
+  bindStatClicks();
 
   function bindRowActions(){
     document.querySelectorAll('[data-edit-roster]').forEach(btn => {
@@ -4942,6 +4991,14 @@ async function renderRoster(){
     document.querySelectorAll('[data-reinstate-roster]').forEach(btn => {
       btn.onclick = async () => {
         const entry = entries.find(e=>e.id===btn.dataset.reinstateRoster);
+        const region = state.regions.find(r=>r.id===entry.region_id);
+        if (region?.approved_headcount != null){
+          const { count: workingCount } = await sb.from('roster_entries').select('id', {count:'exact', head:true}).eq('region_id', entry.region_id).neq('status','removed');
+          if ((workingCount||0) >= region.approved_headcount){
+            toast(`Cannot reinstate — ${region.name} already has ${workingCount} working rider(s), matching its approved headcount of ${region.approved_headcount}.`);
+            return;
+          }
+        }
         if (!confirm(`Reinstate ${entry.profiles?.full_name||'this rider'}? This undoes the Resigned/Terminated/Transferred mark and re-enables their login.`)) return;
         const { error } = await sb.from('roster_entries').update({
           status: 'active', removal_reason: null, status_date: null, removal_note: null, replacement_pending: false
@@ -5023,7 +5080,7 @@ async function openRosterModal(entry){
     const applyRiderDefaults = (riderId) => {
       const rider = riders.find(p=>p.id===riderId);
       if (!rider) return;
-      if (rider.phone) document.getElementById('ro-official').value = rider.phone.replace('+92','0');
+      if (rider.phone) document.getElementById('ro-official').value = toLocalPhone(rider.phone);
       if (rider.region_id){
         document.getElementById('ro-region').value = rider.region_id;
         loadSubRegions(rider.region_id, null);
@@ -5036,14 +5093,29 @@ async function openRosterModal(entry){
 
   document.getElementById('roster-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm(entry ? 'Save these changes to the roster entry?' : 'Add this rider to the roster with these details?')) return;
     const riderId = document.getElementById('ro-rider').value;
+    const regionId = document.getElementById('ro-region').value;
     if (!entry){
       const { data: existingActive } = await sb.from('roster_entries').select('id').eq('rider_id', riderId).neq('status', 'removed').maybeSingle();
       if (existingActive){ toast('This rider already has an active roster entry — edit that one instead of creating a duplicate.'); return; }
     }
+    // Approved headcount check — only blocks when adding a NEW working
+    // entry, or when re-approving into a region that's already full.
+    const isNewOrReactivating = !entry || (entry.status === 'removed');
+    if (isNewOrReactivating){
+      const region = state.regions.find(r=>r.id===regionId);
+      if (region?.approved_headcount != null){
+        const { count: workingCount } = await sb.from('roster_entries').select('id', {count:'exact', head:true}).eq('region_id', regionId).neq('status','removed');
+        if ((workingCount||0) >= region.approved_headcount){
+          toast(`Cannot add — ${region.name} already has ${workingCount} working rider(s), matching its approved headcount of ${region.approved_headcount}. Ask Super Admin to raise the approved count in Regions if this is intentional.`);
+          return;
+        }
+      }
+    }
     const payload = {
       rider_id: riderId,
-      region_id: document.getElementById('ro-region').value,
+      region_id: regionId,
       sub_region_id: document.getElementById('ro-subregion').value || null,
       hotspot: document.getElementById('ro-hotspot').value || null,
       shift_id: document.getElementById('ro-shift').value || null,
@@ -5078,8 +5150,9 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
     resultsEl.innerHTML = '<div class="mono">Processing…</div>';
 
     await loadScopedProfiles();
-    const { data: allSubRegions } = await sb.from('sub_regions').select('*');
-    const { data: allShifts } = await sb.from('shift_types').select('*');
+    const { data: allSubRegions } = await sb.from('sub_regions').select('*').eq('active', true);
+    const { data: allShifts } = await sb.from('shift_types').select('*').eq('active', true);
+    const { data: allHotspots } = await sb.from('hotspots').select('*').eq('active', true);
     const isKnownRegion = (s) => state.regions.some(r => r.name.toLowerCase() === (s||'').trim().toLowerCase());
 
     const rows = [];
@@ -5088,11 +5161,11 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       const empId = parts[0];
       // Auto-detect an extra "Name" column: if the 2nd field isn't a real
       // region, assume it's a name and shift everything over by one.
-      let regionName, subRegionName, shiftName, dayOff, hotspot;
+      let regionName, subRegionName, shiftName, dayOff, hotspotName;
       if (isKnownRegion(parts[1])){
-        [regionName, subRegionName, shiftName, dayOff, hotspot] = [parts[1], parts[2], parts[3], parts[4], parts[5]];
+        [regionName, subRegionName, shiftName, dayOff, hotspotName] = [parts[1], parts[2], parts[3], parts[4], parts[5]];
       } else {
-        [regionName, subRegionName, shiftName, dayOff, hotspot] = [parts[2], parts[3], parts[4], parts[5], parts[6]];
+        [regionName, subRegionName, shiftName, dayOff, hotspotName] = [parts[2], parts[3], parts[4], parts[5], parts[6]];
       }
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
@@ -5101,16 +5174,20 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       const region = state.regions.find(r => r.name.toLowerCase() === (regionName||'').toLowerCase());
       if (!region){ rows.push({ empId, ok:false, msg:`Region "${regionName}" not found — check spelling matches Settings exactly` }); continue; }
       const subRegion = subRegionName ? (allSubRegions||[]).find(s => s.region_id===region.id && s.name.toLowerCase()===subRegionName.toLowerCase()) : null;
+      if (subRegionName && !subRegion){ rows.push({ empId, ok:false, msg:`Sub-Region "${subRegionName}" not found for ${region.name} — not added` }); continue; }
       const shift = shiftName ? (allShifts||[]).find(s => s.name.toLowerCase() === shiftName.toLowerCase()) : null;
+      if (shiftName && !shift){ rows.push({ empId, ok:false, msg:`Shift "${shiftName}" not found in Shift Types — not added` }); continue; }
+      let hotspotFinal = null;
+      if (hotspotName){
+        const hs = (allHotspots||[]).find(h => h.region_id===region.id && h.name.toLowerCase()===hotspotName.toLowerCase());
+        if (!hs){ rows.push({ empId, ok:false, msg:`Hotspot "${hotspotName}" not found for ${region.name} in Settings → Hotspots — not added` }); continue; }
+        hotspotFinal = hs.name;
+      }
       const { error } = await sb.from('roster_entries').insert({
         rider_id: rider.id, region_id: region.id, sub_region_id: subRegion?.id || null,
-        shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspot || null, created_by: state.user.id
+        shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspotFinal, created_by: state.user.id
       });
-      let warnings = [];
-      if (shiftName && !shift) warnings.push(`shift "${shiftName}" didn't match any Shift Type exactly — left blank`);
-      if (subRegionName && !subRegion) warnings.push(`sub-region "${subRegionName}" didn't match — left blank`);
-      const successMsg = `Added — ${rider.full_name}` + (warnings.length ? ` (⚠️ ${warnings.join('; ')})` : '');
-      rows.push({ empId, ok: !error, msg: error ? error.message : successMsg });
+      rows.push({ empId, ok: !error, msg: error ? error.message : `Added — ${rider.full_name}` });
     }
     resultsEl.innerHTML = `<table><thead><tr><th>Employee ID</th><th>Result</th></tr></thead><tbody>
       ${rows.map(r=>`<tr><td class="mono">${escapeHtml(r.empId)}</td><td>${r.ok?`<span class="badge active">${escapeHtml(r.msg)}</span>`:`<span class="badge open">${escapeHtml(r.msg)}</span>`}</td></tr>`).join('')}
@@ -5122,40 +5199,69 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
 
 function openBulkUpdateRosterModal(){
   openModal(`
-    <h2>Bulk update existing roster entries</h2>
-    <p class="hint">Use this to fix Shift/Hotspot on rows that already exist (e.g. after a Bulk Add where the names didn't match exactly). Paste: <strong>Employee ID, Shift name, Hotspot</strong> — one per line. Leave a field blank to leave that one unchanged.</p>
+    <h2>Bulk update one field</h2>
+    <p class="hint">Update a single field (e.g. just Hotspot, or just Day Off) for many riders at once, without touching anything else on their entry.</p>
     <form id="bulk-roster-update-form">
-      <textarea id="bru-rows" rows="8" placeholder="EMP1001, 7:00 AM - 7:00 PM, DHA Phase 5
-EMP1002, 8:00 AM - 8:00 PM, "></textarea>
+      <div class="form-row"><label>Field to update</label><select id="bru-field">
+        <option value="shift">Shift</option>
+        <option value="hotspot">Hotspot</option>
+        <option value="dayoff">Day Off</option>
+        <option value="subregion">Sub-Region / City</option>
+        <option value="official_mobile">Official Mobile</option>
+        <option value="personal_mobile">Personal Mobile</option>
+      </select></div>
+      <div class="form-row"><label>Employee ID, new value — one per line</label>
+        <textarea id="bru-rows" rows="8" placeholder="EMP1001, DHA Phase 5
+EMP1002, Model Town"></textarea>
+        <span class="field-hint">For Shift/Hotspot/Sub-Region, the value must exactly match an existing entry in Settings — anything that doesn't match will be rejected with an error rather than silently skipped.</span>
+      </div>
       <button class="btn-primary" type="submit" style="margin-top:12px;">Update All</button>
     </form>
     <div id="bulk-roster-update-results" style="margin-top:14px;"></div>
   `);
   document.getElementById('bulk-roster-update-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (!confirm('Apply this update to every Employee ID listed? Please double-check the field and values before confirming.')) return;
+    const field = document.getElementById('bru-field').value;
     const lines = document.getElementById('bru-rows').value.split('\n').map(l=>l.trim()).filter(Boolean);
     if (!lines.length) return;
     const resultsEl = document.getElementById('bulk-roster-update-results');
     resultsEl.innerHTML = '<div class="mono">Processing…</div>';
 
     await loadScopedProfiles();
-    const { data: allShifts } = await sb.from('shift_types').select('*');
+    const { data: allShifts } = await sb.from('shift_types').select('*').eq('active', true);
+    const { data: allSubs } = await sb.from('sub_regions').select('*').eq('active', true);
+    const { data: allHotspots } = await sb.from('hotspots').select('*').eq('active', true);
+
     const rows = [];
     for (const line of lines){
       const parts = line.split(/\t|,/).map(p=>p.trim());
-      const [empId, shiftName, hotspot] = parts;
+      const [empId, ...rest] = parts;
+      const value = rest.join(', ').trim();
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID' }); continue; }
-      const { data: entry } = await sb.from('roster_entries').select('id').eq('rider_id', rider.id).neq('status', 'removed').maybeSingle();
-      if (!entry){ rows.push({ empId, ok:false, msg:'No active roster entry to update — use Bulk Add instead' }); continue; }
-      const payload = {};
-      if (shiftName){
-        const shift = (allShifts||[]).find(s => s.name.toLowerCase() === shiftName.toLowerCase());
-        if (!shift){ rows.push({ empId, ok:false, msg:`Shift "${shiftName}" not found — check Settings → Shift Types spelling` }); continue; }
+      const { data: entry } = await sb.from('roster_entries').select('id, region_id').eq('rider_id', rider.id).neq('status', 'removed').maybeSingle();
+      if (!entry){ rows.push({ empId, ok:false, msg:'No active roster entry — use Bulk Add instead' }); continue; }
+      if (!value){ rows.push({ empId, ok:false, msg:'No value given' }); continue; }
+
+      let payload = {};
+      if (field === 'shift'){
+        const shift = (allShifts||[]).find(s => s.name.toLowerCase() === value.toLowerCase());
+        if (!shift){ rows.push({ empId, ok:false, msg:`"${value}" is not a Shift Type — check Settings → Shift Types spelling. Not applied.` }); continue; }
         payload.shift_id = shift.id;
+      } else if (field === 'hotspot'){
+        const hotspot = (allHotspots||[]).find(h => h.name.toLowerCase() === value.toLowerCase() && (h.region_id === entry.region_id));
+        if (!hotspot){ rows.push({ empId, ok:false, msg:`"${value}" is not a Hotspot set up for this rider's region — check Settings → Hotspots. Not applied.` }); continue; }
+        payload.hotspot = hotspot.name;
+      } else if (field === 'subregion'){
+        const sub = (allSubs||[]).find(s => s.name.toLowerCase() === value.toLowerCase() && s.region_id === entry.region_id);
+        if (!sub){ rows.push({ empId, ok:false, msg:`"${value}" is not a Sub-Region for this rider's region. Not applied.` }); continue; }
+        payload.sub_region_id = sub.id;
+      } else if (field === 'dayoff'){
+        payload.day_off = value;
+      } else if (field === 'official_mobile' || field === 'personal_mobile'){
+        payload[field] = value;
       }
-      if (hotspot) payload.hotspot = hotspot;
-      if (!Object.keys(payload).length){ rows.push({ empId, ok:false, msg:'Nothing to update on this row' }); continue; }
       const { error } = await sb.from('roster_entries').update(payload).eq('id', entry.id);
       rows.push({ empId, ok: !error, msg: error ? error.message : `Updated — ${rider.full_name}` });
     }
@@ -5209,7 +5315,7 @@ async function renderMyProfile(){
       <h3>Your details</h3>
       <div class="form-row"><label>Full name</label><input type="text" id="mp-name" value="${escapeHtml(p.full_name||'')}"></div>
       <div class="two-col">
-        <div class="form-row"><label>Mobile Number</label><input type="text" value="${escapeHtml(p.phone||'')}" disabled></div>
+        <div class="form-row"><label>Mobile Number</label><input type="text" value="${escapeHtml(toLocalPhone(p.phone)||'')}" disabled></div>
         <div class="form-row"><label>Employee ID</label><input type="text" value="${escapeHtml(p.employee_id||'—')}" disabled></div>
       </div>
       ${p.role==='rider' ? `<div class="form-row"><label>Bike Number</label><input type="text" id="mp-bike" value="${escapeHtml(p.bike_number||'')}"></div>` : ''}
