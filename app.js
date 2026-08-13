@@ -1640,12 +1640,18 @@ function openNewRequestModal(){
     }
     let assignedPocId = null;
     if (targetRole){
-      const [{ data: candidates }, { data: regionLinks }] = await Promise.all([
+      const [{ data: candidates }, { data: allLinksForRole }] = await Promise.all([
         sb.from('profiles').select('id, region_id').eq('role', targetRole).eq('status', 'active'),
-        myRegionId ? sb.from('profile_regions').select('profile_id').eq('region_id', myRegionId) : Promise.resolve({data:[]})
+        sb.from('profile_regions').select('profile_id, region_id')
       ]);
-      const linkedIds = new Set((regionLinks||[]).map(r=>r.profile_id));
-      const inRegion = (candidates||[]).find(p => linkedIds.has(p.id) || p.region_id === myRegionId);
+      const linksByCandidate = new Map();
+      (allLinksForRole||[]).forEach(l => { if (!linksByCandidate.has(l.profile_id)) linksByCandidate.set(l.profile_id, []); linksByCandidate.get(l.profile_id).push(l.region_id); });
+      const candidateRegionIds = (p) => {
+        const links = linksByCandidate.get(p.id);
+        if (links && links.length) return links;
+        return p.region_id ? [p.region_id] : [];
+      };
+      const inRegion = (candidates||[]).find(p => myRegionId && candidateRegionIds(p).includes(myRegionId));
       assignedPocId = (inRegion || candidates?.[0])?.id || null;
     }
 
@@ -2181,11 +2187,17 @@ async function toggleMemberStatus(profileId){
   // could drift apart — see the Javaid Alam bug report).
   if (p.role === 'rider'){
     if (newStatus === 'disabled'){
-      await sb.from('roster_entries').update({
+      const { error: rosterErr, data: rosterUpdated } = await sb.from('roster_entries').update({
         status: 'removed', removal_reason: 'Login Disabled',
         removal_note: 'Automatically set when this account was disabled from Team.'
-      }).eq('rider_id', profileId).neq('status', 'removed');
-      toast('Account disabled — their roster entry was also marked removed.');
+      }).eq('rider_id', profileId).neq('status', 'removed').select();
+      if (rosterErr){
+        toast('Account disabled, but could not update their Roster entry: ' + rosterErr.message + '. Please check Roster manually.');
+      } else if (rosterUpdated && rosterUpdated.length){
+        toast('Account disabled — their roster entry was also marked removed.');
+      } else {
+        toast('Account disabled (no active roster entry to update).');
+      }
     } else {
       toast('Account enabled. Note: their Roster entry was not automatically restored — re-add it in Roster if they are actively working again.');
     }
@@ -3303,11 +3315,12 @@ async function renderReports(){
       <h3>Download a report</h3>
       <div class="two-col">
         <div class="form-row"><label>Report type</label><select id="rep-type">
+          ${isAdmin() ? `
           <option value="requests">Requests (with TAT)</option>
           <option value="tasks">Tasks</option>
           <option value="circulars">Circulars &amp; Acknowledgments</option>
           <option value="expiry">Expiry Items</option>
-          <option value="warnings">Warnings</option>
+          <option value="warnings">Warnings</option>` : ''}
           ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for salary processing)</option>` : ''}
         </select></div>
         <div></div>
@@ -4749,8 +4762,20 @@ async function renderHierarchy(){
     </div>
   `;
 
+  // A person's real working region(s) come from profile_regions if they
+  // have any rows there; the legacy single region_id field is only a
+  // fallback for when profile_regions is empty. Checking both with OR
+  // (the previous bug) caused people to show under two regions whenever
+  // a stale region_id was left over from before they were switched to
+  // multi-region assignment.
+  const personRegionIds = (p) => {
+    const links = linksByProfile.get(p.id);
+    if (links && links.length) return links;
+    return p.region_id ? [p.region_id] : [];
+  };
+
   state.regions.filter(r => r.active !== false).forEach(region => {
-    const inRegion = (p) => p.region_id === region.id || (linksByProfile.get(p.id)||[]).includes(region.id);
+    const inRegion = (p) => personRegionIds(p).includes(region.id);
     const leads = (profiles||[]).filter(p => ['team_lead','regional_poc'].includes(p.role) && inRegion(p));
     const coordinators = (profiles||[]).filter(p => p.role==='coordinator' && inRegion(p));
     const riders = (profiles||[]).filter(p => p.role==='rider' && inRegion(p));
@@ -4828,7 +4853,7 @@ async function renderRoster(){
   } else {
     document.getElementById('topbar-actions').innerHTML = '';
   }
-  let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id), regions(name), sub_regions(name), shift_types(name)');
+  let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id, status), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
   const { data: entries } = await query.order('created_at', {ascending:false});
 
@@ -4869,7 +4894,19 @@ async function renderRoster(){
       <td class="mono">${escapeHtml(e.personal_mobile||'—')}</td>
       <td>${e.status==='removed'
         ? `<span class="badge open">${escapeHtml(e.removal_reason||'Removed')}${e.status_date?' — '+formatDate(e.status_date):''}</span>${e.replacement_pending?' <span class="badge pending">Replacement pending</span>':''}`
-        : '<span class="badge active">Approved / Working</span>'}</td>
+        : '<span class="badge active">Approved / Working</span>'}
+        ${(() => {
+          const loginDisabled = e.profiles?.status === 'disabled';
+          const rosterWorking = e.status !== 'removed';
+          if (loginDisabled && rosterWorking){
+            return `<div><span class="badge open" title="Login is disabled but roster still shows them as working">⚠️ Login disabled</span>${isSuperAdmin() ? ` <button class="btn small outline" data-sync-roster="${e.id}" data-sync-direction="remove">Sync (mark removed)</button>` : ''}</div>`;
+          }
+          if (!loginDisabled && !rosterWorking && e.profiles?.status === 'active'){
+            return `<div><span class="badge pending" title="Roster shows removed but login is still active">⚠️ Login still active</span>${isSuperAdmin() ? ` <button class="btn small outline" data-sync-roster="${e.id}" data-sync-direction="disable">Sync (disable login)</button>` : ''}</div>`;
+          }
+          return '';
+        })()}
+      </td>
       ${canManage ? `<td style="white-space:nowrap;">
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
         ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}" title="Mark Resigned / Terminated / Transferred">Change Status</button>` : ''}
@@ -5017,6 +5054,24 @@ async function renderRoster(){
         const { error } = await sb.from('roster_entries').delete().eq('id', entry.id);
         if (error){ toast('Could not delete: ' + error.message); return; }
         toast('Roster entry deleted'); renderRoster();
+      };
+    });
+    document.querySelectorAll('[data-sync-roster]').forEach(btn => {
+      btn.onclick = async () => {
+        const entry = entries.find(e=>e.id===btn.dataset.syncRoster);
+        const direction = btn.dataset.syncDirection;
+        if (direction === 'remove'){
+          if (!confirm(`${entry.profiles?.full_name||'This rider'}'s login is disabled but Roster still shows them working. Mark their roster entry as removed to match?`)) return;
+          const { error } = await sb.from('roster_entries').update({
+            status: 'removed', removal_reason: 'Login Disabled', removal_note: 'Synced manually — login was already disabled but roster had not been updated.'
+          }).eq('id', entry.id);
+          if (error){ toast('Could not sync: ' + error.message); return; }
+        } else {
+          if (!confirm(`${entry.profiles?.full_name||'This rider'}'s roster shows removed but their login is still active. Disable their login to match?`)) return;
+          const { error } = await sb.from('profiles').update({ status: 'disabled' }).eq('id', entry.rider_id);
+          if (error){ toast('Could not sync: ' + error.message); return; }
+        }
+        toast('Synced'); renderRoster();
       };
     });
   }
