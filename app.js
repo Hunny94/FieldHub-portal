@@ -279,6 +279,12 @@ async function showLatestUnackedCircularPopup(){
   if (c.created_by === state.user.id) return;
   const { data: ack } = await sb.from('circular_acks').select('id').eq('circular_id', c.id).eq('user_id', state.user.id).maybeSingle();
   if (ack) return;
+  // Once acknowledged it never shows again (handled above); until then,
+  // only interrupt once per day rather than on every page load.
+  const shownKey = `fieldhub_circular_popup_shown_${c.id}_${state.user.id}`;
+  const today = new Date().toDateString();
+  if (localStorage.getItem(shownKey) === today) return;
+  localStorage.setItem(shownKey, today);
   openModal(`
     <h2>📢 ${escapeHtml(c.title)}</h2>
     <div class="mono" style="margin-bottom:10px;">${formatDateTime(c.created_at)}</div>
@@ -1686,7 +1692,7 @@ async function renderExpiries(){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-expiry-btn">+ Add Item</button>`;
     document.getElementById('new-expiry-btn').onclick = openNewExpiryModal;
   }
-  const { data: items } = await sb.from('expiry_items').select('*, profiles!rider_id(full_name, phone), added_by:profiles!created_by(full_name)').is('deleted_at', null).order('expiry_date');
+  const { data: items } = await sb.from('expiry_items').select('*, profiles!rider_id(full_name, phone, employee_id), added_by:profiles!created_by(full_name)').is('deleted_at', null).order('expiry_date');
   if (!items || items.length===0){ main.innerHTML = emptyState('No expiry items tracked yet.'); return; }
 
   // Group rows that were added together (multi-region/role submissions)
@@ -1716,7 +1722,7 @@ async function renderExpiries(){
       else if (daysLeft <= 30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
       let appliesTo;
       if (g.rows.length === 1 && g.first.profiles?.full_name){
-        appliesTo = escapeHtml(g.first.profiles.full_name);
+        appliesTo = escapeHtml(g.first.profiles.full_name) + (g.first.profiles.employee_id ? ` <span class="mono">(${escapeHtml(g.first.profiles.employee_id)})</span>` : '');
       } else {
         const regionNames = g.rows.map(r => state.regions.find(rg=>rg.id===r.region_id)?.name).filter(Boolean);
         const roleLabel = g.first.applies_to_role;
@@ -2008,7 +2014,7 @@ async function renderTeam(){
       html += `<div class="card"><h3>Password reset requests (${resetRequests.length})</h3>
       <table><thead><tr><th>Phone</th><th>Note</th><th>Submitted</th><th></th></tr></thead><tbody>
       ${resetRequests.map(r => {
-        const match = state.profilesInScope.find(p => p.phone === r.phone);
+        const match = state.profilesInScope.find(p => toE164(p.phone) === toE164(r.phone));
         return `<tr>
           <td class="mono">${escapeHtml(r.phone)}</td>
           <td>${escapeHtml(r.note||'—')}</td>
@@ -2104,7 +2110,14 @@ async function renderTeam(){
   });
   main.querySelectorAll('[data-approve]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.approve));
   main.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openApproveModal(btn.dataset.edit));
-  main.querySelectorAll('[data-toggle-status]').forEach(btn => btn.onclick = () => toggleMemberStatus(btn.dataset.toggleStatus));
+  main.querySelectorAll('[data-toggle-status]').forEach(btn => {
+    btn.onclick = () => {
+      const p = state.profilesInScope.find(x=>x.id===btn.dataset.toggleStatus);
+      const willDisable = p.status !== 'disabled';
+      if (willDisable && p.role !== 'super_admin' && !confirm(`Disable ${p.full_name}'s account? They won't be able to log in until re-enabled.`)) return;
+      toggleMemberStatus(btn.dataset.toggleStatus);
+    };
+  });
   main.querySelectorAll('[data-reset-pw]').forEach(btn => btn.onclick = () => openResetPasswordModal(btn.dataset.resetPw));
   main.querySelectorAll('[data-delete-member]').forEach(btn => {
     btn.onclick = async () => {
@@ -2179,6 +2192,16 @@ function regionNamesFor(p){
 async function toggleMemberStatus(profileId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
   const newStatus = p.status === 'disabled' ? 'active' : 'disabled';
+
+  if (p.role === 'super_admin' && newStatus === 'disabled'){
+    const { count: activeSuperAdmins } = await sb.from('profiles').select('id', {count:'exact', head:true}).eq('role','super_admin').eq('status','active');
+    if ((activeSuperAdmins||0) <= 1){
+      toast(`Cannot disable ${p.full_name} — they're the only active Super Admin. This would lock everyone out of admin access. Make someone else Super Admin first if this account genuinely needs to be disabled.`);
+      return;
+    }
+    if (!confirm(`⚠️ ${p.full_name} is a Super Admin. Disabling this account removes their admin access immediately. Are you absolutely sure?`)) return;
+  }
+
   const { error } = await sb.from('profiles').update({ status: newStatus }).eq('id', profileId);
   if (error){ toast('Could not update: ' + error.message); return; }
 
@@ -4837,6 +4860,25 @@ async function renderReleaseNotes(){
 // ---------------------------------------------------------
 // ROSTER — region/sub-region weekly roster (not date-based)
 // ---------------------------------------------------------
+async function backfillRosterMobileNumbers(){
+  if (!confirm('Fill in the Official Mobile field for every roster entry that\'s missing it, using the phone number already on file in Team? This only fills blanks — it never overwrites a number that\'s already there.')) return;
+  const { data: entries } = await sb.from('roster_entries').select('id, rider_id, official_mobile').or('official_mobile.is.null,official_mobile.eq.');
+  const missing = (entries||[]).filter(e => !e.official_mobile);
+  if (!missing.length){ toast('Nothing to fill — every entry already has a mobile number.'); return; }
+  const riderIds = [...new Set(missing.map(e=>e.rider_id))];
+  const { data: riders } = await sb.from('profiles').select('id, phone').in('id', riderIds);
+  const phoneById = new Map((riders||[]).map(r=>[r.id, r.phone]));
+  let filled = 0, skipped = 0;
+  for (const entry of missing){
+    const phone = phoneById.get(entry.rider_id);
+    if (!phone){ skipped++; continue; }
+    const { error } = await sb.from('roster_entries').update({ official_mobile: toLocalPhone(phone) }).eq('id', entry.id);
+    if (!error) filled++; else skipped++;
+  }
+  toast(`Filled ${filled} entries${skipped?`, ${skipped} skipped (no phone on file)`:''}`);
+  renderRoster();
+}
+
 async function renderRoster(){
   const main = document.getElementById('main-content');
   const canManage = isAdmin() || hasPermission('roster_manage');
@@ -4846,10 +4888,12 @@ async function renderRoster(){
     document.getElementById('topbar-actions').innerHTML = `
       ${canBulkAdd ? `<button class="btn outline" id="bulk-roster-btn">+ Bulk Add</button>` : ''}
       ${canBulkUpdate ? `<button class="btn outline" id="bulk-roster-update-btn">Bulk Update</button>` : ''}
+      ${isSuperAdmin() ? `<button class="btn outline" id="backfill-mobile-btn">Fill Missing Mobile Numbers</button>` : ''}
       ${canManage ? `<button class="btn" id="new-roster-btn">+ Add to Roster</button>` : ''}`;
     if (canManage) document.getElementById('new-roster-btn').onclick = () => openRosterModal(null);
     if (canBulkAdd) document.getElementById('bulk-roster-btn').onclick = openBulkRosterModal;
     if (canBulkUpdate) document.getElementById('bulk-roster-update-btn').onclick = openBulkUpdateRosterModal;
+    if (isSuperAdmin()) document.getElementById('backfill-mobile-btn').onclick = backfillRosterMobileNumbers;
   } else {
     document.getElementById('topbar-actions').innerHTML = '';
   }
@@ -5240,7 +5284,9 @@ EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
       }
       const { error } = await sb.from('roster_entries').insert({
         rider_id: rider.id, region_id: region.id, sub_region_id: subRegion?.id || null,
-        shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspotFinal, created_by: state.user.id
+        shift_id: shift?.id || null, day_off: dayOff || null, hotspot: hotspotFinal,
+        official_mobile: rider.phone ? toLocalPhone(rider.phone) : null,
+        created_by: state.user.id
       });
       rows.push({ empId, ok: !error, msg: error ? error.message : `Added — ${rider.full_name}` });
     }
@@ -5417,8 +5463,8 @@ function openModal(innerHtml){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'active-modal';
-  overlay.innerHTML = `<div class="modal"><button class="modal-close" onclick="closeModal()">✕</button>${innerHtml}</div>`;
-  overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+  overlay.innerHTML = `<div class="modal"><button class="modal-close" onclick="requestCloseModal()">✕</button>${innerHtml}</div>`;
+  overlay.onclick = (e) => { if (e.target === overlay) requestCloseModal(); };
   document.body.appendChild(overlay);
   // Focus the first text input in the modal so typing/shortcuts work immediately
   setTimeout(() => { overlay.querySelector('input,textarea,select')?.focus(); }, 30);
@@ -5426,6 +5472,18 @@ function openModal(innerHtml){
 function closeModal(){
   const m = document.getElementById('active-modal');
   if (m) m.remove();
+}
+// Used for accidental dismissal (outside click, X button, Esc) — if the
+// form has anything typed in it, confirm before discarding. Successful
+// saves call closeModal() directly and skip this, since that's intentional.
+function requestCloseModal(){
+  const m = document.getElementById('active-modal');
+  if (!m) return;
+  const fields = m.querySelectorAll('input[type="text"], input[type="tel"], input[type="email"], input[type="number"], input[type="date"], input[type="datetime-local"], textarea');
+  let hasContent = false;
+  fields.forEach(f => { if (f.value && f.value.trim()) hasContent = true; });
+  if (hasContent && !confirm("Discard what you've typed and close this form?")) return;
+  closeModal();
 }
 
 // Global keyboard shortcuts (see Settings > Keyboard Shortcuts for the full list)
@@ -5435,7 +5493,7 @@ window.addEventListener('keydown', (e) => {
 
   // Esc: close the topmost modal, or dismiss the newest toast if no modal is open
   if (e.key === 'Escape'){
-    if (document.getElementById('active-modal')){ closeModal(); return; }
+    if (document.getElementById('active-modal')){ requestCloseModal(); return; }
     const toasts = document.querySelectorAll('.toast');
     if (toasts.length) toasts[toasts.length-1].remove();
     return;
