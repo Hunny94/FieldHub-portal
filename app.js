@@ -118,6 +118,13 @@ async function applyBrandingSettings(){
       const authLeft = document.querySelector('.auth-left');
       if (authLeft) authLeft.style.backgroundImage = `linear-gradient(rgba(20,28,80,0.88), rgba(20,28,80,0.88)), url('${data.login_bg_url}')`;
     }
+    if (data.favicon_url){
+      document.querySelectorAll("link[rel~='icon']").forEach(l => l.remove());
+      const link = document.createElement('link');
+      link.rel = 'icon';
+      link.href = data.favicon_url;
+      document.head.appendChild(link);
+    }
   }catch(_e){ /* table may not exist yet if migration_6/7 hasn't run — fall back to defaults already in HTML */ }
 }
 
@@ -2810,6 +2817,8 @@ async function renderBrandingSettings(body){
     ${brandingImageRow('logo', 'Logo', b.logo_url)}
     ${brandingImageRow('sidebar_bg', 'Sidebar background', b.sidebar_bg_url)}
     ${brandingImageRow('login_bg', 'Sign-in page background', b.login_bg_url)}
+    ${brandingImageRow('favicon', 'Browser tab icon (favicon)', b.favicon_url)}
+    <p class="hint">For the favicon, use a small square image (ideally just an icon mark, no text) — it's shown at a tiny size in browser tabs, so anything with fine detail or text won't read clearly.</p>
   `;
   document.getElementById('brand-save-btn').onclick = async () => {
     const { error } = await sb.from('branding_settings').update({
@@ -2823,7 +2832,7 @@ async function renderBrandingSettings(body){
     toast('Saved');
   };
 
-  ['logo','sidebar_bg','login_bg'].forEach(key => {
+  ['logo','sidebar_bg','login_bg','favicon'].forEach(key => {
     const fileInput = document.getElementById(`brand-file-${key}`);
     const removeBtn = document.getElementById(`brand-remove-${key}`);
     fileInput.onchange = async () => {
@@ -3983,6 +3992,68 @@ async function renderTrashSettings(body){
   });
 }
 
+const TABLE_FRIENDLY_NAMES = {
+  profiles: "Every Team member & rider's profile",
+  circulars: "Circulars (announcements)",
+  circular_acks: "Who's acknowledged each circular",
+  circular_categories: "Circular category tags",
+  requests: "Rider requests",
+  request_updates: "Status-change history on requests",
+  request_routing_rules: "Auto-routing rules for requests",
+  tasks: "Internal tasks",
+  task_updates: "Status-change history on tasks",
+  categories: "Request Categories (Settings)",
+  category_region_overrides: "Per-region request routing overrides",
+  roster_entries: "Roster (who's working where)",
+  shift_types: "Shift Types (Settings)",
+  expiry_items: "Expiry Tracker entries",
+  expiry_item_types: "Expiry Item Types (Settings)",
+  tool_types: "Tool Types (Settings)",
+  tool_issuances: "Tool Issuance records",
+  tool_issuance_acks: "Rider receipt confirmations for tools",
+  disciplinary_actions: "Warnings issued",
+  warning_types: "Warning Types (Settings)",
+  compliance_submissions: "Compliance Tracker 'received' marks",
+  compliance_item_types: "Compliance Items (Settings)",
+  regions: "Regions",
+  sub_regions: "Sub-Regions / Cities",
+  hotspots: "Hotspots (Settings)",
+  profile_regions: "Multi-region assignments for staff",
+  custom_permissions: "Who's been granted which extra permission",
+  activity_log: "Activity Log (audit trail)",
+  knowledge_base_articles: "Knowledge Base articles",
+  resource_links: "Resource Links",
+  release_notes: "What's New posts",
+  home_notices: "Dashboard notice banner",
+  home_banner: "Dashboard picture banner",
+  popup_announcements: "Pop-up announcements",
+  popup_dismissals: "Who's dismissed which pop-up",
+  password_reset_requests: "Pending 'Forgot Password' requests",
+  system_settings: "Portal-wide settings (word limits, etc.) — always tiny",
+  branding_settings: "Logo / background / favicon settings",
+  users: "Supabase's internal login accounts list (not your own data)",
+  refresh_tokens: "Not passwords — small internal tokens that keep people signed in without re-entering their password. Pure technical housekeeping.",
+  sessions: "A record of who's currently logged in and from where. Internal housekeeping, not something you manage directly.",
+  identities: "Internal Supabase Auth housekeeping — not FieldHub data.",
+  audit_log_entries: "Supabase's own internal login audit trail (separate from FieldHub's own Activity Log).",
+  mfa_factors: "Internal Supabase Auth housekeeping (multi-factor login, unused here).",
+  mfa_challenges: "Internal Supabase Auth housekeeping (multi-factor login, unused here).",
+  mfa_amr_claims: "Internal Supabase Auth housekeeping (multi-factor login, unused here).",
+  flow_state: "Internal Supabase Auth housekeeping.",
+  one_time_tokens: "Internal Supabase Auth housekeeping (used briefly during password resets).",
+  sso_providers: "Internal Supabase Auth housekeeping (single sign-on, unused here).",
+  sso_domains: "Internal Supabase Auth housekeeping (single sign-on, unused here).",
+  saml_providers: "Internal Supabase Auth housekeeping (unused here).",
+  saml_relay_states: "Internal Supabase Auth housekeeping (unused here).",
+  instances: "Internal Supabase system table — always empty/tiny.",
+  schema_migrations: "Internal record of database setup history — always tiny.",
+  objects: "Supabase Storage's internal file index (separate from the File Storage total below).",
+  buckets: "Supabase Storage's list of storage buckets — always tiny."
+};
+function friendlyTableName(name){
+  return TABLE_FRIENDLY_NAMES[name] || "Not part of FieldHub's own data — a Supabase system table.";
+}
+
 async function renderStorageSettings(body){
   body.innerHTML = `<div class="mono">Calculating usage…</div>`;
   const DB_CEILING = 500 * 1024 * 1024;
@@ -4007,8 +4078,8 @@ async function renderStorageSettings(body){
         <div style="background:${dbPct>85?'var(--clay)':'var(--teal)'}; height:100%; width:${dbPct}%;"></div>
       </div>
       ${rpcError ? `<p class="hint">Couldn't read exact table sizes (${escapeHtml(rpcError.message)}). Run the get_storage_usage() function from Migration 11 first.</p>` : `
-      <table><thead><tr><th>Table</th><th>Rows</th><th>Size</th></tr></thead><tbody>
-        ${topTables.map(t=>`<tr><td>${escapeHtml(t.table_name)}</td><td class="mono">${t.row_count}</td><td class="mono">${formatBytes(Number(t.size_bytes))}</td></tr>`).join('')}
+      <table><thead><tr><th>Table</th><th>What this actually is</th><th>Rows</th><th>Size</th></tr></thead><tbody>
+        ${topTables.map(t=>`<tr><td class="mono">${escapeHtml(t.table_name)}</td><td>${escapeHtml(friendlyTableName(t.table_name))}</td><td class="mono">${t.row_count}</td><td class="mono">${formatBytes(Number(t.size_bytes))}</td></tr>`).join('')}
       </tbody></table>`}
     </div>
     <div class="card">
@@ -4016,7 +4087,7 @@ async function renderStorageSettings(body){
       <div style="background:var(--line); border-radius:6px; height:10px; overflow:hidden; margin:10px 0;">
         <div style="background:${storagePct>85?'var(--clay)':'var(--teal)'}; height:100%; width:${storagePct}%;"></div>
       </div>
-      <p class="hint">Branding bucket (logo, sidebar, Home Banner uploads, KB attachments if any). Static repo images (logo.jpg etc.) don't count here — those are free on GitHub Pages.</p>
+      <p class="hint">Branding bucket (logo, sidebar, favicon, Home Banner uploads, KB attachments if any). Static repo images (logo.jpg etc.) don't count here — those are free on GitHub Pages.</p>
       <table><thead><tr><th>File</th><th>Size</th></tr></thead><tbody>
         ${topFiles.map(f=>`<tr><td class="mono">${escapeHtml(f.path)}</td><td class="mono">${formatBytes(f.size)}</td></tr>`).join('') || '<tr><td colspan="2">No files found.</td></tr>'}
       </tbody></table>
