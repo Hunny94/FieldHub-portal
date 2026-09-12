@@ -1,11 +1,13 @@
 [
   {
-    "relation": ["delegate_permission/common.handle_all_urls"],
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
     "target": {
       "namespace": "android_app",
       "package_name": "io.github.hunny94.twa",
       "sha256_cert_fingerprints": [
-        "14:6D:E9:83:C5:73:9A:2B:..."
+        "21:ED:7C:D9:F6:6E:49:22:8C:09:F7:06:0A:9A:C3:BE:4D:DE:12:AD:B9:6A:E4:E7:C5:1E:4C:4D:85:CB:04:2A"
       ]
     }
   }
