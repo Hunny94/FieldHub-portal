@@ -670,11 +670,11 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes','hierarchy'],
-  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes','hierarchy'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes','hierarchy'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes','hierarchy'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
   inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes','hierarchy'],
   rider: ['dashboard','circulars','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes','hierarchy']
 };
@@ -697,14 +697,15 @@ const NAV_LABEL = {
   dashboard:'Dashboard', circulars:'Circulars', tasks:'Tasks', requests:'Requests',
   expiries:'Expiry Tracker', tools:'Tool Issuance', roster:'Roster', team:'Team', regions:'Regions', settings:'Settings',
   warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
-  compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors'
+  compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors',
+  fieldvisits:'Field Visit Reports'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
   { label: null, items: ['dashboard'] },
   { label: 'Operations', items: ['circulars','tasks','requests'] },
   { label: 'Inventory', items: ['expiries','tools'] },
-  { label: 'People', items: ['team','warnings','compliance','roster','hierarchy'] },
+  { label: 'People', items: ['team','warnings','compliance','roster','fieldvisits','hierarchy'] },
   { label: 'Knowledge', items: ['knowledgebase','resources','releasenotes'] },
   { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
 ];
@@ -787,6 +788,7 @@ async function navigateTo(view){
     else if (view==='roster') await renderRoster();
     else if (view==='releasenotes') await renderReleaseNotes();
     else if (view==='hierarchy') await renderHierarchy();
+    else if (view==='fieldvisits') await renderFieldVisits();
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -3795,7 +3797,8 @@ const GRANTABLE_PERMISSIONS = [
   ['roster_bulk_update', 'Roster — Bulk Update'],
   ['team_bulk_add', 'Team — Bulk Add Riders'],
   ['team_bulk_approve', 'Team — Bulk Approve pending members'],
-  ['hotspot_bulk_add', 'Hotspots — Bulk Add']
+  ['hotspot_bulk_add', 'Hotspots — Bulk Add'],
+  ['field_visit_manage', 'Field Visit Reports — Manager rights (manage checklist, edit any visit, resolve any issue, see all)']
 ];
 async function renderPermissionsSettings(body){
   await loadScopedProfiles();
@@ -4827,6 +4830,346 @@ async function renderActivityLog(){
 // HIERARCHY — read-only org chart so everyone can see their team
 // and supervisors, with contact info.
 // ---------------------------------------------------------
+// ---------------------------------------------------------
+// FIELD VISIT REPORTS — adapted from the standalone Home Sampling
+// Visit Report handover doc. Key adaptation: instead of a separate
+// "Team" login type with plain-text passwords, submitting a visit
+// uses the SAME FieldHub login as everyone else (Coordinator/Area
+// Incharge/Regional POC/Admin/Super Admin) — no parallel auth system.
+// The "Manager" role from the original doc maps to the
+// field_visit_manage permission (Admin/Super Admin have it always).
+// ---------------------------------------------------------
+let fieldVisitTab = 'new';
+function canManageFieldVisits(){ return isAdmin() || hasPermission('field_visit_manage'); }
+
+async function renderFieldVisits(){
+  const main = document.getElementById('main-content');
+  document.getElementById('topbar-actions').innerHTML = '';
+  const tabs = [
+    ['new', 'New Visit'],
+    ['history', canManageFieldVisits() ? 'All Visits' : 'My Visit History'],
+    ['issues', 'Issues'],
+    ...(canManageFieldVisits() ? [['checklist','Checklist']] : [])
+  ];
+  main.innerHTML = `<div class="tabs">
+    ${tabs.map(([k,label]) => `<button class="tab ${fieldVisitTab===k?'active':''}" data-fv-tab="${k}">${label}</button>`).join('')}
+  </div><div id="fv-body"></div>`;
+  main.querySelectorAll('[data-fv-tab]').forEach(btn => {
+    btn.onclick = () => { fieldVisitTab = btn.dataset.fvTab; renderFieldVisits(); };
+  });
+  const body = document.getElementById('fv-body');
+  if (fieldVisitTab === 'new') await renderNewVisitForm(body);
+  else if (fieldVisitTab === 'history') await renderVisitHistory(body);
+  else if (fieldVisitTab === 'issues') await renderVisitIssues(body);
+  else if (fieldVisitTab === 'checklist') await renderVisitChecklistSettings(body);
+}
+
+async function renderNewVisitForm(body){
+  await loadScopedProfiles();
+  const riders = state.profilesInScope.filter(p => p.role==='rider' && p.status==='active');
+  const { data: checkpoints } = await sb.from('visit_checkpoints').select('*').eq('active', true).order('category').order('sort_order');
+  if (!riders.length){ body.innerHTML = emptyState('No riders in your scope to submit a visit for.'); return; }
+  if (!checkpoints || !checkpoints.length){ body.innerHTML = emptyState('No checklist has been set up yet. Ask Super Admin to add checkpoints under the Checklist tab.'); return; }
+
+  const grouped = {};
+  checkpoints.forEach(c => { (grouped[c.category] ||= []).push(c); });
+
+  body.innerHTML = `
+    <div class="card">
+      <form id="new-visit-form">
+        <div class="two-col">
+          <div class="form-row"><label>Rider</label><select id="nv-rider" required>
+            <option value="">— Select rider —</option>
+            ${riders.map(r=>`<option value="${r.id}">${escapeHtml(r.full_name)}${r.employee_id?' ('+escapeHtml(r.employee_id)+')':''}</option>`).join('')}
+          </select></div>
+          <div class="form-row"><label>Visit type</label><select id="nv-type" required>
+            <option value="On Site">On Site</option>
+            <option value="Online">Online (video call)</option>
+          </select></div>
+        </div>
+        <div class="form-row"><label>Visit date</label><input type="date" id="nv-date" value="${new Date().toISOString().slice(0,10)}" required></div>
+        ${Object.entries(grouped).map(([category, items]) => `
+          <h3 style="margin-top:20px;">${escapeHtml(category)}</h3>
+          ${items.map(c => `
+            <div class="card" style="margin-bottom:8px; padding:12px;" data-checkpoint-row="${c.id}" data-weight="${c.weight}">
+              <div style="font-size:14px; margin-bottom:8px;">${escapeHtml(c.text)}</div>
+              <div style="display:flex; gap:16px; align-items:center;">
+                <label style="font-weight:400; display:flex; align-items:center; gap:6px;"><input type="radio" name="cp-${c.id}" value="OK" checked> OK</label>
+                <label style="font-weight:400; display:flex; align-items:center; gap:6px;"><input type="radio" name="cp-${c.id}" value="Issue"> Issue</label>
+              </div>
+              <div style="display:none; margin-top:8px;" class="issue-note-wrap">
+                <input type="text" class="issue-note-input" placeholder="What was observed?" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+              </div>
+            </div>
+          `).join('')}
+        `).join('')}
+        <button class="btn-primary" type="submit" style="margin-top:14px;">Submit Visit</button>
+      </form>
+    </div>`;
+
+  body.querySelectorAll('[data-checkpoint-row]').forEach(row => {
+    row.querySelectorAll(`input[type="radio"]`).forEach(radio => {
+      radio.onchange = () => {
+        row.querySelector('.issue-note-wrap').style.display = radio.value === 'Issue' && radio.checked ? 'block' : 'none';
+      };
+    });
+  });
+
+  document.getElementById('new-visit-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const riderId = document.getElementById('nv-rider').value;
+    const rider = riders.find(r=>r.id===riderId);
+    const rows = Array.from(body.querySelectorAll('[data-checkpoint-row]'));
+    const answers = rows.map(row => {
+      const checkpointId = row.dataset.checkpointRow;
+      const weight = parseFloat(row.dataset.weight);
+      const cp = checkpoints.find(c=>c.id===checkpointId);
+      const status = row.querySelector('input[type="radio"]:checked').value;
+      const issueObserved = status === 'Issue' ? row.querySelector('.issue-note-input').value.trim() : null;
+      return { checkpoint_id: checkpointId, category: cp.category, checkpoint_text: cp.text, weight, status, issue_observed: issueObserved };
+    });
+    const totalWeight = answers.reduce((s,a)=>s+a.weight, 0);
+    const okWeight = answers.filter(a=>a.status==='OK').reduce((s,a)=>s+a.weight, 0);
+    const score = totalWeight > 0 ? Math.round((okWeight / totalWeight) * 1000) / 10 : 0;
+    const okCount = answers.filter(a=>a.status==='OK').length;
+    const issueCount = answers.filter(a=>a.status==='Issue').length;
+
+    if (!confirm(`Submit this visit for ${rider.full_name}? Score: ${score}% (${okCount} OK, ${issueCount} Issue). This cannot be edited by you after submitting — only a Field Visit Manager can make corrections.`)) return;
+
+    const region = state.regions.find(r=>r.id===rider.region_id);
+    const { data: visit, error } = await sb.from('field_visits').insert({
+      rider_id: riderId, rider_name: rider.full_name, rider_employee_id: rider.employee_id || null,
+      region_id: rider.region_id || null, region_name: region?.name || null,
+      submitted_by: state.user.id,
+      visit_date: document.getElementById('nv-date').value,
+      visit_type: document.getElementById('nv-type').value,
+      score, ok_count: okCount, issue_count: issueCount
+    }).select().single();
+    if (error){ toast('Could not submit: ' + error.message); return; }
+
+    const { error: ansErr } = await sb.from('field_visit_answers').insert(
+      answers.map(a => ({ visit_id: visit.id, checkpoint_id: a.checkpoint_id, category: a.category, checkpoint_text: a.checkpoint_text, status: a.status, issue_observed: a.issue_observed }))
+    );
+    if (ansErr){ toast('Visit saved, but answers could not be saved: ' + ansErr.message); return; }
+
+    const issueRows = answers.filter(a=>a.status==='Issue').map(a => ({
+      visit_id: visit.id, rider_id: riderId, rider_name: rider.full_name,
+      region_id: rider.region_id || null, region_name: region?.name || null,
+      checkpoint_text: a.checkpoint_text, issue_observed: a.issue_observed, status: 'open'
+    }));
+    if (issueRows.length){ await sb.from('field_visit_issues').insert(issueRows); }
+
+    toast(`Visit submitted — score ${score}%`);
+    fieldVisitTab = 'history'; renderFieldVisits();
+  };
+}
+
+async function renderVisitHistory(body){
+  let query = sb.from('field_visits').select('*, submitter:profiles!submitted_by(full_name)').order('created_at', {ascending:false});
+  if (!canManageFieldVisits()) query = query.eq('submitted_by', state.user.id);
+  const { data: visits } = await query;
+  if (!visits || !visits.length){ body.innerHTML = emptyState('No visits recorded yet.'); return; }
+
+  const totalVisits = visits.length;
+  const onSite = visits.filter(v=>v.visit_type==='On Site').length;
+  const online = visits.filter(v=>v.visit_type==='Online').length;
+  const avgScore = (visits.reduce((s,v)=>s+Number(v.score||0),0) / totalVisits).toFixed(1);
+
+  body.innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px;">
+      <div class="card stat-card sky" style="padding:12px;"><div class="stat-number">${totalVisits}</div><div class="stat-label" style="font-size:12px;">Total Visits</div></div>
+      <div class="card stat-card clay" style="padding:12px;"><div class="stat-number">${onSite}</div><div class="stat-label" style="font-size:12px;">On Site</div></div>
+      <div class="card stat-card clay" style="padding:12px;"><div class="stat-number">${online}</div><div class="stat-label" style="font-size:12px;">Online</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${avgScore}%</div><div class="stat-label" style="font-size:12px;">Average Score</div></div>
+    </div>
+    <table><thead><tr><th>Rider</th><th>Region</th><th>Submitted by</th><th>Date</th><th>Type</th><th>Score</th><th>OK / Issue</th><th></th></tr></thead><tbody>
+      ${visits.map(v => `<tr>
+        <td>${escapeHtml(v.rider_name)}${v.rider_employee_id?' <span class="mono">('+escapeHtml(v.rider_employee_id)+')</span>':''}</td>
+        <td>${escapeHtml(v.region_name||'—')}</td>
+        <td>${escapeHtml(v.submitter?.full_name||'—')}</td>
+        <td class="mono">${v.visit_date}</td>
+        <td>${escapeHtml(v.visit_type||'—')}</td>
+        <td><span class="badge ${v.score>=80?'active':v.score>=50?'pending':'open'}">${v.score}%</span></td>
+        <td class="mono">${v.ok_count} / ${v.issue_count}</td>
+        <td><button class="btn small outline" data-view-visit="${v.id}">${canManageFieldVisits()?'View / Edit':'View'}</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+
+  body.querySelectorAll('[data-view-visit]').forEach(btn => {
+    btn.onclick = () => openVisitDetailModal(btn.dataset.viewVisit);
+  });
+}
+
+async function openVisitDetailModal(visitId){
+  const { data: visit } = await sb.from('field_visits').select('*, submitter:profiles!submitted_by(full_name)').eq('id', visitId).single();
+  const { data: answers } = await sb.from('field_visit_answers').select('*').eq('visit_id', visitId).order('category');
+  const canEdit = canManageFieldVisits();
+  const grouped = {};
+  (answers||[]).forEach(a => { (grouped[a.category] ||= []).push(a); });
+
+  openModal(`
+    <h2>Visit: ${escapeHtml(visit.rider_name)}</h2>
+    <p class="mono" style="margin-bottom:14px;">${visit.visit_date} · ${escapeHtml(visit.visit_type||'—')} · Submitted by ${escapeHtml(visit.submitter?.full_name||'—')} · Score: <strong>${visit.score}%</strong></p>
+    <form id="visit-detail-form">
+      ${Object.entries(grouped).map(([category, items]) => `
+        <h3 style="margin-top:16px;">${escapeHtml(category)}</h3>
+        ${items.map(a => `
+          <div class="card" style="margin-bottom:8px; padding:12px;" data-answer-row="${a.id}">
+            <div style="font-size:14px; margin-bottom:8px;">${escapeHtml(a.checkpoint_text)}</div>
+            <div style="display:flex; gap:16px; align-items:center;">
+              <label style="font-weight:400; display:flex; align-items:center; gap:6px;"><input type="radio" name="ans-${a.id}" value="OK" ${a.status==='OK'?'checked':''} ${canEdit?'':'disabled'}> OK</label>
+              <label style="font-weight:400; display:flex; align-items:center; gap:6px;"><input type="radio" name="ans-${a.id}" value="Issue" ${a.status==='Issue'?'checked':''} ${canEdit?'':'disabled'}> Issue</label>
+            </div>
+            <div class="issue-note-wrap" style="margin-top:8px; ${a.status==='Issue'?'':'display:none;'}">
+              <input type="text" class="issue-note-input" value="${escapeHtml(a.issue_observed||'')}" placeholder="What was observed?" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px;" ${canEdit?'':'disabled'}>
+            </div>
+          </div>
+        `).join('')}
+      `).join('')}
+      ${canEdit ? `<button class="btn-primary" type="submit" style="margin-top:12px;">Save Corrections</button>` : ''}
+    </form>
+  `);
+
+  if (canEdit){
+    document.querySelectorAll('[data-answer-row]').forEach(row => {
+      row.querySelectorAll('input[type="radio"]').forEach(radio => {
+        radio.onchange = () => { row.querySelector('.issue-note-wrap').style.display = radio.value==='Issue' && radio.checked ? 'block' : 'none'; };
+      });
+    });
+    document.getElementById('visit-detail-form').onsubmit = async (e) => {
+      e.preventDefault();
+      if (!confirm('Save these corrections? This updates the official visit record.')) return;
+      const rows = Array.from(document.querySelectorAll('[data-answer-row]'));
+      const updated = rows.map(row => {
+        const status = row.querySelector('input[type="radio"]:checked').value;
+        return { id: row.dataset.answerRow, status, issue_observed: status==='Issue' ? row.querySelector('.issue-note-input').value.trim() : null };
+      });
+      for (const u of updated){
+        await sb.from('field_visit_answers').update({ status: u.status, issue_observed: u.issue_observed }).eq('id', u.id);
+      }
+      const okCount = updated.filter(u=>u.status==='OK').length;
+      const issueCount = updated.filter(u=>u.status==='Issue').length;
+      // Recompute weighted score from the checkpoints' original weights
+      const { data: freshAnswers } = await sb.from('field_visit_answers').select('*, visit_checkpoints(weight)').eq('visit_id', visitId);
+      const totalWeight = (freshAnswers||[]).reduce((s,a)=>s + Number(a.visit_checkpoints?.weight||0), 0);
+      const okWeight = (freshAnswers||[]).filter(a=>a.status==='OK').reduce((s,a)=>s + Number(a.visit_checkpoints?.weight||0), 0);
+      const score = totalWeight > 0 ? Math.round((okWeight/totalWeight)*1000)/10 : 0;
+      await sb.from('field_visits').update({ score, ok_count: okCount, issue_count: issueCount }).eq('id', visitId);
+
+      // Sync issues: remove resolved-by-correction issues isn't attempted here to
+      // avoid clobbering manually-resolved status; new Issue answers get a fresh
+      // open issue row if one doesn't already exist for that checkpoint.
+      for (const u of updated){
+        if (u.status === 'Issue'){
+          const ans = (freshAnswers||[]).find(a=>a.id===u.id);
+          const { data: existingIssue } = await sb.from('field_visit_issues').select('id').eq('visit_id', visitId).eq('checkpoint_text', ans?.checkpoint_text||'').maybeSingle();
+          if (!existingIssue){
+            await sb.from('field_visit_issues').insert({
+              visit_id: visitId, rider_id: visit.rider_id, rider_name: visit.rider_name,
+              region_id: visit.region_id, region_name: visit.region_name,
+              checkpoint_text: ans?.checkpoint_text||'', issue_observed: u.issue_observed, status: 'open'
+            });
+          }
+        }
+      }
+      closeModal(); toast('Visit updated'); renderFieldVisits();
+    };
+  }
+}
+
+async function renderVisitIssues(body){
+  let query = sb.from('field_visit_issues').select('*').order('created_at', {ascending:false});
+  if (!canManageFieldVisits()) query = query.in('visit_id',
+    (await sb.from('field_visits').select('id').eq('submitted_by', state.user.id)).data?.map(v=>v.id) || ['00000000-0000-0000-0000-000000000000']
+  );
+  const { data: issues } = await query;
+  if (!issues || !issues.length){ body.innerHTML = emptyState('No issues recorded.'); return; }
+
+  const open = issues.filter(i=>i.status==='open');
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">${open.length} open issue(s).</p>
+    <table><thead><tr><th>Rider</th><th>Region</th><th>Checkpoint</th><th>Observed</th><th>Status</th><th></th></tr></thead><tbody>
+      ${issues.map(i => `<tr>
+        <td>${escapeHtml(i.rider_name)}</td>
+        <td>${escapeHtml(i.region_name||'—')}</td>
+        <td>${escapeHtml(i.checkpoint_text)}</td>
+        <td>${escapeHtml(i.issue_observed||'—')}</td>
+        <td><span class="badge ${i.status==='open'?'open':'active'}">${i.status}</span></td>
+        <td>${i.status==='open' ? `<button class="btn small outline" data-resolve-issue="${i.id}">Resolve</button>` : ''}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+
+  body.querySelectorAll('[data-resolve-issue]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Mark this issue as resolved?')) return;
+      const { error } = await sb.from('field_visit_issues').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', btn.dataset.resolveIssue);
+      if (error){ toast('Could not resolve: ' + error.message); return; }
+      toast('Resolved'); renderVisitIssues(body);
+    };
+  });
+}
+
+async function renderVisitChecklistSettings(body){
+  const { data: checkpoints } = await sb.from('visit_checkpoints').select('*').order('category').order('sort_order');
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">This is the checklist riders' home visits are scored against. Inactive checkpoints are hidden from new visit forms, but past visits that used them are untouched.</p>
+    <button class="btn small" id="new-checkpoint-btn" style="margin-bottom:14px;">+ Add Checkpoint</button>
+    <table><thead><tr><th>Category</th><th>Checkpoint</th><th>Weight</th><th>Order</th><th>Status</th><th></th></tr></thead><tbody>
+      ${(checkpoints||[]).map(c=>`<tr>
+        <td>${escapeHtml(c.category)}</td>
+        <td>${escapeHtml(c.text)}</td>
+        <td class="mono">${c.weight}</td>
+        <td class="mono">${c.sort_order}</td>
+        <td><span class="badge ${c.active?'active':'closed'}">${c.active?'Active':'Inactive'}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn small outline" data-edit-checkpoint="${c.id}">Edit</button>
+          <button class="btn small outline" data-toggle-checkpoint="${c.id}" data-active="${c.active}">${c.active?'Disable':'Enable'}</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="6">No checkpoints yet.</td></tr>'}
+    </tbody></table>`;
+
+  document.getElementById('new-checkpoint-btn').onclick = () => openCheckpointModal(null);
+  body.querySelectorAll('[data-edit-checkpoint]').forEach(btn => {
+    btn.onclick = () => openCheckpointModal((checkpoints||[]).find(c=>c.id===btn.dataset.editCheckpoint));
+  });
+  body.querySelectorAll('[data-toggle-checkpoint]').forEach(btn => {
+    btn.onclick = async () => {
+      await sb.from('visit_checkpoints').update({ active: btn.dataset.active !== 'true' }).eq('id', btn.dataset.toggleCheckpoint);
+      renderFieldVisits();
+    };
+  });
+}
+
+function openCheckpointModal(cp){
+  openModal(`
+    <h2>${cp?'Edit':'Add'} checkpoint</h2>
+    <form id="checkpoint-form">
+      <div class="form-row"><label>Category</label><input type="text" id="cp-category" value="${cp?escapeHtml(cp.category):''}" required placeholder="e.g. Sample Handling"></div>
+      <div class="form-row"><label>Checklist question</label><textarea id="cp-text" required>${cp?escapeHtml(cp.text):''}</textarea></div>
+      <div class="two-col">
+        <div class="form-row"><label>Weight</label><input type="number" id="cp-weight" min="1" value="${cp?.weight ?? 1}" required></div>
+        <div class="form-row"><label>Sort order</label><input type="number" id="cp-order" min="0" value="${cp?.sort_order ?? 0}" required></div>
+      </div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>
+  `);
+  document.getElementById('checkpoint-form').onsubmit = async (e) => {
+    e.preventDefault();
+    if (!confirm('Save this checkpoint? Changing weight/wording only affects future visits, not past scored ones.')) return;
+    const payload = {
+      category: document.getElementById('cp-category').value.trim(),
+      text: document.getElementById('cp-text').value.trim(),
+      weight: parseInt(document.getElementById('cp-weight').value, 10),
+      sort_order: parseInt(document.getElementById('cp-order').value, 10)
+    };
+    const { error } = cp
+      ? await sb.from('visit_checkpoints').update(payload).eq('id', cp.id)
+      : await sb.from('visit_checkpoints').insert(payload);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); renderFieldVisits();
+  };
+}
+
 async function renderHierarchy(){
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
