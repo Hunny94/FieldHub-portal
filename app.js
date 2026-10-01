@@ -3552,31 +3552,88 @@ async function renderDesignationsSettings(body){
     body.innerHTML = `<p class="hint">Could not load designations: ${escapeHtml(error.message)}. Please make sure <strong>migration_25.sql</strong> has been run in Supabase.</p>`;
     return;
   }
-  const { data: used } = await sb.from('profiles').select('designation_id').not('designation_id','is',null);
-  const counts = {};
-  (used||[]).forEach(r => { counts[r.designation_id] = (counts[r.designation_id]||0) + 1; });
+  // People counts. Everyone is counted exactly once, in ONE bucket:
+  // Pending -> Pending; otherwise if their latest Roster entry is Resigned/Terminated/
+  // Transferred -> that bucket; otherwise Active (login on) or Disabled/Other.
+  const [{ data: allProfiles }, { data: allRoster }] = await Promise.all([
+    sb.from('profiles').select('id, role, status, designation_id').limit(5000),
+    sb.from('roster_entries').select('rider_id, status, removal_reason, created_at').order('created_at', {ascending:false}).limit(5000)
+  ]);
+  const latestRoster = new Map();
+  (allRoster||[]).forEach(r => { if (!latestRoster.has(r.rider_id)) latestRoster.set(r.rider_id, r); });
+  const bucketOf = (p) => {
+    if (p.status === 'pending') return 'pending';
+    const r = latestRoster.get(p.id);
+    if (r && r.status === 'removed'){
+      const k = (r.removal_reason||'').toLowerCase();
+      if (k.startsWith('resign')) return 'resigned';
+      if (k.startsWith('terminat')) return 'terminated';
+      if (k.startsWith('transfer')) return 'transferred';
+      return 'disabled';
+    }
+    return p.status === 'active' ? 'active' : 'disabled';
+  };
+  // People who never picked a designation count under the designation named after their role
+  const defaultDesigForRole = {};
+  desigs.forEach(d => {
+    if (d.name.trim().toLowerCase() === (ROLE_LABEL[d.base_role]||'').toLowerCase() && !defaultDesigForRole[d.base_role]) defaultDesigForRole[d.base_role] = d.id;
+  });
+  const rowKeyOf = (p) => {
+    const d = desigs.find(x => x.id === p.designation_id);
+    if (d && d.base_role === p.role) return d.id;
+    return defaultDesigForRole[p.role] || ('role:' + p.role);
+  };
+  const emptyRow = () => ({ total:0, active:0, pending:0, disabled:0, resigned:0, terminated:0, transferred:0 });
+  const rowStats = {};
+  const counts = {};   // people who explicitly have this designation saved (used to lock role / block delete)
+  const grandStats = emptyRow();
+  (allProfiles||[]).forEach(p => {
+    const key = rowKeyOf(p);
+    if (!rowStats[key]) rowStats[key] = emptyRow();
+    const b = bucketOf(p);
+    rowStats[key].total++; rowStats[key][b]++;
+    grandStats.total++; grandStats[b]++;
+    if (p.designation_id) counts[p.designation_id] = (counts[p.designation_id]||0) + 1;
+  });
+  const extraRoleKeys = Object.keys(rowStats).filter(k => k.startsWith('role:'));
+  const statCells = (s) => `<td class="mono"><strong>${s.total}</strong></td><td class="mono">${s.active}</td><td class="mono">${s.pending}</td><td class="mono">${s.disabled}</td><td class="mono">${s.resigned}</td><td class="mono">${s.terminated}</td><td class="mono">${s.transferred}</td>`;
 
   const roleOptionsHtml = (sel) => DESIGNATION_BASE_ROLES.map(r => `<option value="${r}" ${sel===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('');
   body.innerHTML = `
-    <p class="hint" style="margin-bottom:14px;">A designation is the job title people choose at sign-up and see across the portal (e.g. <em>Trainee Rider</em>). Each one <strong>works like</strong> one of the existing roles — that decides its permissions, menus and access, so a Trainee Rider can do exactly what a Rider can. <strong>Disable</strong> hides a designation from new sign-ups without affecting people who already have it. <strong>Delete</strong> is only possible when nobody is using it.</p>
+    <p class="hint" style="margin-bottom:14px;">A designation is the job title people choose at sign-up and see across the portal (e.g. <em>Trainee Rider</em>). Each one <strong>works like</strong> one of the existing roles — that decides its permissions, menus and access, so a Trainee Rider can do exactly what a Rider can. <strong>Disable</strong> hides a designation from new sign-ups without affecting people who already have it. <strong>Delete</strong> is only possible when nobody is counted under it.</p>
     <form id="new-desig-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
       <input type="text" id="desig-name" placeholder="Designation name, e.g. Trainee Rider" required style="flex:1; min-width:200px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <select id="desig-role" title="Works like">${roleOptionsHtml('rider')}</select>
       <button class="btn small" type="submit">Add</button>
     </form>
-    <table><thead><tr><th>Designation</th><th>Works like</th><th>People</th><th>Status</th><th></th></tr></thead><tbody>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px;">
+      <div class="card stat-card sky" style="padding:12px;"><div class="stat-number">${grandStats.total}</div><div class="stat-label" style="font-size:12px;">Total People</div></div>
+      <div class="card stat-card clay" style="padding:12px;"><div class="stat-number">${grandStats.active}</div><div class="stat-label" style="font-size:12px;">Active</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.pending}</div><div class="stat-label" style="font-size:12px;">Pending Approval</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.resigned}</div><div class="stat-label" style="font-size:12px;">Resigned</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.terminated}</div><div class="stat-label" style="font-size:12px;">Terminated</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.transferred}</div><div class="stat-label" style="font-size:12px;">Transferred</div></div>
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.disabled}</div><div class="stat-label" style="font-size:12px;">Disabled / Other</div></div>
+    </div>
+    <div style="overflow-x:auto;"><table><thead><tr><th>Designation</th><th>Works like</th><th>People</th><th>Active</th><th>Pending</th><th>Disabled / Other</th><th>Resigned</th><th>Terminated</th><th>Transferred</th><th>Status</th><th></th></tr></thead><tbody>
       ${(desigs||[]).map(d => `<tr>
         <td><strong>${escapeHtml(d.name)}</strong></td>
         <td>${ROLE_LABEL[d.base_role]||d.base_role}</td>
-        <td>${counts[d.id]||0}</td>
+        ${statCells(rowStats[d.id] || emptyRow())}
         <td><span class="badge ${d.active?'active':'closed'}">${d.active?'Active':'Disabled'}</span></td>
         <td style="white-space:nowrap;">
           <button class="btn small outline" data-edit-desig="${d.id}">Edit</button>
           <button class="btn small outline" data-toggle-desig="${d.id}">${d.active?'Disable':'Enable'}</button>
           <button class="btn small danger" data-delete-desig="${d.id}">Delete</button>
         </td>
-      </tr>`).join('') || '<tr><td colspan="5">No designations yet.</td></tr>'}
-    </tbody></table>`;
+      </tr>`).join('') || '<tr><td colspan="11">No designations yet.</td></tr>'}
+      ${extraRoleKeys.map(k => `<tr style="color:var(--muted);">
+        <td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td><td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td>
+        ${statCells(rowStats[k])}<td colspan="2"><span class="hint">Role only (no designation)</span></td>
+      </tr>`).join('')}
+      <tr style="font-weight:700; border-top:2px solid var(--line);"><td>Grand Total</td><td></td>${statCells(grandStats)}<td colspan="2"></td></tr>
+    </tbody></table></div>
+    <p class="hint" style="margin-top:10px;">Each person is counted once. <strong>Resigned / Terminated / Transferred</strong> come from their latest Roster entry; <strong>Disabled / Other</strong> are people whose login is off for any other reason. People who never chose a designation are counted under the designation named after their role (e.g. Rider).</p>`;
 
   const refresh = async () => { await loadDesignations(); renderSettings(); };
   const friendly = (err, verb) => (err.code === '23505')
@@ -3626,8 +3683,9 @@ async function renderDesignationsSettings(body){
 
   body.querySelectorAll('[data-delete-desig]').forEach(btn => btn.onclick = async () => {
     const d = desigs.find(x => x.id === btn.dataset.deleteDesig);
-    if ((counts[d.id]||0) > 0){
-      toast(`Cannot delete "${d.name}" — ${counts[d.id]} ${counts[d.id]===1?'person is':'people are'} using it. Disable it instead, or change those people's designation first.`);
+    const inUseCount = Math.max(counts[d.id]||0, (rowStats[d.id]||{}).total||0);
+    if (inUseCount > 0){
+      toast(`Cannot delete "${d.name}" — ${inUseCount} ${inUseCount===1?'person is':'people are'} using it. Disable it instead, or change those people's designation first.`);
       return;
     }
     if (!confirm(`Permanently delete the designation "${d.name}"? This cannot be undone.`)) return;
@@ -5469,7 +5527,7 @@ async function renderRoster(){
   } else {
     document.getElementById('topbar-actions').innerHTML = '';
   }
-  let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id, status), regions(name), sub_regions(name), shift_types(name)');
+  let query = sb.from('roster_entries').select('*, profiles!rider_id(full_name, employee_id, status, role, designation_id), regions(name), sub_regions(name), shift_types(name)');
   if (state.profile.role === 'rider') query = query.eq('rider_id', state.user.id);
   const { data: entries } = await query.order('created_at', {ascending:false});
 
@@ -5490,17 +5548,41 @@ async function renderRoster(){
   const dayOffs = [...new Set(entries.map(e=>e.day_off).filter(Boolean))];
   const reasons = [...new Set(entries.filter(e=>e.status==='removed').map(e=>e.removal_reason).filter(Boolean))];
 
+  // Designation (e.g. Rider / Trainee Rider) of the person on each roster entry
+  const entryDesig = (e) => e.profiles ? designationLabel(e.profiles) : '—';
+  const desigOrder = (state.designations||[]).map(d => d.name);
+  const desigLabels = [...new Set([
+    ...entries.map(entryDesig).filter(l => l !== '—'),
+    ...(state.designations||[]).filter(d => d.base_role === 'rider' && d.active).map(d => d.name)
+  ])].sort((a,b) => {
+    const ia = desigOrder.indexOf(a), ib = desigOrder.indexOf(b);
+    return (ia<0?999:ia) - (ib<0?999:ib) || a.localeCompare(b);
+  });
+
   const regionCounts = {};
   entries.forEach(e => {
     const name = e.regions?.name || 'Unknown';
-    if (!regionCounts[name]) regionCounts[name] = { total:0, working:0 };
+    if (!regionCounts[name]) regionCounts[name] = { total:0, working:0, byDesig:{} };
     regionCounts[name].total++;
-    if (e.status !== 'removed') regionCounts[name].working++;
+    if (e.status !== 'removed'){
+      regionCounts[name].working++;
+      const l = entryDesig(e);
+      regionCounts[name].byDesig[l] = (regionCounts[name].byDesig[l]||0) + 1;
+    }
+  });
+  // Grand totals row for the Region-wise counts table
+  const grand = { total:0, working:0, headcount:0, byDesig:{} };
+  Object.entries(regionCounts).forEach(([name,c]) => {
+    grand.total += c.total; grand.working += c.working;
+    const hc = state.regions.find(r=>r.name===name)?.approved_headcount;
+    if (typeof hc === 'number') grand.headcount += hc;
+    desigLabels.forEach(l => { grand.byDesig[l] = (grand.byDesig[l]||0) + (c.byDesig[l]||0); });
   });
 
-  const renderRows = (list) => list.length ? `<table><thead><tr><th>Rider</th><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Shift</th><th>Day Off</th><th>Official Mobile</th><th>Personal Mobile</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
+  const renderRows = (list) => list.length ? `<table><thead><tr><th>Rider</th><th>Designation</th><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Shift</th><th>Day Off</th><th>Official Mobile</th><th>Personal Mobile</th><th>Status</th>${canManage?'<th></th>':''}</tr></thead><tbody>
     ${list.map(e => `<tr>
       <td>${escapeHtml(e.profiles?.full_name||'—')}<div class="mono">${escapeHtml(e.profiles?.employee_id||'')}</div></td>
+      <td>${escapeHtml(entryDesig(e))}</td>
       <td>${escapeHtml(e.regions?.name||'—')}</td>
       <td>${escapeHtml(e.sub_regions?.name||'—')}</td>
       <td>${escapeHtml(e.hotspot||'—')}</td>
@@ -5537,10 +5619,15 @@ async function renderRoster(){
     const active = list.filter(e=>e.status!=='removed').length;
     const replacementPending = list.filter(e=>e.status==='removed' && e.replacement_pending).length;
     return `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px;">
-      <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer; padding:12px;"><div class="stat-number">${total}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Total Riders</div></div>
+      <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer; padding:12px;"><div class="stat-number">${total}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${desigLabels.length > 1 ? 'Total (All)' : 'Total Riders'}</div></div>
       <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer; padding:12px;"><div class="stat-number">${active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Approved / Working</div></div>
       <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer; padding:12px;"><div class="stat-number">${total-active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Resigned/Terminated/Transferred</div></div>
       <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer; padding:12px;"><div class="stat-number">${replacementPending}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Replacement Needed</div></div>
+      ${desigLabels.map(l => {
+        const mine = list.filter(e => entryDesig(e) === l);
+        const w = mine.filter(e => e.status !== 'removed').length;
+        return `<div class="card stat-card sky" data-desig-filter="${escapeHtml(l)}" style="cursor:pointer; padding:12px;"><div class="stat-number">${mine.length}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${escapeHtml(/s$/i.test(l) ? l : l + 's')}<br><span style="opacity:.8;">${w} working</span></div></div>`;
+      }).join('')}
     </div>`;
   };
 
@@ -5549,15 +5636,17 @@ async function renderRoster(){
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <details style="margin-bottom:14px;">
       <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Region-wise counts ▾</summary>
-      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th><th>Approved Headcount</th></tr></thead><tbody>
+      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th>${desigLabels.map(l=>`<th>${escapeHtml(l)} (Working)</th>`).join('')}<th>Approved Headcount</th></tr></thead><tbody>
         ${Object.entries(regionCounts).map(([name,c]) => {
           const region = state.regions.find(r=>r.name===name);
-          return `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td><td class="mono">${region?.approved_headcount ?? '—'}</td></tr>`;
+          return `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td>${desigLabels.map(l=>`<td class="mono">${c.byDesig[l]||0}</td>`).join('')}<td class="mono">${region?.approved_headcount ?? '—'}</td></tr>`;
         }).join('')}
+        <tr style="font-weight:700; border-top:2px solid var(--line); background:var(--bg, #f5f6fa);"><td>Grand Total</td><td class="mono">${grand.total}</td><td class="mono">${grand.working}</td>${desigLabels.map(l=>`<td class="mono">${grand.byDesig[l]||0}</td>`).join('')}<td class="mono">${grand.headcount}</td></tr>
       </tbody></table>
     </details>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
       <select id="rf-region"><option value="">All Regions</option>${state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
+      <select id="rf-designation"><option value="">All Designations</option>${desigLabels.map(l=>`<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')}</select>
       <select id="rf-shift"><option value="">All Shifts</option>${shiftNames.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select>
       <select id="rf-dayoff"><option value="">All Day-Offs</option>${dayOffs.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}</select>
       <select id="rf-status"><option value="">All Statuses</option><option value="active">Approved / Working</option><option value="removed">Resigned/Terminated/Transferred</option></select>
@@ -5571,7 +5660,7 @@ async function renderRoster(){
     <div id="roster-list">${renderRows(entries)}</div>`;
 
   const toCsvRows = (list) => list.map(e => ({
-    Rider: e.profiles?.full_name||'', 'Employee ID': e.profiles?.employee_id||'',
+    Rider: e.profiles?.full_name||'', 'Employee ID': e.profiles?.employee_id||'', Designation: entryDesig(e),
     Region: e.regions?.name||'', 'Sub-Region': e.sub_regions?.name||'', Hotspot: e.hotspot||'',
     Shift: e.shift_types?.name||'', 'Day Off': e.day_off||'',
     'Official Mobile': toLocalPhone(e.official_mobile)||e.official_mobile||'', 'Personal Mobile': toLocalPhone(e.personal_mobile)||e.personal_mobile||'',
@@ -5588,6 +5677,7 @@ async function renderRoster(){
 
   const applyFilters = () => {
     const region = document.getElementById('rf-region').value;
+    const desig = document.getElementById('rf-designation').value;
     const shift = document.getElementById('rf-shift').value;
     const dayOff = document.getElementById('rf-dayoff').value;
     const status = document.getElementById('rf-status').value;
@@ -5595,6 +5685,7 @@ async function renderRoster(){
     const q = document.getElementById('rf-search').value.toLowerCase();
     const filtered = entries.filter(e =>
       (!region || e.region_id === region) &&
+      (!desig || entryDesig(e) === desig) &&
       (!shift || e.shift_types?.name === shift) &&
       (!dayOff || e.day_off === dayOff) &&
       (!status || (status==='removed' ? e.status==='removed' : e.status!=='removed')) &&
@@ -5607,16 +5698,24 @@ async function renderRoster(){
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
   };
-  ['rf-region','rf-shift','rf-dayoff','rf-status','rf-reason'].forEach(id => {
+  ['rf-region','rf-designation','rf-shift','rf-dayoff','rf-status','rf-reason'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.onchange = applyFilters;
   });
   document.getElementById('rf-search').oninput = applyFilters;
 
   function bindStatClicks(){
+    document.querySelectorAll('[data-desig-filter]').forEach(card => {
+      card.onclick = () => {
+        document.getElementById('rf-designation').value = card.dataset.desigFilter;
+        applyFilters();
+        document.getElementById('roster-list').scrollIntoView({behavior:'smooth', block:'start'});
+      };
+    });
     document.querySelectorAll('[data-stat-filter]').forEach(card => {
       card.onclick = () => {
         const which = card.dataset.statFilter;
+        if (which === '') document.getElementById('rf-designation').value = '';
         document.getElementById('rf-status').value = which === 'replacement' ? 'removed' : which;
         if (document.getElementById('rf-reason')) document.getElementById('rf-reason').value = '';
         applyFilters();
