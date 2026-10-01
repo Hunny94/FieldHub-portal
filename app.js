@@ -5531,6 +5531,30 @@ async function backfillRosterMobileNumbers(){
   renderRoster();
 }
 
+// Counts the Roster summary numbers up (first draw) or from their previous value (after a filter change).
+function tweenRosterStats(initial){
+  const el = document.getElementById('roster-stats');
+  if (!el) return;
+  const nums = [...el.querySelectorAll('.stat-number')];
+  const next = nums.map(n => parseInt(n.textContent, 10) || 0);
+  const prev = state._rosterStatPrev || [];
+  state._rosterStatPrev = next;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  nums.forEach((n, i) => {
+    const from = initial ? 0 : (prev[i] ?? next[i]);
+    const to = next[i];
+    if (from === to) return;
+    const t0 = performance.now(), dur = 550;
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / dur);
+      n.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - p, 3)));
+      if (p < 1 && n.isConnected) requestAnimationFrame(step); else n.textContent = to;
+    };
+    n.textContent = from;
+    requestAnimationFrame(step);
+  });
+}
+
 async function renderRoster(){
   const main = document.getElementById('main-content');
   const canManage = isAdmin() || hasPermission('roster_manage');
@@ -5665,12 +5689,35 @@ async function renderRoster(){
 
   main.innerHTML = `
     <style>
-      #roster-stats { position: sticky; top: 0; z-index: 30; padding: 8px 0 6px; }
-      .roster-stat-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(118px, 1fr); gap: 8px; overflow-x: auto; }
-      .roster-stat-row .stat-card { padding: 8px 10px !important; min-width: 0; }
-      .roster-stat-row .stat-number { font-size: 22px !important; line-height: 1.1; }
-      .roster-stat-row .stat-label { font-size: 11px !important; line-height: 1.25; }
+      /* Frozen summary bar. The colour "bleed" (box-shadow + clip-path) makes the bar's background
+         stretch the full width of the page, so wide table content can never show beside it. */
+      #roster-stats { position: sticky; top: 0; z-index: 30; padding: 10px 0 12px;
+        box-shadow: 0 0 0 100vmax var(--rs-bg, #f4f6fb); clip-path: inset(0 -100vmax -1px 0); }
+      #roster-stats.stuck { box-shadow: 0 0 0 100vmax var(--rs-bg, #f4f6fb), 0 1px 0 100vmax rgba(30,42,110,.16); }
+      .roster-stat-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(130px, 1fr); gap: 10px; overflow-x: auto; padding: 4px 2px 6px; scrollbar-width: thin; }
+      .roster-stat-row .stat-card { min-width: 0; padding: 9px 12px !important; background: #fff; border: 1px solid rgba(30,42,110,.10);
+        border-left: 4px solid #3f7399; border-radius: 12px; box-shadow: 0 1px 2px rgba(30,42,110,.06);
+        transition: transform .16s ease, box-shadow .16s ease; }
+      .roster-stat-row .stat-card.clay  { border-left-color: #c0532f; }
+      .roster-stat-row .stat-card.amber { border-left-color: #d9962b; }
+      .roster-stat-row .stat-card[data-stat-filter]:hover, .roster-stat-row .stat-card[data-desig-filter]:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(30,42,110,.14); }
+      .roster-stat-row .stat-number { font-size: 24px !important; line-height: 1.1; font-variant-numeric: tabular-nums; }
+      .roster-stat-row .stat-label { font-size: 11.5px !important; line-height: 1.3; }
+      @keyframes rsIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+      #roster-stats.intro .stat-card { animation: rsIn .5s cubic-bezier(.2,.7,.2,1) both; }
+      #roster-stats.intro .stat-card:nth-child(2) { animation-delay: .06s; }
+      #roster-stats.intro .stat-card:nth-child(3) { animation-delay: .12s; }
+      #roster-stats.intro .stat-card:nth-child(4) { animation-delay: .18s; }
+      #roster-stats.intro .stat-card:nth-child(5) { animation-delay: .24s; }
+      #roster-stats.intro .stat-card:nth-child(6) { animation-delay: .30s; }
+      #roster-stats.intro .stat-card:nth-child(7) { animation-delay: .36s; }
+      #roster-stats.intro .stat-card:nth-child(8) { animation-delay: .42s; }
+      @media (prefers-reduced-motion: reduce) {
+        #roster-stats.intro .stat-card { animation: none; }
+        .roster-stat-row .stat-card { transition: none; }
+      }
     </style>
+    <div id="roster-stats-sentinel" style="height:1px; margin-bottom:-1px;"></div>
     <div id="roster-stats">${renderStats(entries)}</div>
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <details style="margin-bottom:14px;">
@@ -5736,6 +5783,7 @@ async function renderRoster(){
     );
     currentFiltered = filtered;
     document.getElementById('roster-stats').innerHTML = renderStats(filtered);
+    tweenRosterStats(false);
     bindStatClicks();
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
@@ -5756,10 +5804,22 @@ async function renderRoster(){
       n = n.parentElement;
     }
     el.style.background = bg || '#f4f6fb';
+    el.style.setProperty('--rs-bg', bg || '#f4f6fb');
     const tb = document.querySelector('.topbar');
     let off = 0;
     if (tb){ const pos = getComputedStyle(tb).position; if (pos === 'sticky' || pos === 'fixed') off = tb.offsetHeight; }
     el.style.top = off + 'px';
+    // Entrance animation (first draw only) + numbers counting up
+    el.classList.add('intro');
+    setTimeout(() => el.classList.remove('intro'), 1200);
+    tweenRosterStats(true);
+    // Soft separator line appears only while the bar is actually pinned
+    const sentinel = document.getElementById('roster-stats-sentinel');
+    if (sentinel && 'IntersectionObserver' in window){
+      new IntersectionObserver(([en]) => {
+        el.classList.toggle('stuck', !en.isIntersecting && en.boundingClientRect.top < off + 1);
+      }, { rootMargin: `-${off + 1}px 0px 0px 0px` }).observe(sentinel);
+    }
   })();
 
   function bindStatClicks(){
