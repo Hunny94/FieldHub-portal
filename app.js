@@ -2395,7 +2395,7 @@ async function openApproveModal(profileId){
     const regionIdToSave = isMulti ? (checked[0] || null) : (document.getElementById('ap-region').value || null);
 
     const payload = { role, status, region_id: regionIdToSave };
-    // Only touch designation_id once the designations feature exists (migration_24 run).
+    // Only touch designation_id once the designations feature exists (migration_25 run).
     if (state.designations.length) payload.designation_id = document.getElementById('ap-designation').value || null;
     if (canEditCredentials){
       payload.full_name = toProperCase(document.getElementById('ap-name').value.trim());
@@ -3549,7 +3549,7 @@ async function renderDesignationsSettings(body){
   if (!isSuperAdmin()){ body.innerHTML = '<p class="hint">Only Super Admin can manage designations.</p>'; return; }
   const { data: desigs, error } = await sb.from('designations').select('*').order('sort_order').order('name');
   if (error){
-    body.innerHTML = `<p class="hint">Could not load designations: ${escapeHtml(error.message)}. Please make sure <strong>migration_24.sql</strong> has been run in Supabase.</p>`;
+    body.innerHTML = `<p class="hint">Could not load designations: ${escapeHtml(error.message)}. Please make sure <strong>migration_25.sql</strong> has been run in Supabase.</p>`;
     return;
   }
   const { data: used } = await sb.from('profiles').select('designation_id').not('designation_id','is',null);
