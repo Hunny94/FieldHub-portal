@@ -5646,7 +5646,7 @@ async function renderRoster(){
     const total = list.length;
     const active = list.filter(e=>e.status!=='removed').length;
     const replacementPending = list.filter(e=>e.status==='removed' && e.replacement_pending).length;
-    return `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px;">
+    return `<div class="roster-stat-row">
       <div class="card stat-card sky" data-stat-filter="" style="cursor:pointer; padding:12px;"><div class="stat-number">${total}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${desigLabels.length > 1 ? 'Total (All)' : 'Total Riders'}</div></div>
       <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer; padding:12px;"><div class="stat-number">${active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Approved / Working</div></div>
       <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer; padding:12px;"><div class="stat-number">${total-active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Resigned/Terminated/Transferred</div></div>
@@ -5657,13 +5657,20 @@ async function renderRoster(){
         const w = mine.filter(e => e.status !== 'removed').length;
         const approved = desigApproved[l];
         const approvedLine = (approved != null)
-          ? `<br><span style="opacity:.8;">${approved} approved · ${Math.max(0, approved - (workingByDesigAll[l]||0))} pending hiring</span>` : '';
+          ? `<br><span style="opacity:.8;">${approved} approved · ${Math.max(0, approved - (workingByDesigAll[l]||0))} to hire</span>` : '';
         return `<div class="card stat-card sky" data-desig-filter="${escapeHtml(l)}" style="cursor:pointer; padding:12px;"><div class="stat-number">${mine.length}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${escapeHtml(/s$/i.test(l) ? l : l + 's')}<br><span style="opacity:.8;">${w} working</span>${approvedLine}</div></div>`;
       }).join('')}
     </div>`;
   };
 
   main.innerHTML = `
+    <style>
+      #roster-stats { position: sticky; top: 0; z-index: 30; padding: 8px 0 6px; }
+      .roster-stat-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(118px, 1fr); gap: 8px; overflow-x: auto; }
+      .roster-stat-row .stat-card { padding: 8px 10px !important; min-width: 0; }
+      .roster-stat-row .stat-number { font-size: 22px !important; line-height: 1.1; }
+      .roster-stat-row .stat-label { font-size: 11px !important; line-height: 1.25; }
+    </style>
     <div id="roster-stats">${renderStats(entries)}</div>
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <details style="margin-bottom:14px;">
@@ -5738,6 +5745,22 @@ async function renderRoster(){
     if (el) el.onchange = applyFilters;
   });
   document.getElementById('rf-search').oninput = applyFilters;
+
+  (function freezeRosterStats(){
+    const el = document.getElementById('roster-stats');
+    if (!el) return;
+    let bg = '', n = el.parentElement;
+    while (n){
+      const c = getComputedStyle(n).backgroundColor;
+      if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent'){ bg = c; break; }
+      n = n.parentElement;
+    }
+    el.style.background = bg || '#f4f6fb';
+    const tb = document.querySelector('.topbar');
+    let off = 0;
+    if (tb){ const pos = getComputedStyle(tb).position; if (pos === 'sticky' || pos === 'fixed') off = tb.offsetHeight; }
+    el.style.top = off + 'px';
+  })();
 
   function bindStatClicks(){
     document.querySelectorAll('[data-desig-filter]').forEach(card => {
