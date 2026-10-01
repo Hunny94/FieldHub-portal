@@ -9,6 +9,7 @@ const state = {
   user: null,
   profile: null,
   regions: [],
+  designations: [],
   categories: [],
   warningTypes: [],
   expiryItemTypes: [],
@@ -30,6 +31,28 @@ const ROLE_LABEL = {
   inventory_coordinator: 'Inventory Coordinator',
   rider: 'Rider'
 };
+
+// Designations (Settings -> Designations): a display title such as "Trainee Rider"
+// that sits ON TOP of one of the real roles. The role (base_role) still decides
+// permissions, navigation, RLS and every role check in the app; the designation
+// only changes the label people see. If a person's role was changed after their
+// designation was set (so they no longer match), we fall back to the role label.
+const DESIGNATION_BASE_ROLES = ['rider','coordinator','regional_poc','team_lead','inventory_coordinator'];
+function designationOf(p){
+  if (!p || !p.designation_id) return null;
+  const d = (state.designations || []).find(x => x.id === p.designation_id);
+  return (d && d.base_role === p.role) ? d : null;
+}
+function designationLabel(p){
+  const d = designationOf(p);
+  return d ? d.name : (ROLE_LABEL[p.role] || p.role || '—');
+}
+// Small tag shown next to a name ONLY when the designation differs from the plain role label.
+function designationTag(p){
+  const d = designationOf(p);
+  if (!d || d.name.trim().toLowerCase() === (ROLE_LABEL[p.role]||'').toLowerCase()) return '';
+  return ` <span class="badge pending" style="font-size:11px;">${escapeHtml(d.name)}</span>`;
+}
 
 // Convert a Pakistani local number (03xx-xxxxxxx) to +92 E.164 format,
 // since Supabase Auth phone login needs international format.
@@ -173,6 +196,7 @@ async function afterLogin(user){
   document.getElementById('app-shell').style.display = 'flex';
 
   await loadRegions();
+  await loadDesignations();
   await loadCategories();
   await loadReferenceData();
   renderNav();
@@ -490,6 +514,10 @@ async function loadRegions(){
   const { data } = await sb.from('regions').select('*').order('name');
   state.regions = data || [];
 }
+async function loadDesignations(){
+  const { data, error } = await sb.from('designations').select('*').order('sort_order').order('name');
+  state.designations = error ? [] : (data || []);
+}
 async function loadCategories(){
   const { data } = await sb.from('categories').select('*').eq('active', true).order('name');
   state.categories = data || [];
@@ -541,9 +569,21 @@ function bindAuthForms(){
   // Show/hide Bike Number based on selected Designation
   const designationSelect = document.getElementById('signup-designation');
   const bikeWrap = document.getElementById('signup-bike-wrap');
-  const updateBikeVisibility = () => { bikeWrap.style.display = designationSelect.value === 'rider' ? 'block' : 'none'; };
+  const selectedSignupRole = () => {
+    const o = designationSelect.options[designationSelect.selectedIndex];
+    return o ? (o.dataset.role || o.value) : '';
+  };
+  const updateBikeVisibility = () => { bikeWrap.style.display = selectedSignupRole() === 'rider' ? 'block' : 'none'; };
   designationSelect.onchange = updateBikeVisibility;
   updateBikeVisibility();
+  // Replace the built-in list with the Super-Admin-managed Designations (if available).
+  // If the table doesn't exist yet or is empty, the built-in list above stays as the fallback.
+  (async () => {
+    const { data, error } = await sb.from('designations').select('id, name, base_role').eq('active', true).order('sort_order').order('name');
+    if (error || !data || !data.length) return;
+    designationSelect.innerHTML = data.map(d => `<option value="${d.id}" data-role="${d.base_role}" data-designation-id="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+    updateBikeVisibility();
+  })();
 
   document.getElementById('login-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -559,7 +599,9 @@ function bindAuthForms(){
     e.preventDefault();
     clearAuthMessage();
     const full_name = toProperCase(document.getElementById('signup-name').value.trim());
-    const requested_role = document.getElementById('signup-designation').value;
+    const signupOpt = designationSelect.options[designationSelect.selectedIndex];
+    const requested_role = signupOpt.dataset.role || signupOpt.value;
+    const signup_designation_id = signupOpt.dataset.designationId || null;
     const employee_id = document.getElementById('signup-empid').value.trim();
     const phone = toE164(document.getElementById('signup-phone').value.trim());
     const email = document.getElementById('signup-email').value.trim();
@@ -577,7 +619,9 @@ function bindAuthForms(){
     });
     if (error){ showAuthMessage(error.message); return; }
     if (data.user){
-      await sb.from('profiles').update({ email, employee_id, bike_number }).eq('id', data.user.id);
+      const signupPayload = { email, employee_id, bike_number };
+      if (signup_designation_id) signupPayload.designation_id = signup_designation_id;
+      await sb.from('profiles').update(signupPayload).eq('id', data.user.id);
       await afterLogin(data.user);
     }
   };
@@ -1043,7 +1087,7 @@ async function openEditCircularModal(c){
 
 async function showCircularTracker(circularId, circular, el){
   el.innerHTML = '<div class="mono">Loading…</div>';
-  let q = sb.from('profiles').select('id, full_name, role').eq('status','active').neq('id', circular.created_by);
+  let q = sb.from('profiles').select('id, full_name, role, designation_id').eq('status','active').neq('id', circular.created_by);
   const regionIds = circular.target_region_ids || (circular.target_region_id ? [circular.target_region_id] : []);
   const roles = circular.target_roles || (circular.target_role ? [circular.target_role] : []);
   if (regionIds.length) q = q.in('region_id', regionIds);
@@ -1057,14 +1101,14 @@ async function showCircularTracker(circularId, circular, el){
   <table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>When</th></tr></thead><tbody>
     ${(audience||[]).map(p=>{
       const ackedAt = ackMap.get(p.id);
-      return `<tr><td>${escapeHtml(p.full_name)}</td><td>${ROLE_LABEL[p.role]||p.role}</td>
+      return `<tr><td>${escapeHtml(p.full_name)}</td><td>${escapeHtml(designationLabel(p))}</td>
         <td>${ackedAt ? `<span class="badge active">Acknowledged</span>` : `<span class="badge open">Pending</span>`}</td>
         <td class="mono">${ackedAt ? formatDateTime(ackedAt) : '—'}</td></tr>`;
     }).join('')}
   </tbody></table>`;
   document.getElementById('tracker-csv-btn').onclick = () => {
     const rows = (audience||[]).map(p => ({
-      Name: p.full_name, Role: ROLE_LABEL[p.role]||p.role,
+      Name: p.full_name, Role: designationLabel(p),
       Status: ackMap.has(p.id) ? 'Acknowledged' : 'Pending',
       'Acknowledged At': ackMap.get(p.id) || ''
     }));
@@ -1383,7 +1427,7 @@ async function openNewTaskModal(){
     assignableRoles = [];
   }
   const assignable = state.profilesInScope.filter(p => assignableRoles.includes(p.role) && p.status==='active');
-  const options = assignable.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]||p.role})</option>`).join('');
+  const options = assignable.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${escapeHtml(designationLabel(p))})</option>`).join('');
   if (!assignable.length){ toast('No one available for you to assign a task to.'); return; }
   openModal(`
     <h2>Assign task</h2>
@@ -1480,7 +1524,7 @@ async function renderRequests(){
     btn.onclick = async () => {
       await loadScopedProfiles();
       const staff = state.profilesInScope.filter(p => !['rider'].includes(p.role) && p.status==='active');
-      const options = staff.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]})</option>`).join('');
+      const options = staff.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${escapeHtml(designationLabel(p))})</option>`).join('');
       openModal(`
         <h2>Assign a handler</h2>
         <form id="reassign-form">
@@ -2048,7 +2092,7 @@ async function renderTeam(){
     ${pending.map(p=>`<tr>
       <td><input type="checkbox" class="pending-select" value="${p.id}"></td>
       <td>${escapeHtml(p.full_name)}</td>
-      <td>${ROLE_LABEL[p.role]||'—'}${!p.region_id?' <span class="badge pending" title="No region set">No region</span>':''}</td>
+      <td>${escapeHtml(designationLabel(p))}${!p.region_id?' <span class="badge pending" title="No region set">No region</span>':''}</td>
       <td class="mono">${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(toLocalPhone(p.phone)||'—')}</td>
       <td><button class="btn small" data-approve="${p.id}">Approve</button></td>
     </tr>`).join('')}
@@ -2078,8 +2122,8 @@ async function renderTeam(){
       </button>
       <div class="nav-group-items collapsed" id="${groupId}">
         <table><thead><tr><th>Name</th><th>Mobile</th><th>Employee ID</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-        ${members.map(p=>`<tr data-team-row data-search="${escapeHtml((p.full_name+' '+(p.employee_id||'')+' '+ROLE_LABEL[role]+' '+(p.phone||'')).toLowerCase())}">
-          <td>${escapeHtml(p.full_name)}</td>
+        ${members.map(p=>`<tr data-team-row data-search="${escapeHtml((p.full_name+' '+(p.employee_id||'')+' '+ROLE_LABEL[role]+' '+designationLabel(p)+' '+(p.phone||'')).toLowerCase())}">
+          <td>${escapeHtml(p.full_name)}${designationTag(p)}</td>
           <td class="mono">${escapeHtml(toLocalPhone(p.phone)||'—')}</td>
           <td class="mono">${escapeHtml(p.employee_id||'—')}</td>
           <td>${escapeHtml(regionNamesFor(p))}</td>
@@ -2293,6 +2337,7 @@ async function openApproveModal(profileId){
         <div class="form-row"><label>Email (optional)</label><input type="email" id="ap-email" value="${escapeHtml(p.email||'')}"></div>
       </div>` : ''}
       <div class="form-row"><label>Role</label><select id="ap-role">${roleOptions}</select></div>
+      <div class="form-row" id="ap-designation-row" style="display:none;"><label>Designation (title shown to everyone)</label><select id="ap-designation"></select></div>
       <div class="form-row" id="ap-region-wrap">
         <label>Region(s)</label>
         <div id="ap-region-single" style="${isMultiRegionRole?'display:none;':''}">
@@ -2313,6 +2358,21 @@ async function openApproveModal(profileId){
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
+
+  // Designation choices depend on the selected Role. The role's own name is the default.
+  const fillDesignationOptions = (roleKey) => {
+    const row = document.getElementById('ap-designation-row');
+    const sel = document.getElementById('ap-designation');
+    const roleName = (ROLE_LABEL[roleKey]||'').toLowerCase();
+    const extras = (state.designations||[]).filter(d =>
+      d.base_role === roleKey && d.name.trim().toLowerCase() !== roleName && (d.active || d.id === p.designation_id));
+    if (!extras.length){ row.style.display = 'none'; sel.innerHTML = ''; return; }
+    sel.innerHTML = `<option value="">${escapeHtml(ROLE_LABEL[roleKey])} (default)</option>` +
+      extras.map(d => `<option value="${d.id}" ${p.designation_id===d.id?'selected':''}>${escapeHtml(d.name)}${d.active?'':' (disabled)'}</option>`).join('');
+    row.style.display = 'block';
+  };
+  fillDesignationOptions(p.role);
+  document.getElementById('ap-role').addEventListener('change', (e) => fillDesignationOptions(e.target.value));
 
   document.getElementById('ap-role').onchange = (e) => {
     const multi = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(e.target.value);
@@ -2335,6 +2395,8 @@ async function openApproveModal(profileId){
     const regionIdToSave = isMulti ? (checked[0] || null) : (document.getElementById('ap-region').value || null);
 
     const payload = { role, status, region_id: regionIdToSave };
+    // Only touch designation_id once the designations feature exists (migration_24 run).
+    if (state.designations.length) payload.designation_id = document.getElementById('ap-designation').value || null;
     if (canEditCredentials){
       payload.full_name = toProperCase(document.getElementById('ap-name').value.trim());
       payload.employee_id = document.getElementById('ap-empid').value.trim();
@@ -2541,6 +2603,9 @@ async function renderSettings(){
       ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
       ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
     ]},
+    { label: 'People', items: [
+      ['designations','Designations', () => isSuperAdmin()],
+    ]},
     { label: 'Regions', items: [
       ['subregions','Sub-Regions / Cities', () => isSuperAdmin()],
       ['hotspots','Hotspots', () => isAdmin() || hasPermission('regions_add') || hasPermission('regions_edit') || hasPermission('regions_remove')],
@@ -2585,6 +2650,7 @@ async function renderSettings(){
   else if (settingsTab === 'expirytypes') await renderSimpleTypeList(body, 'expiry_item_types', 'Expiry Item Type');
   else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
+  else if (settingsTab === 'designations') await renderDesignationsSettings(body);
   else if (settingsTab === 'subregions') await renderSubRegionsSettings(body);
   else if (settingsTab === 'hotspots') await renderHotspotsSettings(body);
   else if (settingsTab === 'shifttypes') await renderSimpleTypeList(body, 'shift_types', 'Shift');
@@ -2979,7 +3045,7 @@ async function openEditWarningModal(w){
   await loadScopedProfiles();
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
   const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role));
-  const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${ROLE_LABEL[p.role]})</option>`).join('');
+  const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${escapeHtml(designationLabel(p))})</option>`).join('');
   openModal(`
     <h2>Edit warning</h2>
     <form id="warning-edit-form">
@@ -3464,7 +3530,7 @@ async function generateReport(){
     const { data, error } = await sb.from('profiles').select('*, regions!region_id(name)').eq('status', 'active').order('full_name');
     queryError = error;
     rows = (data||[]).map(p => ({
-      'Full Name': p.full_name, 'Employee ID': p.employee_id||'', Role: ROLE_LABEL[p.role]||p.role,
+      'Full Name': p.full_name, 'Employee ID': p.employee_id||'', Role: designationLabel(p),
       'Mobile Number': toLocalPhone(p.phone)||'', Email: p.email||'', Region: p.regions?.name||'', 'Bike Number': p.bike_number||'',
       'Joined On': p.created_at ? p.created_at.slice(0,10) : ''
     }));
@@ -3477,6 +3543,98 @@ async function generateReport(){
   }
   downloadCSV(`fieldhub-${type}-${from}-to-${to.slice(0,10)}.csv`, toCSV(rows));
   statusEl.textContent = `Downloaded ${rows.length} rows.`;
+}
+
+async function renderDesignationsSettings(body){
+  if (!isSuperAdmin()){ body.innerHTML = '<p class="hint">Only Super Admin can manage designations.</p>'; return; }
+  const { data: desigs, error } = await sb.from('designations').select('*').order('sort_order').order('name');
+  if (error){
+    body.innerHTML = `<p class="hint">Could not load designations: ${escapeHtml(error.message)}. Please make sure <strong>migration_24.sql</strong> has been run in Supabase.</p>`;
+    return;
+  }
+  const { data: used } = await sb.from('profiles').select('designation_id').not('designation_id','is',null);
+  const counts = {};
+  (used||[]).forEach(r => { counts[r.designation_id] = (counts[r.designation_id]||0) + 1; });
+
+  const roleOptionsHtml = (sel) => DESIGNATION_BASE_ROLES.map(r => `<option value="${r}" ${sel===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('');
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:14px;">A designation is the job title people choose at sign-up and see across the portal (e.g. <em>Trainee Rider</em>). Each one <strong>works like</strong> one of the existing roles — that decides its permissions, menus and access, so a Trainee Rider can do exactly what a Rider can. <strong>Disable</strong> hides a designation from new sign-ups without affecting people who already have it. <strong>Delete</strong> is only possible when nobody is using it.</p>
+    <form id="new-desig-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <input type="text" id="desig-name" placeholder="Designation name, e.g. Trainee Rider" required style="flex:1; min-width:200px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
+      <select id="desig-role" title="Works like">${roleOptionsHtml('rider')}</select>
+      <button class="btn small" type="submit">Add</button>
+    </form>
+    <table><thead><tr><th>Designation</th><th>Works like</th><th>People</th><th>Status</th><th></th></tr></thead><tbody>
+      ${(desigs||[]).map(d => `<tr>
+        <td><strong>${escapeHtml(d.name)}</strong></td>
+        <td>${ROLE_LABEL[d.base_role]||d.base_role}</td>
+        <td>${counts[d.id]||0}</td>
+        <td><span class="badge ${d.active?'active':'closed'}">${d.active?'Active':'Disabled'}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn small outline" data-edit-desig="${d.id}">Edit</button>
+          <button class="btn small outline" data-toggle-desig="${d.id}">${d.active?'Disable':'Enable'}</button>
+          <button class="btn small danger" data-delete-desig="${d.id}">Delete</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="5">No designations yet.</td></tr>'}
+    </tbody></table>`;
+
+  const refresh = async () => { await loadDesignations(); renderSettings(); };
+  const friendly = (err, verb) => (err.code === '23505')
+    ? 'A designation with that name already exists.'
+    : `Could not ${verb}: ${err.message}`;
+
+  document.getElementById('new-desig-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('desig-name').value.trim().replace(/\s+/g, ' ');
+    if (!name) return;
+    const { error: err } = await sb.from('designations').insert({ name, base_role: document.getElementById('desig-role').value });
+    if (err){ toast(friendly(err, 'add')); return; }
+    toast('Designation added'); await refresh();
+  };
+
+  body.querySelectorAll('[data-edit-desig]').forEach(btn => btn.onclick = () => {
+    const d = desigs.find(x => x.id === btn.dataset.editDesig);
+    const inUse = (counts[d.id]||0) > 0;
+    openModal(`
+      <h2>Edit designation</h2>
+      <form id="edit-desig-form">
+        <div class="form-row"><label>Name</label><input type="text" id="ed-name" value="${escapeHtml(d.name)}" required></div>
+        <div class="form-row"><label>Works like</label>
+          <select id="ed-role" ${inUse?'disabled':''}>${roleOptionsHtml(d.base_role)}</select>
+          ${inUse ? `<span class="field-hint">Locked because ${counts[d.id]} ${counts[d.id]===1?'person uses':'people use'} this designation. Create a new designation if you need a different role.</span>` : ''}
+        </div>
+        <button class="btn-primary" type="submit">Save</button>
+      </form>`);
+    document.getElementById('edit-desig-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('ed-name').value.trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      const payload = { name };
+      if (!inUse) payload.base_role = document.getElementById('ed-role').value;
+      const { error: err } = await sb.from('designations').update(payload).eq('id', d.id);
+      if (err){ toast(friendly(err, 'save')); return; }
+      closeModal(); toast('Saved'); await refresh();
+    };
+  });
+
+  body.querySelectorAll('[data-toggle-desig]').forEach(btn => btn.onclick = async () => {
+    const d = desigs.find(x => x.id === btn.dataset.toggleDesig);
+    const { error: err } = await sb.from('designations').update({ active: !d.active }).eq('id', d.id);
+    if (err){ toast(friendly(err, 'update')); return; }
+    toast(d.active ? 'Disabled — hidden from new sign-ups' : 'Enabled'); await refresh();
+  });
+
+  body.querySelectorAll('[data-delete-desig]').forEach(btn => btn.onclick = async () => {
+    const d = desigs.find(x => x.id === btn.dataset.deleteDesig);
+    if ((counts[d.id]||0) > 0){
+      toast(`Cannot delete "${d.name}" — ${counts[d.id]} ${counts[d.id]===1?'person is':'people are'} using it. Disable it instead, or change those people's designation first.`);
+      return;
+    }
+    if (!confirm(`Permanently delete the designation "${d.name}"? This cannot be undone.`)) return;
+    const { error: err } = await sb.from('designations').delete().eq('id', d.id);
+    if (err){ toast(friendly(err, 'delete')); return; }
+    toast('Deleted'); await refresh();
+  });
 }
 
 async function renderSubRegionsSettings(body){
@@ -5184,7 +5342,7 @@ async function renderHierarchy(){
   const inventoryCoords = (profiles||[]).filter(p=>p.role==='inventory_coordinator');
 
   const personCard = (p) => `<div style="padding:8px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px;">
-    <strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${escapeHtml(p.employee_id||'—')}</span>
+    <strong>${escapeHtml(p.full_name)}</strong>${designationTag(p)} <span class="mono">· ${escapeHtml(p.employee_id||'—')}</span>
     <div class="mono" style="font-size:12.5px; color:var(--muted);">${escapeHtml(toLocalPhone(p.phone)||'—')}</div>
   </div>`;
 
@@ -5834,7 +5992,7 @@ async function renderMyProfile(){
         <div class="form-row"><label>Employee ID</label><input type="text" value="${escapeHtml(p.employee_id||'—')}" disabled></div>
       </div>
       ${p.role==='rider' ? `<div class="form-row"><label>Bike Number</label><input type="text" id="mp-bike" value="${escapeHtml(p.bike_number||'')}"></div>` : ''}
-      <div class="form-row"><label>Role</label><input type="text" value="${ROLE_LABEL[p.role]||p.role}" disabled></div>
+      <div class="form-row"><label>Role</label><input type="text" value="${escapeHtml(designationLabel(p))}" disabled></div>
       <div class="form-row"><label>Region(s)</label><input type="text" value="${escapeHtml(regionNamesFor(p))}" disabled></div>
       <button class="btn" id="mp-save-btn">Save changes</button>
     </div>
