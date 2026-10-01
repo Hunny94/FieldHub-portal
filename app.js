@@ -3552,6 +3552,8 @@ async function renderDesignationsSettings(body){
     body.innerHTML = `<p class="hint">Could not load designations: ${escapeHtml(error.message)}. Please make sure <strong>migration_25.sql</strong> has been run in Supabase.</p>`;
     return;
   }
+  // approved_headcount exists only after migration_26.sql has been run
+  const hasHC = (desigs||[]).length > 0 && ('approved_headcount' in desigs[0]);
   // People counts. Everyone is counted exactly once, in ONE bucket:
   // Pending -> Pending; otherwise if their latest Roster entry is Resigned/Terminated/
   // Transferred -> that bucket; otherwise Active (login on) or Disabled/Other.
@@ -3604,6 +3606,7 @@ async function renderDesignationsSettings(body){
     <form id="new-desig-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
       <input type="text" id="desig-name" placeholder="Designation name, e.g. Trainee Rider" required style="flex:1; min-width:200px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <select id="desig-role" title="Works like">${roleOptionsHtml('rider')}</select>
+      ${hasHC ? `<input type="number" min="0" step="1" id="desig-hc" placeholder="Approved headcount (optional)" style="width:210px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">` : ''}
       <button class="btn small" type="submit">Add</button>
     </form>
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px;">
@@ -3615,10 +3618,11 @@ async function renderDesignationsSettings(body){
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.transferred}</div><div class="stat-label" style="font-size:12px;">Transferred</div></div>
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.disabled}</div><div class="stat-label" style="font-size:12px;">Disabled / Other</div></div>
     </div>
-    <div style="overflow-x:auto;"><table><thead><tr><th>Designation</th><th>Works like</th><th>People</th><th>Active</th><th>Pending</th><th>Disabled / Other</th><th>Resigned</th><th>Terminated</th><th>Transferred</th><th>Status</th><th></th></tr></thead><tbody>
+    <div style="overflow-x:auto;"><table><thead><tr><th>Designation</th><th>Works like</th><th>Approved Headcount</th><th>People</th><th>Active</th><th>Pending</th><th>Disabled / Other</th><th>Resigned</th><th>Terminated</th><th>Transferred</th><th>Status</th><th></th></tr></thead><tbody>
       ${(desigs||[]).map(d => `<tr>
         <td><strong>${escapeHtml(d.name)}</strong></td>
         <td>${ROLE_LABEL[d.base_role]||d.base_role}</td>
+        <td class="mono">${d.approved_headcount ?? '—'}</td>
         ${statCells(rowStats[d.id] || emptyRow())}
         <td><span class="badge ${d.active?'active':'closed'}">${d.active?'Active':'Disabled'}</span></td>
         <td style="white-space:nowrap;">
@@ -3626,13 +3630,14 @@ async function renderDesignationsSettings(body){
           <button class="btn small outline" data-toggle-desig="${d.id}">${d.active?'Disable':'Enable'}</button>
           <button class="btn small danger" data-delete-desig="${d.id}">Delete</button>
         </td>
-      </tr>`).join('') || '<tr><td colspan="11">No designations yet.</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="12">No designations yet.</td></tr>'}
       ${extraRoleKeys.map(k => `<tr style="color:var(--muted);">
-        <td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td><td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td>
+        <td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td><td>${escapeHtml(ROLE_LABEL[k.slice(5)]||k.slice(5))}</td><td class="mono">—</td>
         ${statCells(rowStats[k])}<td colspan="2"><span class="hint">Role only (no designation)</span></td>
       </tr>`).join('')}
-      <tr style="font-weight:700; border-top:2px solid var(--line);"><td>Grand Total</td><td></td>${statCells(grandStats)}<td colspan="2"></td></tr>
+      <tr style="font-weight:700; border-top:2px solid var(--line);"><td>Grand Total</td><td></td><td></td>${statCells(grandStats)}<td colspan="2"></td></tr>
     </tbody></table></div>
+    ${hasHC ? '' : '<p class="hint" style="margin-top:10px;">To track an approved headcount per designation, run <strong>migration_26.sql</strong> in Supabase.</p>'}
     <p class="hint" style="margin-top:10px;">Each person is counted once. <strong>Resigned / Terminated / Transferred</strong> come from their latest Roster entry; <strong>Disabled / Other</strong> are people whose login is off for any other reason. People who never chose a designation are counted under the designation named after their role (e.g. Rider).</p>`;
 
   const refresh = async () => { await loadDesignations(); renderSettings(); };
@@ -3644,7 +3649,14 @@ async function renderDesignationsSettings(body){
     e.preventDefault();
     const name = document.getElementById('desig-name').value.trim().replace(/\s+/g, ' ');
     if (!name) return;
-    const { error: err } = await sb.from('designations').insert({ name, base_role: document.getElementById('desig-role').value });
+    const addPayload = { name, base_role: document.getElementById('desig-role').value };
+    const hcEl = document.getElementById('desig-hc');
+    if (hcEl && hcEl.value !== ''){
+      const n = Number(hcEl.value);
+      if (!Number.isInteger(n) || n < 0){ toast('Approved headcount must be a whole number (0 or more).'); return; }
+      addPayload.approved_headcount = n;
+    }
+    const { error: err } = await sb.from('designations').insert(addPayload);
     if (err){ toast(friendly(err, 'add')); return; }
     toast('Designation added'); await refresh();
   };
@@ -3660,6 +3672,7 @@ async function renderDesignationsSettings(body){
           <select id="ed-role" ${inUse?'disabled':''}>${roleOptionsHtml(d.base_role)}</select>
           ${inUse ? `<span class="field-hint">Locked because ${counts[d.id]} ${counts[d.id]===1?'person uses':'people use'} this designation. Create a new designation if you need a different role.</span>` : ''}
         </div>
+        ${hasHC ? `<div class="form-row"><label>Approved headcount (optional)</label><input type="number" min="0" step="1" id="ed-hc" value="${d.approved_headcount ?? ''}"><span class="field-hint">Total approved positions for this designation across all regions — used for "Pending Hiring" in Roster. Leave blank if not tracked.</span></div>` : ''}
         <button class="btn-primary" type="submit">Save</button>
       </form>`);
     document.getElementById('edit-desig-form').onsubmit = async (e) => {
@@ -3668,6 +3681,15 @@ async function renderDesignationsSettings(body){
       if (!name) return;
       const payload = { name };
       if (!inUse) payload.base_role = document.getElementById('ed-role').value;
+      const edHc = document.getElementById('ed-hc');
+      if (edHc){
+        if (edHc.value === '') payload.approved_headcount = null;
+        else {
+          const n = Number(edHc.value);
+          if (!Number.isInteger(n) || n < 0){ toast('Approved headcount must be a whole number (0 or more).'); return; }
+          payload.approved_headcount = n;
+        }
+      }
       const { error: err } = await sb.from('designations').update(payload).eq('id', d.id);
       if (err){ toast(friendly(err, 'save')); return; }
       closeModal(); toast('Saved'); await refresh();
@@ -5559,6 +5581,12 @@ async function renderRoster(){
     return (ia<0?999:ia) - (ib<0?999:ib) || a.localeCompare(b);
   });
 
+  // Approved headcount set per designation (e.g. Trainee Rider = 10) vs how many are working now
+  const desigApproved = {};
+  (state.designations||[]).forEach(d => { if (d.approved_headcount != null) desigApproved[d.name] = d.approved_headcount; });
+  const workingByDesigAll = {};
+  entries.filter(e => e.status !== 'removed').forEach(e => { const l = entryDesig(e); workingByDesigAll[l] = (workingByDesigAll[l]||0) + 1; });
+
   const regionCounts = {};
   entries.forEach(e => {
     const name = e.regions?.name || 'Unknown';
@@ -5571,11 +5599,11 @@ async function renderRoster(){
     }
   });
   // Grand totals row for the Region-wise counts table
-  const grand = { total:0, working:0, headcount:0, byDesig:{} };
+  const grand = { total:0, working:0, headcount:0, pending:0, byDesig:{} };
   Object.entries(regionCounts).forEach(([name,c]) => {
     grand.total += c.total; grand.working += c.working;
     const hc = state.regions.find(r=>r.name===name)?.approved_headcount;
-    if (typeof hc === 'number') grand.headcount += hc;
+    if (typeof hc === 'number'){ grand.headcount += hc; grand.pending += Math.max(0, hc - c.working); }
     desigLabels.forEach(l => { grand.byDesig[l] = (grand.byDesig[l]||0) + (c.byDesig[l]||0); });
   });
 
@@ -5623,10 +5651,14 @@ async function renderRoster(){
       <div class="card stat-card clay" data-stat-filter="active" style="cursor:pointer; padding:12px;"><div class="stat-number">${active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Approved / Working</div></div>
       <div class="card stat-card amber" data-stat-filter="removed" style="cursor:pointer; padding:12px;"><div class="stat-number">${total-active}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Resigned/Terminated/Transferred</div></div>
       <div class="card stat-card amber" data-stat-filter="replacement" style="cursor:pointer; padding:12px;"><div class="stat-number">${replacementPending}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Replacement Needed</div></div>
+      <div class="card stat-card amber" style="padding:12px;" title="Approved headcount minus currently working, summed over regions that have an approved headcount"><div class="stat-number">${grand.pending}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">Pending Hiring<br><span style="opacity:.8;">by region headcount</span></div></div>
       ${desigLabels.map(l => {
         const mine = list.filter(e => entryDesig(e) === l);
         const w = mine.filter(e => e.status !== 'removed').length;
-        return `<div class="card stat-card sky" data-desig-filter="${escapeHtml(l)}" style="cursor:pointer; padding:12px;"><div class="stat-number">${mine.length}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${escapeHtml(/s$/i.test(l) ? l : l + 's')}<br><span style="opacity:.8;">${w} working</span></div></div>`;
+        const approved = desigApproved[l];
+        const approvedLine = (approved != null)
+          ? `<br><span style="opacity:.8;">${approved} approved · ${Math.max(0, approved - (workingByDesigAll[l]||0))} pending hiring</span>` : '';
+        return `<div class="card stat-card sky" data-desig-filter="${escapeHtml(l)}" style="cursor:pointer; padding:12px;"><div class="stat-number">${mine.length}</div><div class="stat-label" style="font-size:12px; overflow-wrap:break-word;">${escapeHtml(/s$/i.test(l) ? l : l + 's')}<br><span style="opacity:.8;">${w} working</span>${approvedLine}</div></div>`;
       }).join('')}
     </div>`;
   };
@@ -5636,13 +5668,16 @@ async function renderRoster(){
     ${reasons.length ? `<div class="hint" style="margin-bottom:10px;">Breakdown: ${reasons.map(r=>`${escapeHtml(r)}: ${removedByReason[r]}`).join(' · ')}</div>` : ''}
     <details style="margin-bottom:14px;">
       <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Region-wise counts ▾</summary>
-      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th>${desigLabels.map(l=>`<th>${escapeHtml(l)} (Working)</th>`).join('')}<th>Approved Headcount</th></tr></thead><tbody>
+      <table style="margin-top:8px;"><thead><tr><th>Region</th><th>Total</th><th>Currently Working</th>${desigLabels.map(l=>`<th>${escapeHtml(l)} (Working)</th>`).join('')}<th>Approved Headcount</th><th>Pending Hiring</th></tr></thead><tbody>
         ${Object.entries(regionCounts).map(([name,c]) => {
           const region = state.regions.find(r=>r.name===name);
-          return `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td>${desigLabels.map(l=>`<td class="mono">${c.byDesig[l]||0}</td>`).join('')}<td class="mono">${region?.approved_headcount ?? '—'}</td></tr>`;
+          return `<tr><td>${escapeHtml(name)}</td><td class="mono">${c.total}</td><td class="mono">${c.working}</td>${desigLabels.map(l=>`<td class="mono">${c.byDesig[l]||0}</td>`).join('')}<td class="mono">${region?.approved_headcount ?? '—'}</td><td class="mono">${region?.approved_headcount != null ? Math.max(0, region.approved_headcount - c.working) : '—'}</td></tr>`;
         }).join('')}
-        <tr style="font-weight:700; border-top:2px solid var(--line); background:var(--bg, #f5f6fa);"><td>Grand Total</td><td class="mono">${grand.total}</td><td class="mono">${grand.working}</td>${desigLabels.map(l=>`<td class="mono">${grand.byDesig[l]||0}</td>`).join('')}<td class="mono">${grand.headcount}</td></tr>
+        <tr style="font-weight:700; border-top:2px solid var(--line); background:var(--bg, #f5f6fa);"><td>Grand Total</td><td class="mono">${grand.total}</td><td class="mono">${grand.working}</td>${desigLabels.map(l=>`<td class="mono">${grand.byDesig[l]||0}</td>`).join('')}<td class="mono">${grand.headcount}</td><td class="mono">${grand.pending}</td></tr>
       </tbody></table>
+      ${Object.keys(desigApproved).length ? `<table style="margin-top:14px;"><thead><tr><th>Designation (company-wide)</th><th>Currently Working</th><th>Approved Headcount</th><th>Pending Hiring</th></tr></thead><tbody>
+        ${Object.entries(desigApproved).map(([l,a]) => `<tr><td>${escapeHtml(l)}</td><td class="mono">${workingByDesigAll[l]||0}</td><td class="mono">${a}</td><td class="mono">${Math.max(0, a - (workingByDesigAll[l]||0))}</td></tr>`).join('')}
+      </tbody></table>` : ''}
     </details>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
       <select id="rf-region"><option value="">All Regions</option>${state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
