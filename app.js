@@ -714,20 +714,31 @@ function bindForgotPasswordLink(){
 // NAV
 // ---------------------------------------------------------
 const NAV_BY_ROLE = {
-  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes','hierarchy'],
-  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes','hierarchy'],
-  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
-  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
-  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','fieldvisits','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  super_admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','activitylog','releasenotes','hierarchy'],
+  admin: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','regions','settings','knowledgebase','resources','reports','compliance','releasenotes','hierarchy'],
+  regional_poc: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
+  coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
   inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes','hierarchy'],
-  rider: ['dashboard','circulars','requests','expiries','tools','warnings','roster','fieldvisits','knowledgebase','resources','releasenotes','hierarchy']
+  rider: ['dashboard','circulars','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes','hierarchy']
 };
 // A granted custom_permission can unlock a whole nav item (e.g. Settings,
 // Regions, Reports) for a role that wouldn't normally see it at all —
 // without this, granting e.g. 'categories_add' to a Coordinator would be
 // useless because they could never navigate to Settings in the first place.
+// Field Visits sidebar group: which pages each kind of user gets
+function fvNavViews(){
+  const r = state.profile.role;
+  if (r === 'rider') return ['fv_report','fv_visits','fv_issues'];
+  if (!['super_admin','admin','regional_poc','team_lead','coordinator'].includes(r)) return [];
+  const v = ['fv_report','fv_riders','fv_issues','fv_visits'];
+  if (r === 'team_lead' || isAdmin() || hasPermission('field_visit_manage')) v.push('fv_add');
+  v.push('fv_teams');
+  if (hasPermission('field_visit_manage')) v.push('fv_checklist','fv_targets');
+  return v;
+}
 function getAllowedViews(){
-  const base = NAV_BY_ROLE[state.profile.role] || ['dashboard'];
+  const base = [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews()];
   if (isAdmin()) return base;
   const extra = [];
   const settingsKeys = ['categories_add','categories_edit','categories_remove','manage_types','circular_categories_manage'];
@@ -742,14 +753,16 @@ const NAV_LABEL = {
   expiries:'Expiry Tracker', tools:'Tool Issuance', roster:'Roster', team:'Team', regions:'Regions', settings:'Settings',
   warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
   compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors',
-  fieldvisits:'Field Visit Reports'
+  fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
+  fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
   { label: null, items: ['dashboard'] },
   { label: 'Operations', items: ['circulars','tasks','requests'] },
   { label: 'Inventory', items: ['expiries','tools'] },
-  { label: 'People', items: ['team','warnings','compliance','roster','fieldvisits','hierarchy'] },
+  { label: 'People', items: ['team','warnings','compliance','roster','hierarchy'] },
+  { label: 'Field Visits', items: ['fv_report','fv_riders','fv_issues','fv_visits','fv_add','fv_teams','fv_checklist','fv_targets'] },
   { label: 'Knowledge', items: ['knowledgebase','resources','releasenotes'] },
   { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
 ];
@@ -806,6 +819,7 @@ function bindProfileMenu(){
 }
 
 async function navigateTo(view){
+  if (view === 'fieldvisits') view = 'fv_report';   // old bookmark
   if (location.hash !== '#'+view) history.pushState(null, '', '#'+view);
   state.view = view;
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
@@ -832,7 +846,7 @@ async function navigateTo(view){
     else if (view==='roster') await renderRoster();
     else if (view==='releasenotes') await renderReleaseNotes();
     else if (view==='hierarchy') await renderHierarchy();
-    else if (view==='fieldvisits') await renderFieldVisits();
+    else if (view.startsWith('fv_')) await renderFieldVisits(view);
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -5068,17 +5082,17 @@ async function renderActivityLog(){
 // HIERARCHY — read-only org chart so everyone can see their team
 // and supervisors, with contact info.
 // ---------------------------------------------------------
-// FIELD VISIT REPORTS (rebuilt — needs migration_27.sql)
+// FIELD VISIT REPORTS (rebuilt — needs migration_27.sql + migration_28.sql)
 //  * Area Incharges add visit reports; Coordinators / Regional POCs only
 //    view (their region); Riders see only their own; Admin sees all;
 //    Super Admin (or "field_visit_manage") manages checklist, targets and
 //    can correct visits.
 //  * Each visit keeps a snapshot of the rider/region/checkpoint weights
 //    from that day, so later changes never alter old visits.
+//  * The checklist must always total exactly 100% (enforced by the database).
 //  * Charts are plain SVG/CSS drawn in the browser — nothing is stored.
 // ---------------------------------------------------------
 const FV = {
-  tab: null,
   f: { preset: 'this_month', from: '', to: '', region: '', q: '', type: '', by: '', status: '', cp: '' },
   kpiMonth: ''
 };
@@ -5141,7 +5155,7 @@ function fvEnsureStyle() {
 .fv-go .fv-score .t i{width:var(--w)}
 .fv-score b{font-size:13px;min-width:46px;text-align:right}
 .fv-good{color:#2e7d4f}.fv-fair{color:#b9770e}.fv-poor{color:#c0532f}
-.fv-bg-good{background:#2e7d4f}.fv-bg-fair{background:#d9962b}.fv-bg-poor{background:#c0532f}.fv-bg-teal{background:#17a2a2}
+.fv-bg-good{background:#2e7d4f}.fv-bg-fair{background:#d9962b}.fv-bg-poor{background:#c0532f}
 .fv-type{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .fv-type.Onsite{background:#e3e8fb;color:#1E2A6E}.fv-type.Online{background:#d9f2f1;color:#0e6f73}
 .fv-hbar{display:grid;grid-template-columns:minmax(90px,160px) 1fr 48px;gap:8px;align-items:center;margin:6px 0;font-size:12.5px}
@@ -5171,8 +5185,53 @@ function fvEnsureStyle() {
 .fv-row-click{cursor:pointer;transition:background .15s}.fv-row-click:hover{background:rgba(30,42,110,.04)}
 .fv-tabs{margin-bottom:14px}
 .fv-wide{max-width:900px!important;width:96%!important}
+
+.fv-sub{margin:-2px 0 14px;color:var(--muted,#6b7390);font-size:13px}
+.fv-fbar{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-end;background:#fff;border:1px solid rgba(30,42,110,.08);border-radius:14px;padding:12px 16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(30,42,110,.06)}
+.fv-fg{display:flex;flex-direction:column;gap:3px}
+.fv-fg>label{font-size:10.5px;color:#8b92ad}
+.fv-fg select,.fv-fg input{height:34px;padding:0 10px;border:1px solid #dfe3ee;border-radius:8px;font:inherit;font-size:13px;background:#fff;box-sizing:border-box;max-width:230px}
+.fv-segd{display:inline-flex;border:1px solid #dfe3ee;border-radius:8px;overflow:hidden;height:34px}
+.fv-segd button{border:0;background:#fff;padding:0 13px;font:inherit;font-size:12.5px;color:#46506e;cursor:pointer;border-right:1px solid #eef0f7;white-space:nowrap;transition:background .15s,color .15s}
+.fv-segd button:last-child{border-right:0}.fv-segd button:hover{background:#f3f5fb}
+.fv-segd button.on{background:#1c2b6e;color:#fff;font-weight:600}
+.fv-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+.fv-stat{background:#fff;border:1px solid rgba(30,42,110,.06);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(30,42,110,.06);animation:fvRise .5s cubic-bezier(.2,.7,.2,1) both}
+.fv-stat:nth-child(2){animation-delay:.05s}.fv-stat:nth-child(3){animation-delay:.1s}.fv-stat:nth-child(4){animation-delay:.15s}.fv-stat:nth-child(5){animation-delay:.2s}.fv-stat:nth-child(6){animation-delay:.25s}.fv-stat:nth-child(7){animation-delay:.3s}
+.fv-stat .n{font-size:24px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.fv-stat .l{font-size:11.5px;color:#7a819c;margin-top:4px}
+.fv-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:16px}
+.fv-chart{background:#fff;border:1px solid rgba(30,42,110,.06);border-radius:12px;padding:12px 14px 10px;box-shadow:0 1px 3px rgba(30,42,110,.06);position:relative}
+.fv-chart h4{margin:0;font-size:13px;color:#1c2b6e}.fv-chart .s{font-size:11px;color:#8b92ad;margin-bottom:4px}
+.fv-expand{position:absolute;top:10px;right:10px;border:1px solid #e0e4f0;background:#fff;border-radius:8px;width:28px;height:26px;cursor:pointer;color:#46506e;font-size:13px}
+.fv-expand:hover{background:#f3f5fb}
+.fv-legend{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;font-size:11px;color:#6b7390;margin-top:2px}
+.fv-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.fv-table{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.fv-table th{background:#1c2b6e;color:#fff;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;padding:9px 12px;text-align:left;font-weight:700;white-space:nowrap}
+.fv-table th.c,.fv-table td.c{text-align:center}
+.fv-table td{padding:9px 12px;background:#fff;border-bottom:1px solid #eef0f7;vertical-align:middle}
+.fv-table thead tr:first-child th:first-child{border-top-left-radius:10px}.fv-table thead tr:first-child th:last-child{border-top-right-radius:10px}
+.fv-table tbody tr:hover td{background:#f8f9fd}
+.fv-table th.g-red{background:#7a2a2a}.fv-table th.g-olive{background:#4a3f12}
+.fv-table tfoot td{font-weight:700;background:#f3f5fb}
+.fv-card2{background:#fff;border:1px solid rgba(30,42,110,.06);border-radius:14px;padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(30,42,110,.06)}
+.fv-card2>h3{margin:0 0 10px;font-size:14px;color:#1c2b6e}
+.fv-pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.fv-pill.red{background:#fde7e1;color:#b0391b}.fv-pill.green{background:#e0f3e6;color:#1f6b3a}.fv-pill.amber{background:#fdf0d5;color:#9a6a0a}
+.fv-btn{border:0;border-radius:7px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;background:#1c2b6e;color:#fff;transition:filter .15s}
+.fv-btn:hover{filter:brightness(1.12)}.fv-btn.green{background:#e0f3e6;color:#1f6b3a}.fv-btn.amber{background:#f5b82e;color:#2b2200}.fv-btn.ghost{background:#fff;color:#1c2b6e;border:1px solid #d5daea}
+.fv-btn:disabled{opacity:.5;cursor:not-allowed}
+.fv-wtinput{width:74px;height:32px;text-align:center;border:1px solid #dfe3ee;border-radius:8px;font:inherit}
+.fv-wtrow{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #eef0f7}
+.fv-wtrow .nm{flex:1;min-width:0}.fv-wtrow input.nmi{width:100%;height:32px;padding:0 8px;border:1px solid transparent;border-radius:8px;font:inherit;background:transparent}
+.fv-wtrow input.nmi:hover,.fv-wtrow input.nmi:focus{border-color:#dfe3ee;background:#fff}
+.fv-wtrow.off{opacity:.55}.fv-wtrow.new{background:#f4fbf6}
+.fv-trash{border:0;background:none;cursor:pointer;color:#98a0ba;font-size:15px;padding:4px 6px;border-radius:6px}.fv-trash:hover{color:#c0532f;background:#fdf1ed}
+.fv-totalbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.fv-totalnum{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;transition:color .2s}
 @media (prefers-reduced-motion:reduce){
- .fv-card{animation:none!important}
+ .fv-card,.fv-stat{animation:none!important}
  .fv-score .t i,.fv-hbar .t i{transition:none!important;width:var(--w)!important}
  .fv-col{transition:none!important;transform:none!important}
  .fv-line{transition:none!important;stroke-dashoffset:0!important}
@@ -5238,12 +5297,24 @@ async function fvLoadRiders() {
   });
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
+// Area Incharges and the region(s) they work in (profile_regions first, legacy region_id only as fallback)
+async function fvLoadAiMap() {
+  const [p, pr] = await Promise.all([
+    sb.from('profiles').select('id, full_name, employee_id, region_id').eq('role', 'team_lead').eq('status', 'active').order('full_name'),
+    sb.from('profile_regions').select('profile_id, region_id')]);
+  const links = pr.data || [];
+  return (p.data || []).map(a => {
+    const mine = links.filter(l => l.profile_id === a.id).map(l => l.region_id);
+    return { id: a.id, name: a.full_name, emp: a.employee_id || '', regionIds: mine.length ? mine : (a.region_id ? [a.region_id] : []) };
+  });
+}
 function fvRegionOptions() {
   const list = state.regions.filter(r => fvSeesAllAreas() || state.myRegionIds.includes(r.id));
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ---------------- small UI pieces ----------------
+const fvStat = (n, l, color = '#1c2b6e') => `<div class="fv-stat"><div class="n" style="color:${color}">${n}</div><div class="l">${l}</div></div>`;
 const fvCard = (n, l, cls = '') => `<div class="fv-card ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
 function fvScorePill(s) {
   if (s === null || s === undefined || s === '') return '<span class="fv-note">—</span>';
@@ -5268,46 +5339,29 @@ function fvLineChart(pts) {
     <defs><linearGradient id="fvg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1E2A6E" stop-opacity=".22"/><stop offset="1" stop-color="#1E2A6E" stop-opacity="0"/></linearGradient></defs>
     ${grid}<path class="fv-area" d="${area}" fill="url(#fvg)"/><path class="fv-line" d="${d}" pathLength="1"/>${dots}${labels}</svg>`;
 }
-function fvColChart(buckets) {
-  if (!buckets.length) return '<div class="fv-note">No visits in this period.</div>';
-  const W = 600, H = 190, pl = 28, pr = 6, pt = 10, pb = 24, n = buckets.length;
-  const max = Math.max(1, ...buckets.map(b => b.a + b.b));
-  const slot = (W - pl - pr) / n, bw = Math.min(34, slot * 0.7);
-  const Y = v => pt + (H - pt - pb) * (1 - v / max);
-  let bars = '';
-  buckets.forEach((b, i) => {
-    const x = pl + slot * i + (slot - bw) / 2;
-    const hb = (H - pt - pb) * b.b / max, ha = (H - pt - pb) * b.a / max;
-    bars += `<rect class="fv-col" x="${x.toFixed(1)}" y="${(H - pb - hb).toFixed(1)}" width="${bw.toFixed(1)}" height="${hb.toFixed(1)}" fill="#17a2a2" rx="2"><title>${escapeHtml(b.label)}: ${b.b} Online</title></rect>`;
-    bars += `<rect class="fv-col" x="${x.toFixed(1)}" y="${(H - pb - hb - ha).toFixed(1)}" width="${bw.toFixed(1)}" height="${ha.toFixed(1)}" fill="#1E2A6E" rx="2"><title>${escapeHtml(b.label)}: ${b.a} On-site</title></rect>`;
-  });
-  const step = Math.max(1, Math.ceil(n / 8));
-  const labs = buckets.map((b, i) => (i % step === 0 || i === n - 1) ? `<text x="${(pl + slot * i + slot / 2).toFixed(1)}" y="${H - 6}" font-size="10" text-anchor="middle" fill="#8b92ad">${escapeHtml(b.label)}</text>` : '').join('');
-  const grid = [0, max].map(v => `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="#e3e6f0"/><text x="${pl - 5}" y="${Y(v) + 4}" font-size="10" text-anchor="end" fill="#8b92ad">${v}</text>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Visits">${grid}${bars}${labs}</svg>
-    <div class="fv-note" style="margin-top:4px;"><span style="color:#1E2A6E;">■</span> On-site &nbsp; <span style="color:#17a2a2;">■</span> Online</div>`;
-}
-function fvHBars(items, suffix = '') {
-  if (!items.length) return '<div class="fv-note">Nothing to show for this period.</div>';
-  const max = Math.max(1, ...items.map(i => i.value));
-  return items.map(i => `<div class="fv-hbar"><span class="lb" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span>
-    <span class="t"><i class="${i.cls || ''}" style="--w:${(i.value / max * 100).toFixed(1)}%;${i.color ? 'background:' + i.color : ''}"></i></span><b>${fvNum(i.value)}${suffix}</b></div>`).join('');
-}
-function fvDonut(parts, centerLabel) {
-  const shown = parts.filter(p => p.value > 0);
-  const total = shown.reduce((s, p) => s + p.value, 0);
-  if (!total) return '<div class="fv-note">No issues in this period.</div>';
-  let acc = 0;
-  const arcs = shown.map(p => {
-    const d = p.value / total * 100, rot = -90 + acc * 3.6; acc += d;
-    return `<circle class="fv-arc" cx="18" cy="18" r="15.9155" stroke="${p.color}" stroke-width="4.2" pathLength="100" style="--d:${d.toFixed(2)};transform:rotate(${rot.toFixed(2)}deg)"/>`;
+// Multi-series line chart with value labels (used by the Visit Report charts)
+function fvMultiLine(labels, series, o = {}) {
+  const n = labels.length;
+  if (!n) return '<div class="fv-note" style="padding:30px 0;text-align:center;">No data for this period.</div>';
+  const W = o.w || 520, H = o.h || 220, pl = 30, pr = 18, pt = 20, pb = 28;
+  const all = series.flatMap(s => s.values.filter(v => v !== null && v !== undefined));
+  const maxV = o.max || Math.max(1, ...all);
+  const X = i => n === 1 ? pl + (W - pl - pr) / 2 : pl + (W - pl - pr) * i / (n - 1);
+  const Y = v => pt + (H - pt - pb) * (1 - v / maxV);
+  const grid = [0, maxV / 2, maxV].map(v => `<line x1="${pl}" x2="${W - pr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="#e8ebf4"/><text x="${pl - 5}" y="${(Y(v) + 3).toFixed(1)}" font-size="9" text-anchor="end" fill="#9aa1bb">${fvNum(v)}</text>`).join('');
+  const showLabels = n <= 12;
+  const lines = series.map(s => {
+    let d = '', pen = false;
+    s.values.forEach((v, i) => { if (v === null || v === undefined) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)} `; pen = true; });
+    const dots = s.values.map((v, i) => (v === null || v === undefined) ? '' :
+      `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.2" fill="${s.color}"><title>${escapeHtml(labels[i])} · ${escapeHtml(s.name)}: ${fvNum(v)}${o.suffix || ''}</title></circle>` +
+      (showLabels ? `<text x="${X(i).toFixed(1)}" y="${(Y(v) - 7).toFixed(1)}" font-size="9" font-weight="600" text-anchor="middle" fill="${s.color}">${fvNum(v)}${o.suffix || ''}</text>` : '')).join('');
+    return `<path class="fv-line" d="${d.trim()}" pathLength="1" style="stroke:${s.color}"/>${dots}`;
   }).join('');
-  const legend = parts.map(p => `<div style="font-size:12.5px;"><span style="color:${p.color}">■</span> ${escapeHtml(p.label)}: <b>${p.value}</b></div>`).join('');
-  return `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
-    <svg viewBox="0 0 36 36" width="130" height="130" role="img" aria-label="Chart"><circle cx="18" cy="18" r="15.9155" fill="none" stroke="#eef0f7" stroke-width="4.2"/>${arcs}
-      <text x="18" y="18.8" text-anchor="middle" font-size="7" font-weight="700" fill="#1E2A6E">${total}</text>
-      <text x="18" y="23.6" text-anchor="middle" font-size="2.6" fill="#8b92ad">${escapeHtml(centerLabel || '')}</text></svg>
-    <div>${legend}</div></div>`;
+  const step = Math.max(1, Math.ceil(n / 7));
+  const xl = labels.map((l, i) => (i % step === 0 || i === n - 1) ? `<text x="${X(i).toFixed(1)}" y="${H - 8}" font-size="9.5" text-anchor="middle" fill="#7a819c">${escapeHtml(l)}</text>` : '').join('');
+  const legend = series.length > 1 || o.legend ? `<div class="fv-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${escapeHtml(s.name)}</span>`).join('')}</div>` : '';
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Trend chart">${grid}${lines}${xl}</svg>${legend}`;
 }
 function fvRing(score, size = 92) {
   const v = Math.max(0, Math.min(100, Number(score) || 0)), col = v >= 90 ? '#2e7d4f' : (v >= 75 ? '#d9962b' : '#c0532f');
@@ -5325,43 +5379,51 @@ function fvMatchRider(row, q) {
 const fvFilterVisits = (rows, f) => rows.filter(v => (!f.region || v.region_id === f.region) && (!f.type || v.visit_type === f.type) && (!f.by || v.submitted_by === f.by) && fvMatchRider(v, f.q));
 const fvFilterIssues = (rows, f) => rows.filter(i => (!f.region || i.region_id === f.region) && (!f.by || i.submitted_by === f.by) && (!f.status || i.status === f.status) && (!f.cp || i.checkpoint_text === f.cp) && fvMatchRider(i, f.q));
 const fvOpt = (v, l, cur) => `<option value="${escapeHtml(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${escapeHtml(l)}</option>`;
+const FV_SEG = [['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This Week'], ['this_month', 'This Month'], ['last_month', 'Last Month'], ['custom', 'Custom']];
+const FV_DEFAULT_F = () => ({ preset: 'this_month', from: '', to: '', region: '', q: '', type: '', by: '', status: '', cp: '' });
 
-// cfg: { filters:{region,search,type,by,status:[[v,l]..],cp}, load(range), rows(data)->rows for the "by" list,
-//        cps(data)->checkpoint names, draw(data, f, host), extra }
+// cfg.filters: { region, search, type, by, status:{label,options:[[v,l]..]}, cp }
+// cfg.load(range) -> data, cfg.rows(data) -> rows (for the "by" list), cfg.cps(data) -> point names,
+// cfg.draw(data, f, host), cfg.extra -> extra html in the bar, cfg.afterFilters(barEl, {draw, reload})
 async function fvListShell(host, cfg) {
   host.innerHTML = '<div class="fv-fh"></div><div class="fv-res"></div>';
   const fh = host.querySelector('.fv-fh'), res = host.querySelector('.fv-res');
   let data = null, seq = 0;
   const draw = () => { try { cfg.draw(data, FV.f, res); fvGo(res); } catch (e) { console.error(e); res.innerHTML = fvError(e); } };
   const build = () => {
-    const f = FV.f, o = cfg.filters || {};
+    const f = FV.f, o = cfg.filters || {}, r = fvRange(f);
     const by = new Map();
-    if (o.by && data && cfg.rows) cfg.rows(data).forEach(r => { if (r.submitted_by) by.set(r.submitted_by, r.submitted_by_name || 'Unknown'); });
+    if (o.by && data && cfg.rows) cfg.rows(data).forEach(x => { if (x.submitted_by) by.set(x.submitted_by, x.submitted_by_name || 'Unknown'); });
     const cps = (o.cp && data && cfg.cps) ? [...new Set(cfg.cps(data))].sort() : [];
-    fh.innerHTML = `<div class="fv-filters">
-      <select data-k="preset" title="Date">${FV_PRESETS.map(([k, l]) => fvOpt(k, l, f.preset)).join('')}</select>
-      <span data-custom style="display:${f.preset === 'custom' ? 'inline-flex' : 'none'};gap:6px;align-items:center;">
-        <input type="date" data-k="from" value="${escapeHtml(f.from)}"> <span class="fv-note">to</span> <input type="date" data-k="to" value="${escapeHtml(f.to)}"></span>
-      ${o.region ? `<select data-k="region"><option value="">All Teams / Regions</option>${fvRegionOptions().map(r => fvOpt(r.id, r.name, f.region)).join('')}</select>` : ''}
-      ${o.search ? `<input type="search" data-k="q" placeholder="Search rider name or ID…" value="${escapeHtml(f.q)}" style="min-width:210px;">` : ''}
-      ${o.type ? `<select data-k="type"><option value="">All Visit Types</option>${fvOpt('Onsite', 'On-site', f.type)}${fvOpt('Online', 'Online', f.type)}</select>` : ''}
-      ${o.by ? `<select data-k="by"><option value="">All Area Incharges</option>${[...by.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([id, n]) => fvOpt(id, n, f.by)).join('')}</select>` : ''}
-      ${o.status ? `<select data-k="status">${o.status.map(([v, l]) => fvOpt(v, l, f.status)).join('')}</select>` : ''}
-      ${o.cp ? `<select data-k="cp"><option value="">All Checkpoints</option>${cps.map(c => fvOpt(c, c, f.cp)).join('')}</select>` : ''}
-      <button class="btn small outline" data-reset type="button">Reset</button>${cfg.extra || ''}</div>`;
+    const shownFrom = r.from === '2000-01-01' ? '' : r.from, shownTo = r.to === '2999-12-31' ? '' : r.to;
+    fh.innerHTML = `<div class="fv-fbar">
+      <div class="fv-fg"><label>Date</label><div class="fv-segd">${FV_SEG.map(([k, l]) => `<button type="button" data-seg="${k}" class="${f.preset === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="fv-fg"><label>From</label><input type="date" data-k="from" value="${escapeHtml(shownFrom)}"></div>
+      <div class="fv-fg"><label>To</label><input type="date" data-k="to" value="${escapeHtml(shownTo)}"></div>
+      ${o.region ? `<div class="fv-fg"><label>Team</label><select data-k="region"><option value="">All</option>${fvRegionOptions().map(x => fvOpt(x.id, x.name, f.region)).join('')}</select></div>` : ''}
+      ${o.search ? `<div class="fv-fg"><label>Rider</label><input type="search" data-k="q" placeholder="name or emp ID" value="${escapeHtml(f.q)}"></div>` : ''}
+      ${o.type ? `<div class="fv-fg"><label>Visit type</label><select data-k="type"><option value="">All</option>${fvOpt('Onsite', 'On-site', f.type)}${fvOpt('Online', 'Online', f.type)}</select></div>` : ''}
+      ${o.by ? `<div class="fv-fg"><label>Area Incharge</label><select data-k="by"><option value="">All</option>${[...by.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([id, n]) => fvOpt(id, n, f.by)).join('')}</select></div>` : ''}
+      ${o.status ? `<div class="fv-fg"><label>${escapeHtml(o.status.label)}</label><select data-k="status">${o.status.options.map(([v, l]) => fvOpt(v, l, f.status)).join('')}</select></div>` : ''}
+      ${o.cp ? `<div class="fv-fg"><label>Point</label><select data-k="cp"><option value="">All</option>${cps.map(c => fvOpt(c, c, f.cp)).join('')}</select></div>` : ''}
+      <button class="fv-btn ghost" data-reset type="button" style="height:34px;">Clear</button>${cfg.extra || ''}</div>`;
+    fh.querySelectorAll('[data-seg]').forEach(b => b.onclick = () => {
+      const k = b.dataset.seg;
+      if (k === 'custom') { FV.f.preset = 'custom'; FV.f.from = fh.querySelector('[data-k="from"]').value; FV.f.to = fh.querySelector('[data-k="to"]').value; }
+      else { FV.f.preset = k; FV.f.from = ''; FV.f.to = ''; }
+      reload();
+    });
     let timer = null;
     fh.querySelectorAll('[data-k]').forEach(el => {
       const k = el.dataset.k;
       const apply = () => {
-        FV.f[k] = el.value;
-        if (k === 'preset') { fh.querySelector('[data-custom]').style.display = el.value === 'custom' ? 'inline-flex' : 'none'; if (el.value !== 'custom') reload(); else if (FV.f.from || FV.f.to) reload(); }
-        else if (k === 'from' || k === 'to') reload();
-        else draw();
+        if (k === 'from' || k === 'to') { FV.f.preset = 'custom'; FV.f.from = fh.querySelector('[data-k="from"]').value; FV.f.to = fh.querySelector('[data-k="to"]').value; reload(); }
+        else { FV.f[k] = el.value; draw(); }
       };
       if (k === 'q') el.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 160); });
       else el.addEventListener('change', apply);
     });
-    fh.querySelector('[data-reset]').onclick = () => { FV.f = { preset: 'this_month', from: '', to: '', region: '', q: '', type: '', by: '', status: '', cp: '' }; reload(); };
+    fh.querySelector('[data-reset]').onclick = () => { FV.f = FV_DEFAULT_F(); reload(); };
     if (cfg.afterFilters) cfg.afterFilters(fh, { draw, reload });
   };
   const reload = async () => {
@@ -5376,10 +5438,10 @@ async function fvListShell(host, cfg) {
   return { reload, draw };
 }
 
-// ---------------- OVERVIEW (dashboard) ----------------
-function fvBucketize(visits) {
-  if (!visits.length) return [];
-  const dates = visits.map(v => v.visit_date).sort();
+// ---------------- trend buckets (day / week / month, chosen from the data's span) ----------------
+function fvTrend(visits, issues) {
+  const dates = [...visits.map(v => v.visit_date), ...issues.map(i => i.visit_date)].sort();
+  if (!dates.length) return null;
   const span = (new Date(dates[dates.length - 1] + 'T00:00:00') - new Date(dates[0] + 'T00:00:00')) / 86400000;
   const gran = span <= 45 ? 'day' : (span <= 200 ? 'week' : 'month');
   const key = (iso) => {
@@ -5389,65 +5451,119 @@ function fvBucketize(visits) {
     return fvIso(new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)));
   };
   const map = new Map();
-  visits.forEach(v => {
-    const k = key(v.visit_date);
-    if (!map.has(k)) map.set(k, { k, sum: 0, n: 0, a: 0, b: 0 });
-    const o = map.get(k); o.sum += Number(v.score || 0); o.n++;
-    if (v.visit_type === 'Onsite') o.a++; else o.b++;
-  });
+  const get = (k) => { if (!map.has(k)) map.set(k, { on: 0, off: 0, sum: 0, n: 0, it: 0, ir: 0 }); return map.get(k); };
+  visits.forEach(v => { const o = get(key(v.visit_date)); o.n++; o.sum += Number(v.score || 0); if (v.visit_type === 'Onsite') o.on++; else o.off++; });
+  issues.forEach(i => { const o = get(key(i.visit_date)); o.it++; if (i.status === 'resolved') o.ir++; });
+  const keys = [...map.keys()].sort();
   const label = (k) => gran === 'month' ? new Date(k + 'T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : fvShortDate(k);
-  return [...map.values()].sort((x, y) => x.k < y.k ? -1 : 1).map(o => ({ label: label(o.k), avg: o.sum / o.n, n: o.n, a: o.a, b: o.b }));
+  return {
+    gran, labels: keys.map(label),
+    onsite: keys.map(k => map.get(k).on), online: keys.map(k => map.get(k).off), total: keys.map(k => map.get(k).on + map.get(k).off),
+    issues: keys.map(k => map.get(k).it), resolved: keys.map(k => map.get(k).ir),
+    avg: keys.map(k => map.get(k).n ? Math.round(map.get(k).sum / map.get(k).n * 10) / 10 : null)
+  };
 }
 const fvAvg = (rows) => rows.length ? rows.reduce((s, v) => s + Number(v.score || 0), 0) / rows.length : null;
+const fvScoreColor = (s) => fvScoreCls(s) === 'good' ? '#2e7d4f' : fvScoreCls(s) === 'fair' ? '#b9770e' : '#c0532f';
+function fvMonthsSpan(range, visits) {
+  const today = fvToday();
+  const first = range.from === '2000-01-01' ? (visits.map(v => v.visit_date).sort()[0] || today) : range.from;
+  const last = range.to > today ? today : range.to;
+  if (last < first) return 1;
+  const a = new Date(first + 'T00:00:00'), b = new Date(last + 'T00:00:00');
+  return Math.max(1, (b.getFullYear() - a.getFullYear()) * 12 + b.getMonth() - a.getMonth() + 1);
+}
 
-async function fvRenderOverview(body) {
-  body.innerHTML = '<div id="fv-ov"></div><div id="fv-kpi"></div>';
+// ---------------- VISIT REPORT (dashboard) ----------------
+async function fvPageReport(host) {
+  host.innerHTML = '<div id="fv-ov"></div><div id="fv-kpi"></div>';
   const rider = fvIsRider();
-  await fvListShell(body.querySelector('#fv-ov'), {
-    filters: { region: !rider, type: !rider, by: !rider },
-    rows: d => d.v,
-    load: async (r) => { const [v, i] = await Promise.all([fvLoadVisits(r), fvLoadIssues(r)]); return { v, i }; },
+  await fvListShell(host.querySelector('#fv-ov'), {
+    filters: { region: !rider, search: !rider },
+    load: async (r) => {
+      const cur = { from: fvToday().slice(0, 7) + '-01', to: fvToday().slice(0, 7) + '-31' };
+      const [v, i, targets, ai, cmv] = await Promise.all([fvLoadVisits(r), fvLoadIssues(r),
+        rider ? [] : fvLoadTargets().catch(() => []), rider ? [] : fvLoadAiMap().catch(() => []), rider ? [] : fvLoadVisits(cur)]);
+      return { v, i, targets, ai, cmv, r };
+    },
     draw: (d, f, res) => {
       const visits = fvFilterVisits(d.v, f);
       const ids = new Set(visits.map(v => v.id));
       const issues = d.i.filter(i => ids.has(i.visit_id));
-      const open = issues.filter(i => i.status === 'open').length, done = issues.length - open;
-      const avg = fvAvg(visits);
       if (!visits.length) { res.innerHTML = emptyState(rider ? 'No visit reports for you in this period yet.' : 'No visit reports match these filters.'); return; }
-      const on = visits.filter(v => v.visit_type === 'Onsite').length;
-      const cards = rider
-        ? fvCard(visits.length, 'Visits', '') + fvCard(fvNum(avg) + '%', 'Average score', fvScoreCls(avg) === 'good' ? 'green' : fvScoreCls(avg) === 'fair' ? 'amber' : 'red')
-          + fvCard(fvNum(visits[0].score) + '%', 'Latest score (' + fvShortDate(visits[0].visit_date) + ')', 'teal') + fvCard(open, 'Open issues', 'red') + fvCard(done, 'Resolved issues', 'green')
-        : fvCard(visits.length, 'Total visits') + fvCard(on, 'On-site visits') + fvCard(visits.length - on, 'Online visits', 'teal')
-          + fvCard(fvNum(avg) + '%', 'Average score', fvScoreCls(avg) === 'good' ? 'green' : fvScoreCls(avg) === 'fair' ? 'amber' : 'red')
-          + fvCard(new Set(visits.map(v => v.rider_id)).size, 'Riders visited') + fvCard(open, 'Open issues', 'red') + fvCard(done, 'Resolved issues', 'green');
+      const open = issues.filter(i => i.status === 'open').length, done = issues.length - open;
+      const on = visits.filter(v => v.visit_type === 'Onsite').length, avg = fvAvg(visits);
+      const stats = rider
+        ? fvStat(visits.length, 'Visits') + fvStat(fvNum(avg) + '%', 'Average Score', fvScoreColor(avg)) + fvStat(fvNum(visits[0].score) + '%', 'Latest Score', fvScoreColor(visits[0].score))
+          + fvStat(open, 'Open Issues', '#c0392b') + fvStat(done, 'Resolved Issues', '#0f7a56')
+        : fvStat(on, 'On Site Visits', '#2f4fd0') + fvStat(visits.length - on, 'Online Visits', '#3a6b17') + fvStat(visits.length, 'Total Visits', '#1c2b6e')
+          + fvStat(issues.length, 'Total Issues', '#a0522d') + fvStat(open, 'Open Issues', '#c0392b') + fvStat(done, 'Resolved Issues', '#0f7a56')
+          + fvStat(fvNum(avg) + '%', 'Average Score', fvScoreColor(avg));
 
-      const trend = fvBucketize(visits);
-      const byRegion = new Map(), byRider = new Map(), byCp = new Map();
-      visits.forEach(v => {
-        const rk = v.region_name || '—'; if (!byRegion.has(rk)) byRegion.set(rk, []); byRegion.get(rk).push(v);
-        const dk = v.rider_id || v.rider_name; if (!byRider.has(dk)) byRider.set(dk, []); byRider.get(dk).push(v);
-      });
+      // ----- trend charts -----
+      const t = fvTrend(visits, issues);
+      const unit = t.gran === 'day' ? 'by day' : t.gran === 'week' ? 'by week' : 'by month';
+      const charts = {
+        volume: { title: 'Visit Volume Trend', sub: `Onsite / Online / Total · ${unit}`, labels: t.labels, o: {},
+          series: [{ name: 'Onsite', color: '#2f4fd0', values: t.onsite }, { name: 'Online', color: '#3a6b17', values: t.online }, { name: 'Total', color: '#1c2b6e', values: t.total }] },
+        issues: { title: 'Issues Trend', sub: `Total vs Resolved · ${unit}`, labels: t.labels, o: {},
+          series: [{ name: 'Total Issues', color: '#9b2c2c', values: t.issues }, { name: 'Resolved', color: '#0f7a56', values: t.resolved }] },
+        score: { title: 'Average Score Trend', sub: `Average score · ${unit}`, labels: t.labels, o: { max: 100, suffix: '%', legend: true },
+          series: [{ name: 'Average Score', color: '#e0a21b', values: t.avg }] }
+      };
+      const box = (id) => { const c = charts[id]; return `<div class="fv-chart"><button class="fv-expand" data-expand="${id}" title="Expand" type="button">⛶</button><h4>${c.title}</h4><div class="s">${c.sub}</div>${fvMultiLine(c.labels, c.series, c.o)}</div>`; };
+
+      // ----- By Team table -----
+      let teamHtml = '';
+      if (!rider) {
+        const today = fvToday(), months = fvMonthsSpan(d.r, visits);
+        const regionIds = new Set(fvRegionOptions().filter(x => !f.region || x.id === f.region).map(x => x.id));
+        if (!f.region && fvSeesAllAreas()) visits.forEach(v => v.region_id && regionIds.add(v.region_id));
+        const nameOf = (id) => (state.regions.find(x => x.id === id)?.name) || visits.find(v => v.region_id === id)?.region_name || '—';
+        const rows = [...regionIds].map(id => {
+          const vs = visits.filter(v => v.region_id === id), is = issues.filter(i => i.region_id === id);
+          const von = vs.filter(v => v.visit_type === 'Onsite'), vof = vs.filter(v => v.visit_type === 'Online');
+          const ais = d.ai.filter(a => a.regionIds.includes(id));
+          const tOn = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).onsite_kpi, 0);
+          const tOff = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).online_target, 0);
+          const monthOn = d.cmv.filter(v => v.region_id === id && v.visit_type === 'Onsite').length;
+          const dist = (arr) => new Set(arr.map(v => v.rider_id || v.rider_name)).size;
+          return { id, name: nameOf(id), on: von.length, onT: tOn * months, onR: dist(von), off: vof.length, offT: tOff * months, offR: dist(vof),
+            tv: vs.length, tr: dist(vs), open: is.filter(i => i.status === 'open').length, res: is.filter(i => i.status === 'resolved').length, it: is.length,
+            kpi: tOn > 0 ? (monthOn >= tOn ? 'ok' : 'no') : 'na', avg: fvAvg(vs) };
+        }).filter(r => r.tv || r.it || regionIds.size <= 12).sort((a, b) => a.name.localeCompare(b.name));
+        const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+        const frac = (c, t) => t > 0 ? `${c}<span class="fv-note">/${t}</span>` : `${c}`;
+        const kpiPill = (k) => k === 'ok' ? '<span class="fv-pill green">Achieved</span>' : k === 'no' ? '<span class="fv-pill red">Not Achieved</span>' : '<span class="fv-note">—</span>';
+        teamHtml = `<div class="fv-card2"><h3>By Team</h3><div style="overflow-x:auto;"><table class="fv-table">
+          <thead><tr><th rowspan="2">Team</th><th colspan="2" class="c">On Site</th><th colspan="2" class="c">Online</th><th colspan="2" class="c">Total</th><th colspan="3" class="c g-red">Issues</th><th rowspan="2" class="c g-olive">KPI<br><span style="font-weight:400;font-size:9px;">(this month)</span></th><th rowspan="2" class="c">Avg Score</th></tr>
+          <tr><th class="c">Visit count</th><th class="c">Rider count</th><th class="c">Visit count</th><th class="c">Rider count</th><th class="c">Total visit</th><th class="c">Total rider</th><th class="c g-red">Open</th><th class="c g-red">Resolved</th><th class="c g-red">Total</th></tr></thead>
+          <tbody>${rows.map(r => `<tr><td><strong>${escapeHtml(r.name)}</strong></td><td class="c">${frac(r.on, r.onT)}</td><td class="c">${r.onR}</td><td class="c">${frac(r.off, r.offT)}</td><td class="c">${r.offR}</td>
+            <td class="c">${r.tv}</td><td class="c">${r.tr}</td><td class="c" style="color:#c0392b;font-weight:600;">${r.open}</td><td class="c" style="color:#0f7a56;font-weight:600;">${r.res}</td><td class="c">${r.it}</td>
+            <td class="c">${kpiPill(r.kpi)}</td><td class="c" style="font-weight:600;color:${r.avg === null ? '#999' : fvScoreColor(r.avg)};">${r.avg === null ? '—' : fvNum(r.avg) + '%'}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td>Total</td><td class="c">${frac(sum('on'), sum('onT'))}</td><td class="c">${sum('onR')}</td><td class="c">${frac(sum('off'), sum('offT'))}</td><td class="c">${sum('offR')}</td><td class="c">${sum('tv')}</td><td class="c">${sum('tr')}</td><td class="c">${sum('open')}</td><td class="c">${sum('res')}</td><td class="c">${sum('it')}</td><td class="c"></td><td class="c">${fvNum(avg)}%</td></tr></tfoot></table></div>
+          <p class="fv-note" style="margin-top:8px;">Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status always looks at the <strong>current month</strong>.</p></div>`;
+      }
+
+      // ----- Issue Category table -----
+      const byCp = new Map();
       issues.forEach(i => byCp.set(i.checkpoint_text, (byCp.get(i.checkpoint_text) || 0) + 1));
-      const regionBars = [...byRegion.entries()].map(([k, arr]) => ({ label: k, value: fvAvg(arr), cls: 'fv-bg-' + fvScoreCls(fvAvg(arr)) })).sort((a, b) => b.value - a.value);
-      const cpBars = [...byCp.entries()].map(([k, n]) => ({ label: k, value: n, color: '#c0532f' })).sort((a, b) => b.value - a.value).slice(0, 8);
-      const lowest = [...byRider.values()].map(arr => ({ name: arr[0].rider_name, emp: arr[0].rider_employee_id, avg: fvAvg(arr), n: arr.length }))
-        .sort((a, b) => a.avg - b.avg).slice(0, 5);
+      const cats = [...byCp.entries()].sort((a, b) => b[1] - a[1]);
+      const catHtml = `<div class="fv-card2"><h3>Issue Category</h3>${cats.length ? `<div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Issue category</th><th class="c" style="width:90px;">Count</th><th style="width:34%;">% of issues</th></tr></thead><tbody>
+        ${cats.map(([k, n]) => { const p = n / issues.length * 100; return `<tr><td>${escapeHtml(k)}</td><td class="c" style="color:#c0392b;font-weight:700;">${n}</td>
+          <td><span class="fv-score" style="--w:${p.toFixed(1)}%;display:flex;"><span class="t"><i style="background:#c0532f"></i></span><b style="min-width:52px;color:#6b7390;font-weight:500;">${p.toFixed(1)}%</b></span></td></tr>`; }).join('')}
+        </tbody></table></div>` : '<div class="fv-note">No issues were raised in this period. 🎉</div>'}</div>`;
 
-      res.innerHTML = `<div class="fv-cards">${cards}</div>
-        <div class="fv-grid2">
-          <div class="fv-panel"><h3>Score trend</h3>${fvLineChart(trend.map(t => ({ x: t.label, y: t.avg, n: t.n })))}</div>
-          ${rider ? '' : `<div class="fv-panel"><h3>Visits over time</h3>${fvColChart(trend)}</div>`}
-          ${rider ? '' : `<div class="fv-panel"><h3>Average score by team / region</h3>${fvHBars(regionBars, '%')}</div>`}
-          <div class="fv-panel"><h3>Most common issues</h3>${fvHBars(cpBars)}</div>
-          <div class="fv-panel"><h3>Issue status</h3>${fvDonut([{ label: 'Open', value: open, color: '#c0532f' }, { label: 'Resolved', value: done, color: '#2e7d4f' }], 'issues')}</div>
-          ${rider ? '' : `<div class="fv-panel"><h3>Needs attention — lowest average scores</h3>
-            ${lowest.map(r => `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #eef0f7;">
-              <span>${escapeHtml(r.name)} <span class="fv-note">${escapeHtml(r.emp || '')} · ${r.n} visit${r.n === 1 ? '' : 's'}</span></span>${fvScorePill(r.avg)}</div>`).join('')}</div>`}
-        </div>`;
+      res.innerHTML = `<div class="fv-stats">${stats}</div>
+        <div class="fv-charts">${box('volume')}${box('issues')}${box('score')}</div>${teamHtml}${catHtml}`;
+      res.querySelectorAll('[data-expand]').forEach(b => b.onclick = () => {
+        const c = charts[b.dataset.expand];
+        openModal(`<button class="modal-close" onclick="requestCloseModal()">✕</button><h2 style="margin:0 0 2px;">${c.title}</h2><div class="fv-note" style="margin-bottom:10px;">${c.sub}</div><div class="fv-go">${fvMultiLine(c.labels, c.series, { ...c.o, w: 900, h: 400 })}</div>`);
+        const m = document.querySelector('#active-modal .modal'); m.classList.add('fv-wide'); fvGo(m);
+      });
     }
   });
-  await fvKpiBoard(body.querySelector('#fv-kpi'));
+  await fvKpiBoard(host.querySelector('#fv-kpi'));
 }
 
 // ---------------- Area Incharge monthly KPI board ----------------
@@ -5459,9 +5575,9 @@ async function fvKpiBoard(host) {
   if (!host || fvIsRider()) { if (host) host.innerHTML = ''; return; }
   const thisMonth = fvToday().slice(0, 7);
   const month = FV.kpiMonth || thisMonth;
-  host.innerHTML = `<div class="fv-panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+  host.innerHTML = `<div class="fv-card2"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
       <h3 style="margin:0;">Area Incharge KPI — monthly</h3>
-      <input type="month" id="fv-kpi-month" value="${month}" max="${thisMonth}" style="padding:6px 8px;border:1px solid var(--line,#d8dce8);border-radius:8px;"></div>
+      <input type="month" id="fv-kpi-month" value="${month}" max="${thisMonth}" style="height:34px;padding:0 10px;border:1px solid #dfe3ee;border-radius:8px;"></div>
       <div id="fv-kpi-body" class="fv-note" style="margin-top:10px;">Loading…</div></div>`;
   host.querySelector('#fv-kpi-month').onchange = (e) => { FV.kpiMonth = e.target.value || thisMonth; fvKpiBoard(host); };
   const out = host.querySelector('#fv-kpi-body');
@@ -5469,24 +5585,21 @@ async function fvKpiBoard(host) {
     const [y, m] = month.split('-').map(Number);
     const range = { from: month + '-01', to: fvIso(new Date(y, m, 0)) };
     const today = fvToday(), ended = range.to < today, evalDate = ended ? range.to : today;
-    let aisQ = sb.from('profiles').select('id, full_name, employee_id').eq('role', 'team_lead').eq('status', 'active').order('full_name');
-    if (state.profile.role === 'team_lead') aisQ = aisQ.eq('id', state.user.id);
-    const [targets, visits, aisRes] = await Promise.all([fvLoadTargets(), fvLoadVisits(range), aisQ]);
-    const ais = aisRes.data || [];
+    const [targets, visits, aiAll] = await Promise.all([fvLoadTargets(), fvLoadVisits(range), fvLoadAiMap()]);
+    const ais = state.profile.role === 'team_lead' ? aiAll.filter(a => a.id === state.user.id) : aiAll;
     if (!ais.length) { out.innerHTML = 'No Area Incharges to show.'; return; }
     const rows = ais.map(a => {
-      const t = fvTargetFor(targets, a.id, evalDate);
-      const mine = visits.filter(v => v.submitted_by === a.id);
+      const t = fvTargetFor(targets, a.id, evalDate), mine = visits.filter(v => v.submitted_by === a.id);
       return { a, t, on: mine.filter(v => v.visit_type === 'Onsite').length, off: mine.filter(v => v.visit_type === 'Online').length };
     });
     const met = rows.filter(r => r.on >= r.t.onsite_kpi).length;
-    const badge = (r) => r.t.onsite_kpi === 0 ? '<span class="badge pending">No KPI</span>'
-      : r.on >= r.t.onsite_kpi ? '<span class="badge active">KPI met</span>'
-      : ended ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Missed</span>' : '<span class="badge pending">In progress</span>';
-    out.innerHTML = `<div class="fv-cards" style="margin-top:6px;">${fvCard(met + ' / ' + rows.length, 'Met the On-site KPI', met === rows.length ? 'green' : 'amber')}
-        ${fvCard(rows.reduce((s, r) => s + r.on, 0), 'On-site visits this month')}${fvCard(rows.reduce((s, r) => s + r.off, 0), 'Online visits this month', 'teal')}</div>
-      <div style="overflow-x:auto;"><table><thead><tr><th>Area Incharge</th><th>On-site (KPI)</th><th>KPI status</th><th>Online (target only)</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td>${escapeHtml(r.a.full_name)} <span class="fv-note">${escapeHtml(r.a.employee_id || '')}</span></td>
+    const badge = (r) => r.t.onsite_kpi === 0 ? '<span class="fv-pill amber">No KPI</span>'
+      : r.on >= r.t.onsite_kpi ? '<span class="fv-pill green">KPI met</span>'
+      : ended ? '<span class="fv-pill red">Missed</span>' : '<span class="fv-pill amber">In progress</span>';
+    out.innerHTML = `<div class="fv-stats" style="margin-top:6px;">${fvStat(met + ' / ' + rows.length, 'Met the On-site KPI', met === rows.length ? '#2e7d4f' : '#b9770e')}
+        ${fvStat(rows.reduce((s, r) => s + r.on, 0), 'On-site visits this month', '#2f4fd0')}${fvStat(rows.reduce((s, r) => s + r.off, 0), 'Online visits this month', '#3a6b17')}</div>
+      <div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Area Incharge</th><th>On-site (KPI)</th><th>KPI status</th><th>Online (target only)</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${escapeHtml(r.a.name)} <span class="fv-note">${escapeHtml(r.a.emp)}</span></td>
         <td>${fvProgress(r.on, r.t.onsite_kpi, 'fv-bg-' + (r.on >= r.t.onsite_kpi ? 'good' : 'fair'))}</td><td>${badge(r)}</td>
         <td>${fvProgress(r.off, r.t.online_target, 'fv-bg-teal')}</td></tr>`).join('')}
       </tbody></table></div>
@@ -5501,14 +5614,14 @@ function fvVisitsToRows(rows) {
     'Sub-Region': v.sub_region_name || '', 'Visit Type': fvTypeLabel(v.visit_type), 'Score %': fvNum(v.score), 'OK': v.ok_count, 'Issues': v.issue_count,
     'Visited By': v.submitted_by_name || '' }));
 }
-async function fvRenderVisits(body) {
+async function fvPageVisits(host) {
   const rider = fvIsRider();
   let shown = 50, current = [], ctx = null;
-  await fvListShell(body, {
+  await fvListShell(host, {
     filters: { region: !rider, search: !rider, type: !rider, by: !rider },
     rows: d => d,
     load: fvLoadVisits,
-    extra: rider ? '' : ' <button class="btn small outline" data-export type="button">Download</button>',
+    extra: rider ? '' : ' <button class="fv-btn ghost" data-export type="button" style="height:34px;">Download</button>',
     afterFilters: (fh, c) => {
       ctx = c;
       const b = fh.querySelector('[data-export]');
@@ -5517,23 +5630,21 @@ async function fvRenderVisits(body) {
     draw: (data, f, res) => {
       current = fvFilterVisits(data, f);
       shown = 50;
+      const canEdit = fvCanManage();
       const paint = () => {
         if (!current.length) { res.innerHTML = emptyState(rider ? 'No visit reports for you in this period.' : 'No visit reports match these filters.'); return; }
-        const avg = fvAvg(current), on = current.filter(v => v.visit_type === 'Onsite').length;
-        res.innerHTML = `<div class="fv-cards">${fvCard(current.length, 'Visits')}${fvCard(fvNum(avg) + '%', 'Average score', fvScoreCls(avg) === 'good' ? 'green' : fvScoreCls(avg) === 'fair' ? 'amber' : 'red')}
-          ${fvCard(on, 'On-site')}${fvCard(current.length - on, 'Online', 'teal')}${fvCard(current.filter(v => Number(v.score) < 75).length, 'Below 75%', 'red')}</div>
-          <div style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Rider</th>${rider ? '' : '<th>Team / Region</th>'}<th>Type</th><th>Score</th><th>OK / Issues</th><th>Visited by</th></tr></thead><tbody>
-          ${current.slice(0, shown).map(v => `<tr class="fv-row-click" data-vid="${v.id}">
+        res.innerHTML = `<div class="fv-note" style="margin:0 2px 8px;">Showing <strong>${current.length}</strong> visit${current.length === 1 ? '' : 's'} · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
+          <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Visit date</th><th>Team name</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
+          ${current.slice(0, shown).map(v => `<tr>
             <td>${fvFmtDate(v.visit_date)}</td>
+            <td>${escapeHtml(v.region_name || '—')}${v.sub_region_name ? `<div class="fv-note">${escapeHtml(v.sub_region_name)}</div>` : ''}</td>
             <td><strong>${escapeHtml(v.rider_name)}</strong><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
-            ${rider ? '' : `<td>${escapeHtml(v.region_name || '—')}<div class="fv-note">${escapeHtml(v.sub_region_name || '')}</div></td>`}
             <td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td>
-            <td><span style="color:#2e7d4f;font-weight:600;">${v.ok_count}</span> / <span style="color:#c0532f;font-weight:600;">${v.issue_count}</span></td>
-            <td>${escapeHtml(v.submitted_by_name || '—')}${v.edit_count ? ' <span class="fv-chip" title="Corrected by Super Admin">✎ edited</span>' : ''}</td></tr>`).join('')}
-          </tbody></table></div>
-          ${current.length > shown ? `<div style="text-align:center;margin-top:10px;"><button class="btn small outline" data-more type="button">Show more (${current.length - shown} left)</button></div>` : ''}
-          <p class="fv-note" style="margin-top:8px;">Click any row to open the full visit form.</p>`;
-        res.querySelectorAll('[data-vid]').forEach(tr => tr.onclick = () => fvOpenVisit(tr.dataset.vid, () => ctx && ctx.reload()));
+            <td>${escapeHtml(v.submitted_by_name || '—')}${v.edit_count ? ' <span class="fv-chip" title="Corrected by Super Admin">✎ edited</span>' : ''}</td>
+            <td class="c"><button class="fv-btn" data-vid="${v.id}" type="button">${canEdit ? 'Edit' : 'View'}</button></td></tr>`).join('')}
+          </tbody></table></div></div>
+          ${current.length > shown ? `<div style="text-align:center;margin-top:4px;"><button class="fv-btn ghost" data-more type="button">Show more (${current.length - shown} left)</button></div>` : ''}`;
+        res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), canEdit));
         const more = res.querySelector('[data-more]');
         if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
       };
@@ -5543,8 +5654,8 @@ async function fvRenderVisits(body) {
 }
 
 // ---------------- VISIT FORM (view / Super Admin correction) ----------------
-const fvStatusBadge = (s) => s === 'OK' ? '<span class="badge active">OK</span>' : '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Issue</span>';
-async function fvOpenVisit(id, onChanged) {
+const fvStatusBadge = (s) => s === 'OK' ? '<span class="fv-pill green">OK</span>' : '<span class="fv-pill red">Issue</span>';
+async function fvOpenVisit(id, onChanged, startEditing) {
   const { data: v, error } = await sb.from('fv_visits').select('*').eq('id', id).maybeSingle();
   if (error || !v) { toast('Could not open this visit.'); return; }
   const { data: iss } = await sb.from('fv_issues').select('cp_key, status, resolved_at').eq('visit_id', id);
@@ -5554,7 +5665,7 @@ async function fvOpenVisit(id, onChanged) {
   modal.classList.add('fv-wide');
   const closeBtn = '<button class="modal-close" onclick="requestCloseModal()">✕</button>';
   const canEdit = fvCanManage();
-  let editing = false;
+  let editing = !!(startEditing && canEdit);
   const calc = (ans) => { const t = ans.reduce((s, a) => s + Number(a.weight), 0); const ok = ans.filter(a => a.status === 'OK').reduce((s, a) => s + Number(a.weight), 0); return t ? ok / t * 100 : 0; };
 
   const head = (score) => `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
@@ -5565,24 +5676,24 @@ async function fvOpenVisit(id, onChanged) {
         ${v.edit_count ? `<div class="fv-note">✎ Corrected by ${escapeHtml(v.last_edited_name || 'Super Admin')} on ${formatDateTime(v.last_edited_at)}${v.edit_count > 1 ? ' (' + v.edit_count + ' times)' : ''}</div>` : ''}</div></div>`;
 
   const viewHtml = () => `${head(v.score)}
-    <div style="overflow-x:auto;"><table><thead><tr><th>#</th><th>Checkpoint</th><th>Weight</th><th>Result</th><th>Observation</th></tr></thead><tbody>
+    <div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>#</th><th>Checkpoint</th><th>Weight</th><th>Result</th><th>Observation</th></tr></thead><tbody>
     ${v.answers.map((a, i) => { const is = issueBy.get(a.cp); return `<tr><td>${i + 1}</td><td>${escapeHtml(a.text)}</td><td>${fvNum(a.weight)}</td><td>${fvStatusBadge(a.status)}</td>
       <td>${escapeHtml(a.obs || '')}${is ? `<div class="fv-note">${is.status === 'resolved' ? '✔ Resolved ' + formatDate(is.resolved_at) : '● Open issue'}</div>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>
     <p class="fv-note" style="margin-top:8px;">Score ${fvNum(v.earned_weight)} of ${fvNum(v.total_weight)} points. Checkpoint names and weightages are shown as they were on the visit date.</p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">${canEdit ? '<button class="btn small" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">${canEdit ? '<button class="fv-btn" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
 
   const editHtml = () => `${head(v.score)}
     <div class="fv-filters"><label>Visit date <input type="date" id="fv-e-date" value="${v.visit_date}" max="${fvToday()}"></label>
       <label>Type <select id="fv-e-type">${fvOpt('Onsite', 'On-site', v.visit_type)}${fvOpt('Online', 'Online', v.visit_type)}</select></label>
       <span class="fv-note">Live score: <strong id="fv-e-score">${fvNum(v.score)}%</strong></span></div>
-    <div style="overflow-x:auto;"><table><thead><tr><th>#</th><th>Checkpoint</th><th>Weight</th><th>Result</th><th>Observation (required for Issue)</th></tr></thead><tbody>
+    <div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>#</th><th>Checkpoint</th><th>Weight</th><th>Result</th><th>Observation (required for Issue)</th></tr></thead><tbody>
     ${v.answers.map((a, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(a.text)}</td><td>${fvNum(a.weight)}</td>
       <td><select data-i="${i}">${fvOpt('OK', 'OK', a.status)}${fvOpt('Issue', 'Issue', a.status)}</select></td>
       <td><input type="text" data-o="${i}" value="${escapeHtml(a.obs || '')}" style="width:100%;min-width:160px;padding:6px 8px;border:1px solid var(--line,#d8dce8);border-radius:8px;"></td></tr>`).join('')}
     </tbody></table></div>
-    <p class="fv-note" style="margin-top:8px;">Corrections use the weightages stored on this visit. Issues are added or removed from the Issues dashboard automatically.</p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"><button class="btn small outline" id="fv-cancel" type="button">Cancel</button><button class="btn small" id="fv-save" type="button">Save correction</button></div>`;
+    <p class="fv-note" style="margin-top:8px;">Corrections use the weightages stored on this visit. Issues are added or removed from the Issues Summary automatically.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"><button class="fv-btn ghost" id="fv-cancel" type="button">Cancel</button><button class="fv-btn" id="fv-save" type="button">Save correction</button></div>`;
 
   const collect = () => v.answers.map((a, i) => ({ cp: a.cp, status: modal.querySelector(`[data-i="${i}"]`).value, observation: modal.querySelector(`[data-o="${i}"]`).value.trim() }));
   const paint = () => {
@@ -5609,44 +5720,43 @@ async function fvOpenVisit(id, onChanged) {
   paint();
 }
 
-// ---------------- ISSUES DASHBOARD ----------------
-async function fvRenderIssues(body) {
+// ---------------- ISSUES SUMMARY ----------------
+async function fvPageIssues(host) {
   const rider = fvIsRider();
   let current = [], ctx = null;
-  await fvListShell(body, {
-    filters: { region: !rider, search: !rider, by: !rider, cp: true, status: [['', 'All Statuses'], ['open', 'Open'], ['resolved', 'Resolved']] },
+  await fvListShell(host, {
+    filters: { region: !rider, search: !rider, by: !rider, cp: true, status: { label: 'Issues', options: [['', 'All'], ['open', 'Open'], ['resolved', 'Resolved']] } },
     rows: d => d, cps: d => d.map(i => i.checkpoint_text),
     load: fvLoadIssues,
-    extra: rider ? '' : ' <button class="btn small outline" data-export type="button">Download</button>',
+    extra: rider ? '' : ' <button class="fv-btn ghost" data-export type="button" style="height:34px;">Download</button>',
     afterFilters: (fh, c) => {
       ctx = c;
       const b = fh.querySelector('[data-export]');
       if (b) b.onclick = () => {
         if (!current.length) { toast('Nothing to download.'); return; }
-        downloadCSV(`field-visit-issues-${fvToday()}.csv`, toCSV(current.map(i => ({ 'Visit Date': i.visit_date, Issue: i.checkpoint_text, Rider: i.rider_name, 'Employee ID': i.rider_employee_id || '',
-          'Team / Region': i.region_name || '', Observation: i.observation || '', Status: i.status === 'open' ? 'Open' : 'Resolved',
+        downloadCSV(`field-visit-issues-${fvToday()}.csv`, toCSV(current.map(i => ({ 'Visit Date': i.visit_date, Rider: i.rider_name, 'Employee ID': i.rider_employee_id || '',
+          'Team / Region': i.region_name || '', Point: i.checkpoint_text, Observed: i.observation || '', Status: i.status === 'open' ? 'Open' : 'Resolved',
           'Resolved On': i.resolved_at ? i.resolved_at.slice(0, 10) : '', 'Resolved By': i.resolved_by_name || '', 'Resolution Note': i.resolution_note || '' }))));
       };
     },
     draw: (data, f, res) => {
       current = fvFilterIssues(data, f);
       if (!current.length) { res.innerHTML = emptyState('No issues match these filters.'); return; }
-      const open = current.filter(i => i.status === 'open').length, done = current.length - open;
-      const days = current.filter(i => i.resolved_at).map(i => (new Date(i.resolved_at) - new Date(i.visit_date + 'T00:00:00')) / 86400000);
-      const avgDays = days.length ? Math.max(0, days.reduce((a, b) => a + b, 0) / days.length) : null;
-      res.innerHTML = `<div class="fv-cards">${fvCard(open, 'Open issues', 'red')}${fvCard(done, 'Resolved', 'green')}${fvCard(current.length, 'Total issues')}${fvCard(avgDays === null ? '—' : fvNum(avgDays) + ' d', 'Avg. time to resolve', 'teal')}</div>
-        <div style="overflow-x:auto;"><table><thead><tr><th>Visit date</th><th>Issue</th><th>Rider</th>${rider ? '' : '<th>Team / Region</th>'}<th>Observation</th><th>Status</th><th>Resolved</th><th></th></tr></thead><tbody>
+      const open = current.filter(i => i.status === 'open').length;
+      res.innerHTML = `<div class="fv-note" style="margin:0 2px 8px;"><strong>${current.length}</strong> issue${current.length === 1 ? '' : 's'} · <span style="color:#c0392b;font-weight:600;">${open} open</span> · <span style="color:#0f7a56;font-weight:600;">${current.length - open} resolved</span></div>
+        <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Visit date</th><th>Rider</th>${rider ? '' : '<th>Team</th>'}<th>Point</th><th>Observed</th><th>Status</th><th>Resolved date</th><th></th></tr></thead><tbody>
         ${current.map(i => `<tr>
-          <td>${fvFmtDate(i.visit_date)}</td><td><strong>${escapeHtml(i.checkpoint_text)}</strong></td>
-          <td>${escapeHtml(i.rider_name || '—')}<div class="fv-note">${escapeHtml(i.rider_employee_id || '')}</div></td>
+          <td>${fvFmtDate(i.visit_date)}</td>
+          <td><strong>${escapeHtml(i.rider_name || '—')}</strong><div class="fv-note">${escapeHtml(i.rider_employee_id || '')}</div></td>
           ${rider ? '' : `<td>${escapeHtml(i.region_name || '—')}</td>`}
-          <td style="max-width:260px;">${escapeHtml(i.observation || '')}</td>
-          <td>${i.status === 'open' ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Open</span>' : '<span class="badge active">Resolved</span>'}</td>
+          <td>${escapeHtml(i.checkpoint_text)}</td>
+          <td style="max-width:280px;">${escapeHtml(i.observation || '—')}</td>
+          <td>${i.status === 'open' ? '<span class="fv-pill amber">Open</span>' : '<span class="fv-pill green">Resolved</span>'}</td>
           <td>${i.resolved_at ? `${fvFmtDate(i.resolved_at.slice(0, 10))}<div class="fv-note">${escapeHtml(i.resolved_by_name || '')}${i.resolution_note ? ' — ' + escapeHtml(i.resolution_note) : ''}</div>` : '<span class="fv-note">—</span>'}</td>
-          <td style="white-space:nowrap;">${i.status === 'open' && fvCanResolve() ? `<button class="btn small" data-res="${i.id}" type="button">Mark resolved</button>` : ''}
-            ${i.status === 'resolved' && fvCanManage() ? `<button class="btn small outline" data-reopen="${i.id}" type="button">Re-open</button>` : ''}
-            <button class="btn small outline" data-visit="${i.visit_id}" type="button">Visit</button></td></tr>`).join('')}
-        </tbody></table></div>`;
+          <td style="white-space:nowrap;text-align:right;">${i.status === 'open' && fvCanResolve() ? `<button class="fv-btn green" data-res="${i.id}" type="button">Mark Resolved</button>` : ''}
+            ${i.status === 'resolved' && fvCanManage() ? `<button class="fv-btn ghost" data-reopen="${i.id}" type="button">Re-open</button>` : ''}
+            <button class="fv-btn ghost" data-visit="${i.visit_id}" type="button">Visit</button></td></tr>`).join('')}
+        </tbody></table></div></div>`;
       res.querySelectorAll('[data-visit]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.visit, () => ctx && ctx.reload()));
       res.querySelectorAll('[data-res]').forEach(b => b.onclick = () => {
         const it = current.find(x => x.id === b.dataset.res);
@@ -5671,53 +5781,40 @@ async function fvRenderIssues(body) {
   });
 }
 
-// ---------------- RIDER-WISE ----------------
-async function fvRenderRiders(body) {
-  let ctx = null;
-  await fvListShell(body, {
-    filters: { region: true, search: true, status: [['', 'All Riders'], ['visited', 'Visited in this period'], ['notvisited', 'Not visited in this period'], ['inactive', 'Inactive riders']] },
-    load: async (r) => {
-      const [v, riders, openIss] = await Promise.all([fvLoadVisits(r), fvLoadRiders(),
-        fvFetchAll(() => sb.from('fv_issues').select('id, rider_id').eq('status', 'open').order('id'))]);
-      return { v, riders, openIss };
-    },
+// ---------------- RIDER SUMMARY ----------------
+async function fvPageRiders(host) {
+  let shown = 50, ctx = null;
+  await fvListShell(host, {
+    filters: { region: true, search: true },
+    load: async (r) => { const [v, riders] = await Promise.all([fvLoadVisits(r), fvLoadRiders()]); return { v, riders }; },
     afterFilters: (fh, c) => { ctx = c; },
     draw: (d, f, res) => {
-      const map = new Map();
-      d.riders.forEach(r => map.set(r.id, { id: r.id, name: r.name, emp: r.emp, region_id: r.region_id, region: r.region_name, sub: r.sub_region_name, designation: r.designation, active: true, visits: [] }));
-      d.v.forEach(v => {
-        const k = v.rider_id || v.rider_name;
-        if (!map.has(k)) map.set(k, { id: v.rider_id, name: v.rider_name, emp: v.rider_employee_id || '', region_id: v.region_id, region: v.region_name || '—', sub: v.sub_region_name || '', designation: '', active: false, visits: [] });
-        map.get(k).visits.push(v);
-      });
-      const openBy = new Map();
-      d.openIss.forEach(i => openBy.set(i.rider_id, (openBy.get(i.rider_id) || 0) + 1));
-      let rows = [...map.values()].filter(r => (!f.region || r.region_id === f.region) && fvMatchRider({ rider_name: r.name, rider_employee_id: r.emp }, f.q));
-      if (f.status === 'visited') rows = rows.filter(r => r.visits.length);
-      else if (f.status === 'notvisited') rows = rows.filter(r => r.active && !r.visits.length);
-      else if (f.status === 'inactive') rows = rows.filter(r => !r.active);
-      rows.sort((a, b) => a.name.localeCompare(b.name));
-      const act = [...map.values()].filter(r => r.active && (!f.region || r.region_id === f.region));
-      const visited = act.filter(r => r.visits.length).length;
-      if (!rows.length) { res.innerHTML = emptyState('No riders match these filters.'); return; }
-      res.innerHTML = `<div class="fv-cards">${fvCard(act.length, 'Active riders')}${fvCard(visited, 'Visited in this period', 'green')}${fvCard(act.length - visited, 'Not visited yet', 'amber')}
-          ${fvCard(act.length ? Math.round(visited / act.length * 100) + '%' : '—', 'Coverage', 'teal')}</div>
-        <div style="overflow-x:auto;"><table><thead><tr><th>Rider</th><th>Team / Region</th><th>Status</th><th>Visits</th><th>On-site / Online</th><th>Avg. score</th><th>Last visit</th><th>Open issues</th></tr></thead><tbody>
-        ${rows.map(r => {
-          const on = r.visits.filter(v => v.visit_type === 'Onsite').length, last = r.visits[0];
-          return `<tr class="fv-row-click" data-rid="${r.id || ''}" data-rn="${escapeHtml(r.name)}" data-re="${escapeHtml(r.emp)}">
-            <td><strong>${escapeHtml(r.name)}</strong> ${r.designation && r.designation !== 'Rider' ? `<span class="fv-chip">${escapeHtml(r.designation)}</span>` : ''}<div class="fv-note">${escapeHtml(r.emp)}</div></td>
-            <td>${escapeHtml(r.region)}<div class="fv-note">${escapeHtml(r.sub)}</div></td>
-            <td>${r.active ? '<span class="badge active">Active</span>' : '<span class="badge pending">Inactive</span>'}</td>
-            <td>${r.visits.length}</td><td>${on} / ${r.visits.length - on}</td><td>${r.visits.length ? fvScorePill(fvAvg(r.visits)) : '<span class="fv-note">—</span>'}</td>
-            <td>${last ? `${fvShortDate(last.visit_date)} <span class="fv-note">(${fvNum(last.score)}%)</span>` : '<span class="fv-note">—</span>'}</td>
-            <td>${openBy.get(r.id) ? `<span style="color:#c0532f;font-weight:700;">${openBy.get(r.id)}</span>` : '0'}</td></tr>`;
-        }).join('')}</tbody></table></div>
-        <p class="fv-note" style="margin-top:8px;">Riders come straight from the Roster. A rider who is deactivated or removed from the Roster shows as Inactive and no new visits can be added for them. Click a rider for their full history.</p>`;
-      res.querySelectorAll('[data-rid]').forEach(tr => tr.onclick = () => { if (tr.dataset.rid) fvOpenRider(tr.dataset.rid, tr.dataset.rn, tr.dataset.re, () => ctx && ctx.reload()); });
+      const rows = fvFilterVisits(d.v, f).slice().sort((a, b) => Number(a.score) - Number(b.score) || (a.visit_date < b.visit_date ? 1 : -1));
+      shown = 50;
+      const visitedIds = new Set(d.v.map(v => v.rider_id));
+      const notVisited = d.riders.filter(r => !visitedIds.has(r.id) && (!f.region || r.region_id === f.region) && fvMatchRider({ rider_name: r.name, rider_employee_id: r.emp }, f.q));
+      const paint = () => {
+        res.innerHTML = `<div class="fv-card2" style="padding:0;overflow:hidden;"><h3 style="padding:14px 16px 0;margin:0 0 10px;">By Rider (lowest scoring)</h3>
+          ${rows.length ? `<div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team</th><th>Rider</th><th>Visit type</th><th>Score</th><th class="c">View</th></tr></thead><tbody>
+          ${rows.slice(0, shown).map(v => `<tr><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td>
+            <td><a href="#" data-rider="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" style="color:inherit;text-decoration:none;font-weight:600;">${escapeHtml(v.rider_name)}</a><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
+            <td>${fvTypeBadge(v.visit_type)}</td><td style="font-weight:700;color:${fvScoreColor(v.score)};">${fvNum(v.score)}%</td>
+            <td class="c"><button class="fv-btn" data-vid="${v.id}" type="button">View</button></td></tr>`).join('')}
+          </tbody></table></div>` : '<div style="padding:16px;">' + emptyState('No visits match these filters.') + '</div>'}</div>
+          ${rows.length > shown ? `<div style="text-align:center;margin:-6px 0 14px;"><button class="fv-btn ghost" data-more type="button">Show more (${rows.length - shown} left)</button></div>` : ''}
+          <div class="fv-card2"><h3>Not visited in this period <span class="fv-chip">${notVisited.length}</span></h3>
+            ${notVisited.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;">${notVisited.map(r => `<span class="fv-chip" title="${escapeHtml(r.region_name)}">${escapeHtml(r.name)} · ${escapeHtml(r.emp)}</span>`).join('')}</div>
+              <p class="fv-note" style="margin-top:8px;">Active riders from the Roster who have no visit in the selected dates.</p>` : '<div class="fv-note">Every active rider in view has been visited. 🎉</div>'}</div>`;
+        res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), false));
+        res.querySelectorAll('[data-rider]').forEach(a => a.onclick = (e) => { e.preventDefault(); if (a.dataset.rider) fvOpenRider(a.dataset.rider, a.dataset.rn, a.dataset.re, () => ctx && ctx.reload()); });
+        const more = res.querySelector('[data-more]');
+        if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
+      };
+      paint();
     }
   });
 }
+
 async function fvOpenRider(id, name, emp, onChanged) {
   const [vs, is] = await Promise.all([
     sb.from('fv_visits').select(FV_VISIT_COLS).eq('rider_id', id).order('visit_date', { ascending: false }).limit(300),
@@ -5733,17 +5830,50 @@ async function fvOpenRider(id, name, emp, onChanged) {
     <div class="fv-cards">${fvCard(visits.length, 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
       ${fvCard(visits.length ? fvNum(visits[0].score) + '%' : '—', 'Latest score', 'green')}${fvCard(open, 'Open issues', 'red')}</div>
     <div class="fv-panel"><h3>Score trend (last 30 visits)</h3>${fvLineChart(trend)}</div>
-    <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
+    <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
       ${visits.map(v => `<tr class="fv-row-click" data-vid="${v.id}"><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td><td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td><td>${escapeHtml(v.submitted_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No visits yet.</div>'}</div>
-    <div class="fv-panel"><h3>Issues</h3>${issues.length ? `<div style="overflow-x:auto;max-height:220px;overflow-y:auto;"><table><thead><tr><th>Date</th><th>Issue</th><th>Observation</th><th>Status</th></tr></thead><tbody>
+    <div class="fv-panel"><h3>Issues</h3>${issues.length ? `<div style="overflow-x:auto;max-height:220px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Issue</th><th>Observation</th><th>Status</th></tr></thead><tbody>
       ${issues.map(i => `<tr><td>${fvFmtDate(i.visit_date)}</td><td>${escapeHtml(i.checkpoint_text)}</td><td>${escapeHtml(i.observation || '')}</td>
         <td>${i.status === 'open' ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Open</span>' : `<span class="badge active">Resolved</span><div class="fv-note">${fvFmtDate((i.resolved_at || '').slice(0, 10))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No issues recorded.</div>'}</div>`;
   modal.querySelectorAll('[data-vid]').forEach(tr => tr.onclick = () => { closeModal(); fvOpenVisit(tr.dataset.vid, onChanged); });
   fvGo(modal);
 }
 
+
+// ---------------- TEAMS & RIDERS (read-only: teams = Regions, riders = Roster) ----------------
+async function fvPageTeams(host) {
+  host.innerHTML = '<div class="mono">Loading…</div>';
+  let riders, visits;
+  try {
+    const cur = fvToday().slice(0, 7);
+    [riders, visits] = await Promise.all([fvLoadRiders(), fvLoadVisits({ from: cur + '-01', to: cur + '-31' })]);
+  } catch (e) { host.innerHTML = fvError(e); return; }
+  const visited = new Set(visits.map(v => v.rider_id));
+  const teams = fvRegionOptions().filter(r => r.active !== false).map(r => ({ r, list: riders.filter(x => x.region_id === r.id) })).filter(t => t.list.length)
+    .sort((a, b) => a.r.name.localeCompare(b.r.name));
+  if (!teams.length) { host.innerHTML = emptyState('No teams with active riders to show.'); return; }
+  host.innerHTML = `<div class="fv-stats">${fvStat(teams.length, 'Teams')}${fvStat(teams.reduce((s, t) => s + t.list.length, 0), 'Active riders', '#2f4fd0')}
+      ${fvStat(riders.filter(x => visited.has(x.id)).length, 'Visited this month', '#0f7a56')}</div>
+    ${teams.map(({ r, list }) => { const v = list.filter(x => visited.has(x.id)).length, pct = list.length ? v / list.length * 100 : 0;
+      return `<div class="fv-card2" style="padding:0;overflow:hidden;"><div class="fv-row-click" data-team="${r.id}" style="display:flex;align-items:center;gap:14px;padding:13px 16px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:180px;"><strong style="color:#1c2b6e;">${escapeHtml(r.name)}</strong><div class="fv-note">${list.length} rider${list.length === 1 ? '' : 's'} assigned</div></div>
+        <div style="min-width:210px;"><div class="fv-note">Visited this month: <strong>${v}</strong> of ${list.length}</div>
+          <span class="fv-score" style="--w:${pct.toFixed(1)}%;display:flex;"><span class="t"><i class="fv-bg-${fvScoreCls(pct)}"></i></span></span></div>
+        <span class="fv-note" data-arrow>▾</span></div>
+        <div data-list="${r.id}" style="display:none;border-top:1px solid #eef0f7;padding:8px 16px 12px;">
+          <table class="fv-table"><thead><tr><th>Rider</th><th>Employee ID</th><th>Designation</th><th>Sub-region</th><th>Visited this month</th></tr></thead><tbody>
+          ${list.map(x => `<tr><td><strong>${escapeHtml(x.name)}</strong></td><td>${escapeHtml(x.emp)}</td><td>${escapeHtml(x.designation)}</td><td>${escapeHtml(x.sub_region_name || '—')}</td>
+            <td>${visited.has(x.id) ? '<span class="fv-pill green">Yes</span>' : '<span class="fv-pill amber">Not yet</span>'}</td></tr>`).join('')}</tbody></table></div></div>`; }).join('')}
+    <p class="fv-note">Teams are your <strong>Regions</strong> and riders come from the <strong>Roster</strong>. To add, rename or deactivate a team use <em>Regions</em> (Admin menu); to move a rider between teams use the <em>Roster</em>. Changes appear here automatically.</p>`;
+  host.querySelectorAll('[data-team]').forEach(row => row.onclick = () => {
+    const box = host.querySelector(`[data-list="${row.dataset.team}"]`), open = box.style.display === 'none';
+    box.style.display = open ? 'block' : 'none'; row.querySelector('[data-arrow]').textContent = open ? '▴' : '▾';
+  });
+  fvGo(host);
+}
+
 // ---------------- ADD VISIT (Area Incharge / Admin / Super Admin) ----------------
-async function fvRenderAdd(body) {
+async function fvPageAdd(body) {
   if (!fvCanAdd()) { body.innerHTML = emptyState('Only Area Incharges can add visit reports.'); return; }
   body.innerHTML = '<div class="mono">Loading…</div>';
   let cps, riders;
@@ -5841,98 +5971,96 @@ async function fvRenderAdd(body) {
     btn.disabled = false;
     if (error) { toast('Could not submit: ' + error.message); return; }
     toast('Visit report submitted');
-    FV.tab = 'visits'; FV.f.preset = date.slice(0, 7) === fvToday().slice(0, 7) ? 'this_month' : 'all'; FV.f.q = ''; FV.f.region = '';
-    renderFieldVisits();
+    FV.f = FV_DEFAULT_F(); if (date.slice(0, 7) !== fvToday().slice(0, 7)) FV.f.preset = 'all';
+    navigateTo('fv_visits');
   };
 }
 
-// ---------------- CHECKLIST (Super Admin) ----------------
-async function fvRenderChecklist(body) {
-  if (!fvCanManage()) { body.innerHTML = emptyState('Only the Super Admin can manage the checklist.'); return; }
-  body.innerHTML = '<div class="mono">Loading…</div>';
+// ---------------- CHECKLIST FORM (Super Admin) — edit as a draft, then "Publish changes" ----------------
+async function fvPageChecklist(host) {
+  if (!fvCanManage()) { host.innerHTML = emptyState('Only the Super Admin can manage the checklist.'); return; }
+  host.innerHTML = '<div class="mono">Loading…</div>';
   let cps, log;
   try {
     cps = await fvLoadCheckpoints();
     const r = await sb.from('fv_checkpoint_log').select('*').order('changed_at', { ascending: false }).limit(300);
     if (r.error) throw r.error; log = r.data || [];
-  } catch (e) { body.innerHTML = fvError(e); return; }
-  const active = cps.filter(c => c.active), total = active.reduce((s, c) => s + Number(c.weight), 0);
-  const exact = Math.abs(total - 100) < 0.005;
+  } catch (e) { host.innerHTML = fvError(e); return; }
   const dt = (iso) => formatDate(iso);
-  const noteFor = (c) => {
-    const mine = log.filter(l => l.checkpoint_id === c.id);
-    const added = mine.filter(l => l.action === 'added').pop();
-    const last = mine.find(l => l.action !== 'added');
-    return `${added ? `<div class="fv-note">Added on ${dt(added.changed_at)}</div>` : ''}${last ? `<div class="fv-note">${escapeHtml(last.note)} on ${dt(last.changed_at)}</div>` : ''}`;
+  let draft = cps.map(c => ({ id: c.id, name: c.name, weight: String(Number(c.weight)), active: c.active }));
+  const before = JSON.stringify(draft);
+  let removed = [];
+  const noteFor = (id) => {
+    const mine = log.filter(l => l.checkpoint_id === id);
+    const added = mine.filter(l => l.action === 'added').pop(), last = mine.find(l => l.action !== 'added');
+    return [added ? `Added on ${dt(added.changed_at)}` : '', last ? `${last.note} on ${dt(last.changed_at)}` : ''].filter(Boolean).join(' · ');
   };
-  body.innerHTML = `
-    <div class="fv-panel"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;">
-        <div><h3 style="margin:0 0 4px;">Home Sampling Checklist</h3><div class="fv-note">${active.length} active checkpoints</div></div>
-        <div style="min-width:260px;"><div style="display:flex;justify-content:space-between;font-size:13px;"><span>Total weightage</span><strong class="${exact ? 'fv-good' : 'fv-fair'}">${fvNum(total)} / 100</strong></div>
-          <span class="fv-score" style="--w:${Math.min(100, total).toFixed(1)}%;display:flex;"><span class="t"><i class="${exact ? 'fv-bg-good' : 'fv-bg-fair'}"></i></span></span></div></div>
-      ${exact ? '' : `<p class="fv-note" style="margin-top:8px;color:#b9770e;">The active weightages add up to ${fvNum(total)}, not 100. Scores are still calculated fairly as a percentage of the active total, but you may want to adjust a weightage so the total is exactly 100.</p>`}
-      <p class="fv-note" style="margin-top:8px;">Any change here applies to <strong>new visits only</strong>. Visits already added keep the checkpoint names and weightages from their own date.</p></div>
-    <div class="fv-panel"><h3>Add a checkpoint</h3><div class="fv-filters">
-      <input type="text" id="fv-c-name" placeholder="Checkpoint name" style="min-width:260px;" maxlength="120">
-      <input type="number" id="fv-c-weight" placeholder="Weightage" min="0.01" step="0.01" style="width:120px;">
-      <button class="btn small" id="fv-c-add" type="button">Add</button></div></div>
-    <div class="fv-panel"><h3>Checkpoints</h3><div style="overflow-x:auto;"><table><thead><tr><th>#</th><th>Checkpoint</th><th>Weightage</th><th>Status</th><th>Change note</th><th></th></tr></thead><tbody>
-      ${cps.map((c, i) => `<tr style="${c.active ? '' : 'opacity:.6;'}"><td>${i + 1}</td><td><strong>${escapeHtml(c.name)}</strong></td><td>${fvNum(c.weight)}</td>
-        <td>${c.active ? '<span class="badge active">Active</span>' : '<span class="badge pending">Deactivated</span>'}</td><td>${noteFor(c)}</td>
-        <td style="white-space:nowrap;"><button class="btn small outline" data-edit="${c.id}" type="button">Edit</button>
-          <button class="btn small outline" data-toggle="${c.id}" type="button">${c.active ? 'Deactivate' : 'Activate'}</button>
-          <button class="btn small danger" data-del="${c.id}" type="button">Delete</button></td></tr>`).join('') || '<tr><td colspan="6">No checkpoints yet.</td></tr>'}
-      </tbody></table></div></div>
-    <div class="fv-panel"><h3>Change log</h3>${log.length ? `<div style="overflow-x:auto;max-height:320px;overflow-y:auto;"><table><thead><tr><th>When</th><th>Checkpoint</th><th>What changed</th><th>By</th></tr></thead><tbody>
-      ${log.map(l => `<tr><td>${formatDateTime(l.changed_at)}</td><td>${escapeHtml(l.checkpoint_name)}</td><td>${escapeHtml(l.note)}</td><td>${escapeHtml(l.changed_by_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No changes yet.</div>'}</div>`;
-  fvGo(body);
-  const redo = () => fvRenderChecklist(body);
-  body.querySelector('#fv-c-add').onclick = async () => {
-    const name = body.querySelector('#fv-c-name').value.trim().replace(/\s+/g, ' '), w = Number(body.querySelector('#fv-c-weight').value);
-    if (!name) { toast('Please type the checkpoint name.'); return; }
-    if (!(w > 0)) { toast('Weightage must be greater than 0.'); return; }
-    if (!confirm(`Add "${name}" with weightage ${w}? It will be asked in new visits from now on.`)) return;
-    const next = (cps.reduce((m, c) => Math.max(m, c.sort_order), 0)) + 10;
-    const { error } = await sb.from('fv_checkpoints').insert({ name, weight: w, sort_order: next });
-    if (error) { toast('Could not add: ' + error.message); return; }
-    toast('Checkpoint added'); redo();
+  const total = () => Math.round(draft.filter(d => d.active).reduce((s, d) => s + (parseFloat(d.weight) || 0), 0) * 100) / 100;
+  const dirty = () => JSON.stringify(draft) !== before || removed.length > 0;
+
+  const paintTotal = () => {
+    const t = total(), ok = Math.abs(t - 100) < 0.005, diff = Math.round((100 - t) * 100) / 100;
+    const num = host.querySelector('#fv-cl-total'); num.textContent = fvNum(t) + '%'; num.style.color = ok ? '#2e7d4f' : '#c0392b';
+    const msg = host.querySelector('#fv-cl-msg');
+    msg.innerHTML = ok ? '<span class="fv-pill green">✔ Total is exactly 100%</span>'
+      : `<span class="fv-pill red">Total weightage must be exactly 100% — it is ${fvNum(t)}% now. ${diff > 0 ? 'Add ' + fvNum(diff) + '% more' : 'Remove ' + fvNum(-diff) + '%'} before publishing.</span>`;
+    host.querySelector('#fv-cl-count').textContent = draft.filter(d => d.active).length + ' active · ' + draft.length + ' total';
+    host.querySelector('#fv-cl-pill').textContent = fvNum(t) + '%';
+    host.querySelector('#fv-cl-publish').style.opacity = dirty() ? '1' : '.55';
   };
-  body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
-    const c = cps.find(x => x.id === b.dataset.edit);
-    openModal(`<h2>Edit checkpoint</h2><form id="fv-ce-form">
-      <div class="form-row"><label>Name</label><input type="text" id="fv-ce-name" value="${escapeHtml(c.name)}" maxlength="120" required></div>
-      <div class="form-row"><label>Weightage</label><input type="number" id="fv-ce-w" value="${c.weight}" min="0.01" step="0.01" required></div>
-      <div class="form-row"><label>Order in the form (smaller = earlier)</label><input type="number" id="fv-ce-o" value="${c.sort_order}" step="1"></div>
-      <p class="fv-note">Applies to new visits only. The change and its date are recorded in the change log.</p>
-      <button class="btn-primary" type="submit">Save</button></form>`);
-    document.getElementById('fv-ce-form').onsubmit = async (e) => {
-      e.preventDefault();
-      const name = document.getElementById('fv-ce-name').value.trim().replace(/\s+/g, ' '), w = Number(document.getElementById('fv-ce-w').value), o = parseInt(document.getElementById('fv-ce-o').value, 10);
-      if (!name || !(w > 0)) { toast('Please enter a name and a weightage above 0.'); return; }
-      if (w !== Number(c.weight) && !confirm(`Change weightage of "${c.name}" from ${fvNum(c.weight)} to ${fvNum(w)}? Past visits are NOT changed.`)) return;
-      const { error } = await sb.from('fv_checkpoints').update({ name, weight: w, sort_order: Number.isFinite(o) ? o : c.sort_order }).eq('id', c.id);
-      if (error) { toast('Could not save: ' + error.message); return; }
-      closeModal(); toast('Saved'); redo();
+  const paint = () => {
+    host.innerHTML = `
+      <div class="fv-card2"><div class="fv-totalbar">
+        <div><div class="fv-note">Total weight</div><div class="fv-totalnum" id="fv-cl-total">0%</div></div>
+        <div id="fv-cl-msg" style="flex:1;min-width:240px;"></div>
+        <button class="fv-btn amber" id="fv-cl-publish" type="button" style="height:36px;padding:0 18px;">Publish changes</button></div>
+        <p class="fv-note" style="margin:10px 0 0;">Edit freely, then click <strong>Publish changes</strong>. The active checkpoints must always total exactly 100%, so when you add or remove a point, rebalance the weightages first. Changes apply to <strong>new visits only</strong> — past visits keep their own checkpoints and weightages.</p></div>
+      <div class="fv-card2" style="padding:0;"><div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #eef0f7;">
+        <div><strong style="color:#1c2b6e;">Home Sampling Checklist</strong><div class="fv-note" id="fv-cl-count"></div></div><span class="fv-chip" id="fv-cl-pill"></span></div>
+        <div id="fv-cl-rows" style="padding:0 12px;">${draft.map((d, i) => `<div class="fv-wtrow ${d.active ? '' : 'off'} ${d.id ? '' : 'new'}" data-i="${i}">
+            <label title="${d.active ? 'Active — asked in new visits' : 'Deactivated — not asked in new visits'}" style="display:flex;align-items:center;"><input type="checkbox" data-act ${d.active ? 'checked' : ''}></label>
+            <div class="nm"><input class="nmi" data-name type="text" value="${escapeHtml(d.name)}" placeholder="Checkpoint name" maxlength="120">
+              ${d.id ? `<div class="fv-note" style="padding-left:8px;">${escapeHtml(noteFor(d.id))}</div>` : '<div class="fv-note" style="padding-left:8px;color:#1f6b3a;">New — saved when you publish</div>'}</div>
+            <input class="fv-wtinput" data-w type="number" min="0" max="100" step="0.01" value="${escapeHtml(d.weight)}" placeholder="0"><span class="fv-note">%</span>
+            <button class="fv-trash" data-del title="Remove" type="button">🗑</button></div>`).join('') || '<div class="fv-note" style="padding:14px;">No checkpoints. Add one below.</div>'}</div>
+        <div style="padding:10px 16px 14px;"><button class="fv-btn ghost" id="fv-cl-add" type="button">+ Add checkpoint</button></div></div>
+      ${removed.length ? `<div class="fv-card2"><h3>Will be permanently deleted when you publish</h3>${removed.map((r, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;"><span>${escapeHtml(r.name)} <span class="fv-chip">${escapeHtml(r.weight)}%</span></span><button class="fv-btn ghost" data-undo="${i}" type="button">Undo</button></div>`).join('')}
+        <p class="fv-note" style="margin-top:6px;">Past visits keep these checkpoints exactly as they were. If you only want to stop asking one, untick it instead of deleting.</p></div>` : ''}
+      <div class="fv-card2"><h3>Change log</h3>${log.length ? `<div style="overflow-x:auto;max-height:320px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>When</th><th>Checkpoint</th><th>What changed</th><th>By</th></tr></thead><tbody>
+        ${log.map(l => `<tr><td>${formatDateTime(l.changed_at)}</td><td>${escapeHtml(l.checkpoint_name)}</td><td>${escapeHtml(l.note)}</td><td>${escapeHtml(l.changed_by_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No changes yet.</div>'}</div>`;
+    paintTotal(); fvGo(host);
+    host.querySelectorAll('.fv-wtrow').forEach(row => {
+      const i = Number(row.dataset.i);
+      row.querySelector('[data-name]').oninput = (e) => { draft[i].name = e.target.value; paintTotal(); };
+      row.querySelector('[data-w]').oninput = (e) => { draft[i].weight = e.target.value; paintTotal(); };
+      row.querySelector('[data-act]').onchange = (e) => { draft[i].active = e.target.checked; paint(); };
+      row.querySelector('[data-del]').onclick = () => {
+        if (draft[i].id) removed.push({ id: draft[i].id, name: draft[i].name || '(unnamed)', weight: draft[i].weight, active: draft[i].active, _row: draft[i] });
+        draft.splice(i, 1); paint();
+      };
+    });
+    host.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => { const r = removed.splice(Number(b.dataset.undo), 1)[0]; draft.push(r._row); paint(); });
+    host.querySelector('#fv-cl-add').onclick = () => { draft.push({ id: null, name: '', weight: '', active: true }); paint(); const names = host.querySelectorAll('[data-name]'); names[names.length - 1].focus(); };
+    host.querySelector('#fv-cl-publish').onclick = async () => {
+      if (!dirty()) { toast('There are no changes to publish.'); return; }
+      const bad = draft.find(d => !d.name.trim() || !(parseFloat(d.weight) > 0));
+      if (bad) { toast(bad.name.trim() ? `Please enter a weightage above 0 for "${bad.name}".` : 'Every checkpoint needs a name and a weightage above 0.'); return; }
+      const t = total();
+      if (Math.abs(t - 100) >= 0.005) { toast(`Total weightage must be exactly 100% — it is ${fvNum(t)}%. Please adjust the weightages.`); host.querySelector('#fv-cl-msg').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+      const added = draft.filter(d => !d.id).length;
+      const changed = draft.filter(d => d.id).filter(d => { const o = cps.find(c => c.id === d.id); return o && (Number(o.weight) !== parseFloat(d.weight) || o.name !== d.name.trim() || o.active !== d.active); }).length;
+      if (!confirm(`Publish these changes?\n\n• ${added} added\n• ${changed} edited\n• ${removed.length} permanently deleted\n\nThey apply to new visits only. Past visits are not changed.`)) return;
+      const items = draft.map(d => ({ id: d.id, name: d.name.trim(), weight: parseFloat(d.weight), active: d.active }));
+      const { error } = await sb.rpc('fv_publish_checklist', { p_items: items });
+      if (error) { toast(error.message); host.querySelector('#fv-cl-msg').innerHTML = `<span class="fv-pill red">${escapeHtml(error.message)}</span>`; return; }
+      toast('Checklist published'); fvPageChecklist(host);
     };
-  });
-  body.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
-    const c = cps.find(x => x.id === b.dataset.toggle);
-    if (!confirm(c.active ? `Deactivate "${c.name}"? It will no longer be asked in new visits. Past visits are unchanged.` : `Activate "${c.name}" again?`)) return;
-    const { error } = await sb.from('fv_checkpoints').update({ active: !c.active }).eq('id', c.id);
-    if (error) { toast('Could not update: ' + error.message); return; }
-    toast(c.active ? 'Deactivated' : 'Activated'); redo();
-  });
-  body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    const c = cps.find(x => x.id === b.dataset.del);
-    if (!confirm(`PERMANENTLY delete "${c.name}"?\n\nPast visits keep it exactly as it was (name, weightage and result). This cannot be undone. If you only want to stop asking it, use Deactivate instead.`)) return;
-    const { error } = await sb.from('fv_checkpoints').delete().eq('id', c.id);
-    if (error) { toast('Could not delete: ' + error.message); return; }
-    toast('Checkpoint deleted'); redo();
-  });
+  };
+  paint();
 }
 
 // ---------------- TARGETS & KPI (Super Admin) ----------------
-async function fvRenderTargets(body) {
+async function fvPageTargets(body) {
   if (!fvCanManage()) { body.innerHTML = emptyState('Only the Super Admin can change KPIs and targets.'); return; }
   body.innerHTML = '<div class="mono">Loading…</div>';
   let targets, ais;
@@ -5948,7 +6076,7 @@ async function fvRenderTargets(body) {
   body.innerHTML = `
     <div class="fv-panel"><h3>Targets in force today</h3>
       <p class="fv-note" style="margin:0 0 8px;"><strong>On-site visits per month = KPI.</strong> Online visits per month = target only (not part of the KPI).</p>
-      <div style="overflow-x:auto;"><table><thead><tr><th>Area Incharge</th><th>On-site KPI / month</th><th>Online target / month</th><th>Setting</th></tr></thead><tbody>
+      <div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Area Incharge</th><th>On-site KPI / month</th><th>Online target / month</th><th>Setting</th></tr></thead><tbody>
         <tr><td><strong>Default for everyone</strong></td><td>${def.onsite_kpi}</td><td>${def.online_target}</td><td><span class="fv-chip">Default</span></td></tr>
         ${ais.map(a => { const t = cur(a.id); return `<tr><td>${escapeHtml(a.full_name)} <span class="fv-note">${escapeHtml(a.employee_id || '')}</span></td><td>${t.onsite_kpi}</td><td>${t.online_target}</td><td>${hasOwn(a.id) ? '<span class="fv-chip" style="background:#fdf0d5;">Custom</span>' : '<span class="fv-chip">Default</span>'}</td></tr>`; }).join('')}
       </tbody></table></div></div>
@@ -5961,7 +6089,7 @@ async function fvRenderTargets(body) {
         <input type="text" id="fv-t-note" placeholder="Note (optional)" maxlength="150" style="min-width:200px;">
         <button class="btn small" id="fv-t-save" type="button">Save change</button></div>
       <p class="fv-note">The change applies <strong>from the start date</strong> you choose (today or later). Months and visits before it are never affected. Tip: pick the 1st of a month so a whole month uses one value. For a month in which a change takes effect, the value in force on the last day of that month is used.</p></div>
-    <div class="fv-panel"><h3>History</h3><div style="overflow-x:auto;max-height:300px;overflow-y:auto;"><table><thead><tr><th>Starts</th><th>Applies to</th><th>On-site KPI</th><th>Online target</th><th>Note</th><th>Set by</th></tr></thead><tbody>
+    <div class="fv-panel"><h3>History</h3><div style="overflow-x:auto;max-height:300px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Starts</th><th>Applies to</th><th>On-site KPI</th><th>Online target</th><th>Note</th><th>Set by</th></tr></thead><tbody>
       ${targets.map(t => `<tr><td>${t.effective_from === '2000-01-01' ? 'Initial' : fvFmtDate(t.effective_from)}</td><td>${escapeHtml(nameOf(t.profile_id))}</td><td>${t.onsite_kpi}</td><td>${t.online_target}</td><td>${escapeHtml(t.note || '')}</td><td>${escapeHtml(t.created_by_name || '—')}<div class="fv-note">${formatDate(t.created_at)}</div></td></tr>`).join('')}
       </tbody></table></div></div>`;
   fvGo(body);
@@ -5974,36 +6102,32 @@ async function fvRenderTargets(body) {
     if (!confirm(`Apply ${nameOf(who)}: On-site KPI ${on}/month, Online target ${off}/month, starting ${fvFmtDate(from)}?\n\nEarlier data will not change.`)) return;
     const { error } = await sb.rpc('fv_set_targets', { p_profile: who, p_onsite: on, p_online: off, p_from: from, p_note: note });
     if (error) { toast('Could not save: ' + error.message); return; }
-    toast('Saved'); fvRenderTargets(body);
+    toast('Saved'); fvPageTargets(body);
   };
 }
 
-// ---------------- PAGE ----------------
-function fvTabs() {
-  if (fvIsRider()) return [['overview', 'My Overview'], ['visits', 'My Visits'], ['issues', 'My Issues']];
-  const t = [['overview', 'Overview'], ['visits', 'Visit Summary'], ['issues', 'Issues'], ['riders', 'Rider-wise']];
-  if (fvCanAdd()) t.push(['add', 'Add Visit']);
-  if (fvCanManage()) t.push(['checklist', 'Checklist'], ['targets', 'Targets & KPI']);
-  return t;
-}
-async function renderFieldVisits() {
+
+// ---------------- PAGE ROUTER (each sidebar item is its own page) ----------------
+const FV_PAGES = {
+  fv_report:    ['Every visit submitted by every Home Sampling team.', fvPageReport],
+  fv_riders:    ['Individual rider evaluation history across all teams.', fvPageRiders],
+  fv_issues:    ["Every issue raised during every Home Sampling team's visits.", fvPageIssues],
+  fv_visits:    ['Every individual visit, one row each.', fvPageVisits],
+  fv_add:       ['Record a Home Sampling visit for one of your riders.', fvPageAdd],
+  fv_teams:     ['Teams and the riders assigned to them.', fvPageTeams],
+  fv_checklist: ['Add, edit, or remove checkpoints and weightage. Changes apply to future visits only.', fvPageChecklist],
+  fv_targets:   ['Set the monthly KPI and targets for Area Incharges.', fvPageTargets]
+};
+async function renderFieldVisits(view) {
   fvEnsureStyle();
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
-  const tabs = fvTabs();
-  if (!tabs.some(t => t[0] === FV.tab)) FV.tab = tabs[0][0];
-  main.innerHTML = `<div class="tabs fv-tabs">${tabs.map(([k, l]) => `<button class="tab ${FV.tab === k ? 'active' : ''}" data-fv-tab="${k}">${l}</button>`).join('')}</div><div id="fv-body"></div>`;
-  main.querySelectorAll('[data-fv-tab]').forEach(b => b.onclick = () => { FV.tab = b.dataset.fvTab; FV.f.status = ''; FV.f.cp = ''; renderFieldVisits(); });
-  const body = document.getElementById('fv-body');
-  try {
-    if (FV.tab === 'overview') await fvRenderOverview(body);
-    else if (FV.tab === 'visits') await fvRenderVisits(body);
-    else if (FV.tab === 'issues') await fvRenderIssues(body);
-    else if (FV.tab === 'riders') await fvRenderRiders(body);
-    else if (FV.tab === 'add') await fvRenderAdd(body);
-    else if (FV.tab === 'checklist') await fvRenderChecklist(body);
-    else if (FV.tab === 'targets') await fvRenderTargets(body);
-  } catch (e) { console.error(e); body.innerHTML = fvError(e); }
+  const page = FV_PAGES[view];
+  if (!page || !getAllowedViews().includes(view)) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
+  FV.f.status = ''; FV.f.cp = '';
+  main.innerHTML = `<p class="fv-sub">${escapeHtml(fvIsRider() ? 'Your own visit reports only.' : page[0])}</p><div id="fv-body"></div>`;
+  try { await page[1](document.getElementById('fv-body')); }
+  catch (e) { console.error(e); document.getElementById('fv-body').innerHTML = fvError(e); }
 }
 
 async function renderHierarchy(){
