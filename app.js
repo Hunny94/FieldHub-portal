@@ -3,7 +3,43 @@
 // You should not need to edit this file. All connection
 // settings live in config.js.
 // =========================================================
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// ---- Network safety --------------------------------------------------
+// Every request gets a time limit so a page can never sit on "Loading…" forever,
+// and read requests are retried once automatically. Uploads / server functions
+// get a longer limit because they can legitimately take a while.
+const FH_NET = { timeout: 25000, longTimeout: 120000, lastNotice: 0 };
+function fhNetNotice(){
+  if (Date.now() - FH_NET.lastNotice < 20000) return;
+  FH_NET.lastNotice = Date.now();
+  if (typeof toast === 'function') toast('Slow or lost connection — some information may not have loaded. Please check your internet and refresh.');
+}
+function fhFetch(input, init){
+  init = init || {};
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const method = String(init.method || (typeof input !== 'string' && input && input.method) || 'GET').toUpperCase();
+  const limit = /\/(storage|functions)\/v1\//.test(url) ? FH_NET.longTimeout : FH_NET.timeout;
+  const attempt = () => {
+    const ctrl = new AbortController();
+    if (init.signal){ if (init.signal.aborted) ctrl.abort(); else init.signal.addEventListener('abort', () => ctrl.abort(), { once: true }); }
+    const t = setTimeout(() => ctrl.abort(), limit);
+    return fetch(input, Object.assign({}, init, { signal: ctrl.signal })).finally(() => clearTimeout(t));
+  };
+  const fail = (e) => { fhNetNotice(); throw e; };
+  if (method !== 'GET' && method !== 'HEAD') return attempt().catch(fail);
+  return attempt().catch(e => { if (init.signal && init.signal.aborted) throw e; return attempt(); }).catch(fail);
+}
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch: fhFetch } });
+// Loads the Excel reader only when it is needed (the library is large, so it is no longer loaded on every visit)
+function ensureXLSX(){
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Could not load the Excel reader. Please check your internet connection.'));
+    document.head.appendChild(s);
+  });
+}
 
 const state = {
   user: null,
@@ -103,16 +139,116 @@ async function callEdgeFunction(action, payload){
 // ---------------------------------------------------------
 window.addEventListener('DOMContentLoaded', init);
 
+// ---------------------------------------------------------
+// LOOK & FEEL — animations and menu colours, injected from code (no files, no storage).
+// ---------------------------------------------------------
+function fhSkeleton(){
+  return `<div class="fh-skel"><div class="b" style="width:200px;height:22px;"></div>
+    <div class="row"><div class="b card"></div><div class="b card"></div><div class="b card"></div><div class="b card"></div></div>
+    <div class="b" style="height:42px;"></div><div class="b" style="height:42px;margin-top:8px;"></div><div class="b" style="height:42px;margin-top:8px;"></div></div>`;
+}
+let _fhProgTimer = null;
+function fhProgress(on){
+  const bar = document.getElementById('fh-progress');
+  if (!bar) return;
+  clearTimeout(_fhProgTimer);
+  if (on){ bar.style.transition = 'none'; bar.style.opacity = '1'; bar.style.transform = 'scaleX(0.08)'; void bar.offsetWidth;
+    bar.style.transition = 'transform 8s cubic-bezier(.1,.6,.2,1)'; bar.style.transform = 'scaleX(0.85)'; }
+  else { bar.style.transition = 'transform .25s ease'; bar.style.transform = 'scaleX(1)';
+    _fhProgTimer = setTimeout(() => { bar.style.transition = 'opacity .3s ease'; bar.style.opacity = '0'; }, 280); }
+}
+function fhInstallFx(){
+  if (document.getElementById('fh-fx')) return;
+  const st = document.createElement('style');
+  st.id = 'fh-fx';
+  st.textContent = `
+/* ---- top progress bar ---- */
+#fh-progress{position:fixed;top:0;left:0;right:0;height:3px;z-index:10001;transform-origin:left;transform:scaleX(0);opacity:0;background:linear-gradient(90deg,#2dd4bf,#f5b82e);pointer-events:none;box-shadow:0 0 8px rgba(45,212,191,.7)}
+/* ---- page change ---- */
+@keyframes fhPageIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+#main-content>*{animation:fhPageIn .32s cubic-bezier(.2,.7,.2,1) backwards}
+/* ---- loading skeleton ---- */
+@keyframes fhShim{0%{background-position:100% 0}100%{background-position:-100% 0}}
+.fh-skel .b{background:linear-gradient(90deg,#e8ebf4 30%,#f5f7fc 50%,#e8ebf4 70%);background-size:300% 100%;animation:fhShim 1.3s ease-in-out infinite;border-radius:10px}
+.fh-skel .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+.fh-skel .card{height:78px}
+.fh-slow{background:#fff7e0;border:1px solid #f1d58a;color:#7a5a00;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+/* ---- buttons ---- */
+.btn-primary,.btn-secondary,.btn,.fv-btn{position:relative;overflow:hidden;transition:transform .15s ease,box-shadow .2s ease,filter .2s ease,background-color .2s ease}
+.btn-primary:hover:not(:disabled),.btn-secondary:hover:not(:disabled),.btn:hover:not(:disabled),.fv-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 14px rgba(20,30,90,.20)}
+.btn-primary:active:not(:disabled),.btn-secondary:active:not(:disabled),.btn:active:not(:disabled),.fv-btn:active:not(:disabled){transform:translateY(0) scale(.97);box-shadow:none}
+.btn-primary:focus-visible,.btn-secondary:focus-visible,.btn:focus-visible,.fv-btn:focus-visible,.tab:focus-visible,#nav-links a:focus-visible,#nav-links button:focus-visible{outline:2px solid #2dd4bf;outline-offset:2px}
+.tab{transition:background-color .2s ease,color .2s ease,transform .15s ease}.tab:hover{transform:translateY(-1px)}
+@keyframes fhRip{from{transform:scale(0);opacity:.35}to{transform:scale(1);opacity:0}}
+.fh-rip{position:absolute;border-radius:50%;background:currentColor;pointer-events:none;animation:fhRip .6s ease-out forwards}
+/* ---- popups and messages ---- */
+@keyframes fhFade{from{opacity:0}to{opacity:1}}
+@keyframes fhPop{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+@keyframes fhToast{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:none}}
+.modal-overlay{animation:fhFade .2s ease}.modal-overlay .modal{animation:fhPop .26s cubic-bezier(.2,.8,.2,1)}
+.toast{animation:fhToast .3s cubic-bezier(.2,.8,.2,1)}
+/* ---- sidebar: icons, brighter text, highlight on hover ---- */
+#nav-links .nav-link{display:flex;align-items:center;gap:11px;position:relative;color:#e6ecff;border-left:3px solid transparent;transition:background .22s ease,color .22s ease,transform .22s ease,border-color .22s ease}
+#nav-links .nav-group-header{color:#b8c6f7;font-weight:700;letter-spacing:.06em;transition:background .22s ease,color .22s ease}
+#nav-links .nav-ghead{display:flex;align-items:center;gap:10px}
+#nav-links .nav-ico{display:inline-flex;align-items:center;justify-content:center;width:20px;flex:0 0 20px;color:#9fb2f2;transition:color .22s ease,transform .22s ease}
+#nav-links .nav-emoji{font-size:16px;line-height:1}
+#nav-links .nav-ico:empty{display:none}
+#nav-links .nav-link:hover{background:linear-gradient(90deg,rgba(45,212,191,.34),rgba(45,212,191,.07));color:#fff;border-left-color:#2dd4bf;transform:translateX(3px)}
+#nav-links .nav-link:hover .nav-ico{color:#5eead4;transform:scale(1.18)}
+#nav-links .nav-group-header:hover{background:rgba(255,255,255,.10);color:#fff}
+#nav-links .nav-group-header:hover .nav-ico{color:#5eead4;transform:scale(1.15)}
+#nav-links .nav-link.active{background:linear-gradient(90deg,rgba(45,212,191,.42),rgba(45,212,191,.12));color:#fff;border-left-color:#2dd4bf;font-weight:600}
+#nav-links .nav-link.active .nav-ico{color:#5eead4}
+#nav-links .nav-group-arrow{display:inline-block;transition:transform .25s ease}
+#nav-links .nav-group-items{overflow:hidden;max-height:700px;opacity:1;visibility:visible;transition:max-height .32s ease,opacity .25s ease}
+#nav-links .nav-group-items.collapsed{display:block!important;max-height:0;opacity:0;visibility:hidden;transition:max-height .28s ease,opacity .2s ease,visibility 0s linear .28s}
+@media (prefers-reduced-motion:reduce){
+  #main-content>*,.modal-overlay,.modal-overlay .modal,.toast,.fh-skel .b{animation:none!important}
+  .btn-primary,.btn-secondary,.btn,.fv-btn,.tab,#nav-links *{transition:none!important}
+  .btn-primary:hover,.btn-secondary:hover,.btn:hover,.fv-btn:hover,#nav-links .nav-link:hover{transform:none!important}
+}`;
+  document.head.appendChild(st);
+  const bar = document.createElement('div'); bar.id = 'fh-progress'; document.body.appendChild(bar);
+  // button ripple
+  document.addEventListener('pointerdown', (e) => {
+    const b = e.target.closest && e.target.closest('.btn-primary,.btn-secondary,.btn,.fv-btn');
+    if (!b || b.disabled) return;
+    const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 1.6;
+    const s = document.createElement('span');
+    s.className = 'fh-rip';
+    s.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d / 2}px;top:${e.clientY - r.top - d / 2}px`;
+    b.appendChild(s);
+    setTimeout(() => s.remove(), 650);
+  }, { passive: true });
+  window.addEventListener('offline', () => { if (typeof toast === 'function') toast('You are offline. Changes cannot be saved until the connection returns.'); });
+}
+
+function fhBootSlowNotice(){
+  const o = document.getElementById('boot-loading');
+  if (!o || o.querySelector('.fh-boot-slow')) return;
+  o.insertAdjacentHTML('beforeend', '<div class="fh-boot-slow" style="position:absolute;bottom:18%;left:0;right:0;text-align:center;color:#fff;font-size:14px;padding:0 20px;">Still loading… your connection looks slow.<br><button onclick="location.reload()" style="margin-top:10px;padding:8px 18px;border:0;border-radius:8px;font-weight:600;cursor:pointer;">Reload</button></div>');
+}
 async function init(){
-  bindAuthForms();
-  bindForcePasswordForm();
-  bindForgotPasswordLink();
-  bindProfileMenu();
-  await applyBrandingSettings();
-  const { data: { session } } = await sb.auth.getSession();
-  if (session){ await afterLogin(session.user); } else { showAuthScreen(); }
-  const bootLoading = document.getElementById('boot-loading');
-  if (bootLoading) bootLoading.remove();
+  fhInstallFx();
+  const bootTimer = setTimeout(fhBootSlowNotice, 12000);
+  try{
+    bindAuthForms();
+    bindForcePasswordForm();
+    bindForgotPasswordLink();
+    bindProfileMenu();
+    applyBrandingSettings();            // not awaited: cached branding paints instantly, fresh copy arrives in the background
+    const { data: { session } } = await sb.auth.getSession();
+    if (session){ await afterLogin(session.user); } else { showAuthScreen(); }
+  }catch(e){
+    console.error(e);
+    showAuthScreen();
+    toast('Something went wrong while starting up. Please refresh the page.');
+  }finally{
+    clearTimeout(bootTimer);
+    const bootLoading = document.getElementById('boot-loading');
+    if (bootLoading) bootLoading.remove();
+  }
 
   sb.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT'){ showAuthScreen(); }
@@ -120,10 +256,19 @@ async function init(){
 }
 
 async function applyBrandingSettings(){
+  // 1) paint the last-known branding straight away (no waiting for the network)
+  try{ const c = localStorage.getItem('fh_branding'); if (c){ const d = JSON.parse(c); state.branding = d; paintBranding(d); } }catch(_e){}
+  // 2) fetch the current branding in the background, repaint and remember it
   try{
     const { data } = await sb.from('branding_settings').select('*').eq('id', 1).single();
     if (!data) return;
     state.branding = data;
+    paintBranding(data);
+    try{ localStorage.setItem('fh_branding', JSON.stringify(data)); }catch(_e){}
+  }catch(_e){ /* table may not exist yet if migration_6/7 hasn't run — fall back to defaults already in HTML */ }
+}
+function paintBranding(data){
+  try{
     const setText = (id, val) => { const el = document.getElementById(id); if (el && val) el.textContent = val; };
     setText('auth-tagline', data.tagline);
     setText('auth-subtitle', data.subtitle);
@@ -148,7 +293,7 @@ async function applyBrandingSettings(){
       link.href = data.favicon_url;
       document.head.appendChild(link);
     }
-  }catch(_e){ /* table may not exist yet if migration_6/7 hasn't run — fall back to defaults already in HTML */ }
+  }catch(_e){ /* keep the defaults already in the HTML */ }
 }
 
 function showAuthScreen(){
@@ -161,7 +306,12 @@ function showAuthScreen(){
 
 async function afterLogin(user){
   state.user = user;
-  const { data: profile, error } = await sb.from('profiles').select('*, regions!region_id(name)').eq('id', user.id).single();
+  // profile + system settings are independent, so fetch them at the same time
+  const [profRes, sysRes] = await Promise.all([
+    sb.from('profiles').select('*, regions!region_id(name)').eq('id', user.id).single(),
+    sb.from('system_settings').select('*').eq('id', 1).maybeSingle()
+  ]);
+  const { data: profile, error } = profRes;
   if (error || !profile){ toast('Could not load your profile. Try refreshing.'); return; }
   state.profile = profile;
 
@@ -178,7 +328,7 @@ async function afterLogin(user){
   }
 
   // Maintenance mode: only Super Admin can get past this
-  const { data: sysSettings } = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle();
+  const sysSettings = sysRes.data;
   if (sysSettings && !sysSettings.portal_active && profile.role !== 'super_admin'){
     document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('pending-screen').style.display = 'none';
@@ -195,21 +345,24 @@ async function afterLogin(user){
   document.getElementById('maintenance-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'flex';
 
-  await loadRegions();
-  await loadDesignations();
-  await loadCategories();
-  await loadReferenceData();
+  state.systemSettings = sysSettings || {};
+  // all reference lists load together instead of one after another
+  await Promise.all([loadRegions(), loadDesignations(), loadCategories(), loadReferenceData(true)]);
   renderNav();
   renderUserBadge();
   const allowedViews = getAllowedViews();
   const hashView = location.hash.replace('#','');
-  navigateTo(allowedViews.includes(hashView) ? hashView : 'dashboard');
-  showLatestUnackedCircularPopup();
-  showPendingRemindersBanner();
-  showPendingPopupAnnouncement();
-  loadAndShowNotifications();
-  setupDesktopNotifications();
+  const firstPage = navigateTo(allowedViews.includes(hashView) ? hashView : 'dashboard');
   setupSessionTimeout();
+  // Popups, reminders, notifications and live updates are not urgent — they start only after the
+  // first page has loaded, so they no longer compete with it for the connection.
+  firstPage.then(() => setTimeout(() => {
+    showLatestUnackedCircularPopup();
+    showPendingRemindersBanner();
+    showPendingPopupAnnouncement();
+    loadAndShowNotifications();
+    setupDesktopNotifications();
+  }, 500));
 }
 
 window.addEventListener('hashchange', () => {
@@ -236,6 +389,16 @@ function setupSessionTimeout(){
   reset();
 }
 
+let _fhIds = null;
+function fhMyIds(force){
+  if (!force && _fhIds && Date.now() - _fhIds.t < 60000) return _fhIds.p;
+  const p = Promise.all([
+    sb.from('requests').select('id').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`),
+    sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`)
+  ]).then(([r, t]) => ({ requestIds: (r.data||[]).map(x=>x.id), taskIds: (t.data||[]).map(x=>x.id) }));
+  _fhIds = { t: Date.now(), p };
+  return p;
+}
 async function setupDesktopNotifications(){
   const desktopOk = ('Notification' in window);
   if (desktopOk && Notification.permission === 'default') Notification.requestPermission();
@@ -263,15 +426,11 @@ async function setupDesktopNotifications(){
   // to me — these can't be filtered server-side by "my request IDs"
   // (Realtime filters only support one column), so we keep a live set
   // of relevant IDs and check client-side.
-  const refreshMyIds = async () => {
-    const { data: myRequests } = await sb.from('requests').select('id').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
-    const { data: myTasks } = await sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`);
-    return {
-      requestIds: new Set((myRequests||[]).map(r=>r.id)),
-      taskIds: new Set((myTasks||[]).map(t=>t.id))
-    };
+  const refreshMyIds = async (force) => {
+    const ids = await fhMyIds(force);
+    return { requestIds: new Set(ids.requestIds), taskIds: new Set(ids.taskIds) };
   };
-  let { requestIds, taskIds } = await refreshMyIds();
+  let { requestIds, taskIds } = await refreshMyIds(false);
 
   sb.channel('request-updates-notify-' + state.user.id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'request_updates' }, (payload) => {
@@ -300,7 +459,7 @@ async function setupDesktopNotifications(){
 
   // New requests/tasks change the relevant-ID sets — refresh periodically
   // rather than trying to keep them perfectly live.
-  setInterval(async () => { ({ requestIds, taskIds } = await refreshMyIds()); }, 5*60*1000);
+  setInterval(async () => { ({ requestIds, taskIds } = await refreshMyIds(true)); }, 5*60*1000);
 }
 
 async function showLatestUnackedCircularPopup(){
@@ -361,15 +520,14 @@ async function loadAndShowNotifications(){
   const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').is('deleted_at', null).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
   (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ id:'circ-'+c.id, type:'Circular', title:'New circular', body:c.title, created_at:c.created_at, read:false }));
 
-  const { data: myRequests } = await sb.from('requests').select('id, category').or(`rider_id.eq.${state.user.id},assigned_poc_id.eq.${state.user.id}`);
-  const myRequestIds = (myRequests||[]).map(r=>r.id);
+  const _ids = await fhMyIds(false);
+  const myRequestIds = _ids.requestIds;
   if (myRequestIds.length){
     const { data: reqUpdates } = await sb.from('request_updates').select('*, profiles(full_name)').in('request_id', myRequestIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
     (reqUpdates||[]).forEach(u => items.push({ id:'req-'+u.id, type:'Request update', title:`${u.profiles?.full_name||'Someone'} updated a request`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
-  const { data: myTasks } = await sb.from('tasks').select('id').or(`assigned_to.eq.${state.user.id},assigned_by.eq.${state.user.id}`);
-  const myTaskIds = (myTasks||[]).map(t=>t.id);
+  const myTaskIds = _ids.taskIds;
   if (myTaskIds.length){
     const { data: taskUpdates } = await sb.from('task_updates').select('*, profiles(full_name)').in('task_id', myTaskIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
     (taskUpdates||[]).forEach(u => items.push({ id:'task-'+u.id, type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
@@ -522,14 +680,14 @@ async function loadCategories(){
   const { data } = await sb.from('categories').select('*').eq('active', true).order('name');
   state.categories = data || [];
 }
-async function loadReferenceData(){
+async function loadReferenceData(skipSystemSettings){
   const [wt, et, ct, myRegions, myPerms, sys] = await Promise.all([
     sb.from('warning_types').select('*').eq('active', true).order('name'),
     sb.from('expiry_item_types').select('*').eq('active', true).order('name'),
     sb.from('compliance_item_types').select('*').eq('active', true).order('name'),
     sb.from('profile_regions').select('region_id').eq('profile_id', state.user.id),
     sb.from('custom_permissions').select('permission_key').eq('profile_id', state.user.id),
-    sb.from('system_settings').select('*').eq('id', 1).maybeSingle()
+    skipSystemSettings ? Promise.resolve({ data: state.systemSettings }) : sb.from('system_settings').select('*').eq('id', 1).maybeSingle()
   ]);
   state.warningTypes = wt.data || [];
   state.expiryItemTypes = et.data || [];
@@ -758,33 +916,108 @@ const NAV_LABEL = {
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
-  { label: null, items: ['dashboard'] },
-  { label: 'Operations', items: ['circulars','tasks','requests'] },
-  { label: 'Inventory', items: ['expiries','tools'] },
-  { label: 'People', items: ['team','warnings','compliance','roster','hierarchy'] },
-  { label: 'Field Visits', items: ['fv_report','fv_riders','fv_issues','fv_visits','fv_add','fv_teams','fv_checklist','fv_targets'] },
-  { label: 'Knowledge', items: ['knowledgebase','resources','releasenotes'] },
-  { label: 'Admin', items: ['regions','settings','reports','activitylog'] }
+  { id: 'g_dash',       label: null,            items: ['dashboard'] },
+  { id: 'g_knowledge',  label: 'Knowledgebase', items: ['knowledgebase','resources','releasenotes'] },
+  { id: 'g_people',     label: 'People',        items: ['team','roster','hierarchy'] },
+  { id: 'g_operations', label: 'Operations',    items: ['circulars','tasks','requests','warnings','compliance'] },
+  { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
+  { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools'] },
+  { id: 'g_admin',      label: 'Admin',         items: ['regions','settings','reports','activitylog'] }
 ];
+
+// ---------------------------------------------------------
+// MENU ICONS — small line icons drawn in code (no image files, so they use none of your
+// storage). The Super Admin can change or remove any of them in Settings > Menu Icons;
+// only the few characters of each choice are saved (in system_settings.nav_icons).
+// ---------------------------------------------------------
+const NAV_ICON_LIB = {
+  grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  home:'<path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/>',
+  megaphone:'<path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15 9a4 4 0 0 1 0 6"/><path d="M18 6.5a8 8 0 0 1 0 11"/>',
+  check:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
+  inbox:'<path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6z"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  wrench:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
+  users:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.8"/><path d="M17 14.2a5.5 5.5 0 0 1 4.5 5.3"/>',
+  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  alert:'<path d="M12 3 2 20h20z"/><path d="M12 10v4"/><path d="M12 17.5v.01"/>',
+  shield:'<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  sitemap:'<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>',
+  book:'<path d="M4 5a2 2 0 0 1 2-2h14v16H6a2 2 0 0 0-2 2z"/><path d="M4 21V5"/>',
+  link:'<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  star:'<path d="m12 3 2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/>',
+  pin:'<path d="M12 21s7-6.2 7-11a7 7 0 0 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  chart:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/>',
+  clipboard:'<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="m9 14 2 2 4-4"/>',
+  plus:'<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  target:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+  briefcase:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
+  box:'<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>',
+  lock:'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  file:'<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>',
+  heart:'<path d="M12 21s-8-5.2-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 5.8-8 11-8 11z"/>',
+  flag:'<path d="M5 21V4M5 4h12l-2 4 2 4H5"/>',
+  camera:'<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8 7l1.5-3h5L16 7"/>',
+  truck:'<path d="M2 6h12v10H2zM14 10h4l4 3v3h-8"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
+  tag:'<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
+  mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  phone:'<path d="M5 3h4l2 5-2.5 1.5a11 11 0 0 0 6 6L16 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 5a2 2 0 0 1 2-2z"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  bolt:'<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  pencil:'<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  trophy:'<path d="M8 4h8v6a4 4 0 0 1-8 0zM8 6H4v2a3 3 0 0 0 4 3M16 6h4v2a3 3 0 0 1-4 3M12 14v4M8 21h8"/>',
+  layers:'<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  activity:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  bookmark:'<path d="M6 3h12v18l-6-4-6 4z"/>',
+  key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/>'
+};
+const NAV_ICON_DEFAULT = {
+  dashboard:'svg:grid', circulars:'svg:megaphone', tasks:'svg:check', requests:'svg:inbox', warnings:'svg:alert', compliance:'svg:shield',
+  team:'svg:users', roster:'svg:calendar', hierarchy:'svg:sitemap', knowledgebase:'svg:book', resources:'svg:link', releasenotes:'svg:star',
+  expiries:'svg:clock', tools:'svg:wrench', regions:'svg:pin', settings:'svg:gear', reports:'svg:chart', activitylog:'svg:list',
+  fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
+  fv_checklist:'svg:clipboard', fv_targets:'svg:target',
+  g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
+};
+// icon for a menu entry: the Super Admin's choice if there is one ('' = removed), otherwise the built-in default
+function navIconValue(id){
+  const o = (state.systemSettings && state.systemSettings.nav_icons) || {};
+  return Object.prototype.hasOwnProperty.call(o, id) ? o[id] : (NAV_ICON_DEFAULT[id] || '');
+}
+function navIconHtml(id, valueOverride){
+  const v = valueOverride !== undefined ? valueOverride : navIconValue(id);
+  if (!v) return '';
+  if (v.startsWith('svg:')){
+    const inner = NAV_ICON_LIB[v.slice(4)];
+    return inner ? `<svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>` : '';
+  }
+  return `<span class="nav-emoji">${escapeHtml(v)}</span>`;
+}
 
 function renderNav(){
   const items = getAllowedViews();
   const nav = document.getElementById('nav-links');
+  const link = (key) => `<a href="#${key}" class="nav-link" data-view="${key}"><span class="nav-ico">${navIconHtml(key)}</span><span class="nav-txt">${NAV_LABEL[key]}</span></a>`;
   let html = '';
   NAV_GROUPS.forEach(group => {
     const visible = group.items.filter(k => items.includes(k));
     if (!visible.length) return;
     if (!group.label){
-      html += visible.map(key => `<a href="#${key}" class="nav-link" data-view="${key}">${NAV_LABEL[key]}</a>`).join('');
+      html += visible.map(link).join('');
     } else {
       const groupId = 'grp-' + group.label.replace(/\s+/g,'-').toLowerCase();
       const isOpen = visible.includes(state.view);
       html += `
         <button class="nav-group-header ${isOpen?'':'collapsed'}" data-group-toggle="${groupId}">
-          <span>${group.label}</span><span class="nav-group-arrow">▾</span>
+          <span class="nav-ghead"><span class="nav-ico">${navIconHtml(group.id)}</span><span>${group.label}</span></span><span class="nav-group-arrow">▾</span>
         </button>
         <div class="nav-group-items ${isOpen?'':'collapsed'}" id="${groupId}">
-          ${visible.map(key => `<a href="#${key}" class="nav-link" data-view="${key}">${NAV_LABEL[key]}</a>`).join('')}
+          ${visible.map(link).join('')}
         </div>`;
     }
   });
@@ -805,6 +1038,7 @@ function renderNav(){
       }
     };
   });
+  nav.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
 }
 function renderUserBadge(){
   const nameEl = document.getElementById('ribbon-profile-name');
@@ -826,7 +1060,12 @@ async function navigateTo(view){
   document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
   document.getElementById('topbar-actions').innerHTML = '';
   const main = document.getElementById('main-content');
-  main.innerHTML = `<div class="empty-state"><div class="spinner"></div>Loading…</div>`;
+  main.innerHTML = fhSkeleton();
+  fhProgress(true);
+  const slowTimer = setTimeout(() => {
+    if (state.view === view && main.querySelector('.fh-skel'))
+      main.insertAdjacentHTML('afterbegin', `<div class="fh-slow">Still loading… your connection looks slow. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Retry</button></div>`);
+  }, 12000);
   try{
     if (view==='dashboard') await renderDashboard();
     else if (view==='circulars') await renderCirculars();
@@ -850,7 +1089,10 @@ async function navigateTo(view){
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
-    main.innerHTML = `<div class="empty-state">Something went wrong loading this page. Please refresh.</div>`;
+    main.innerHTML = `<div class="empty-state">Something went wrong loading this page. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Try again</button></div>`;
+  }finally{
+    clearTimeout(slowTimer);
+    fhProgress(false);
   }
 }
 
@@ -2627,6 +2869,7 @@ async function renderSettings(){
     { label: 'Branding & Announcements', items: [
       ['notice','Home Notice', () => isAdmin()],
       ['branding','Login Page Branding', () => isSuperAdmin()],
+      ['menuicons','Menu Icons', () => isSuperAdmin()],
       ['homebanner','Home Banner', () => isSuperAdmin()],
       ['popups','Popup Announcements', () => isSuperAdmin()],
     ]},
@@ -2665,6 +2908,7 @@ async function renderSettings(){
   else if (settingsTab === 'tooltypes') await renderToolTypesSettings(body);
   else if (settingsTab === 'compliancetypes') await renderSimpleTypeList(body, 'compliance_item_types', 'Compliance Item');
   else if (settingsTab === 'designations') await renderDesignationsSettings(body);
+  else if (settingsTab === 'menuicons') await renderMenuIconSettings(body);
   else if (settingsTab === 'subregions') await renderSubRegionsSettings(body);
   else if (settingsTab === 'hotspots') await renderHotspotsSettings(body);
   else if (settingsTab === 'shifttypes') await renderSimpleTypeList(body, 'shift_types', 'Shift');
@@ -3272,6 +3516,7 @@ function openKbExcelModal(){
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try{
+        await ensureXLSX();
         const wb = XLSX.read(evt.target.result, { type: 'array' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet);
@@ -3557,6 +3802,58 @@ async function generateReport(){
   }
   downloadCSV(`fieldhub-${type}-${from}-to-${to.slice(0,10)}.csv`, toCSV(rows));
   statusEl.textContent = `Downloaded ${rows.length} rows.`;
+}
+
+async function renderMenuIconSettings(body){
+  if (!isSuperAdmin()){ body.innerHTML = '<p class="hint">Only the Super Admin can change menu icons.</p>'; return; }
+  const custom = () => (state.systemSettings && state.systemSettings.nav_icons) || {};
+  const hasCol = !!state.systemSettings && Object.prototype.hasOwnProperty.call(state.systemSettings, 'nav_icons');
+  const badge = (id) => { const o = custom(); return !Object.prototype.hasOwnProperty.call(o, id) ? '<span class="badge pending">Default</span>' : (o[id] === '' ? '<span class="badge closed">Removed</span>' : '<span class="badge active">Custom</span>'); };
+  const row = (id, label, indent) => `<tr><td style="padding-left:${indent ? 34 : 10}px;"><span style="display:inline-flex;align-items:center;gap:10px;color:var(--ink,#1E2A6E);"><span style="width:22px;display:inline-flex;justify-content:center;">${navIconHtml(id) || '<span class="hint">—</span>'}</span>${indent ? '' : '<strong>'}${escapeHtml(label)}${indent ? '' : '</strong>'}</span></td>
+    <td>${badge(id)}</td><td style="white-space:nowrap;text-align:right;"><button class="btn small" data-mi-change="${id}">Change</button>
+    <button class="btn small outline" data-mi-remove="${id}">Remove</button><button class="btn small outline" data-mi-reset="${id}">Reset</button></td></tr>`;
+  const rows = NAV_GROUPS.map(g => (g.label ? row(g.id, g.label, false) : '') + g.items.map(k => row(k, NAV_LABEL[k], !!g.label)).join('')).join('');
+  body.innerHTML = `<p class="hint" style="margin-bottom:12px;">Every menu entry can have a small symbol. Choose one from the built-in set or type any emoji/symbol, <strong>Remove</strong> to show no symbol, or <strong>Reset</strong> to go back to the original. Symbols are drawn by the portal itself, so they use none of your storage.</p>
+    ${hasCol ? '' : '<p class="hint" style="color:#a63d1f;">To save changes here, please run <strong>migration_29.sql</strong> in Supabase first.</p>'}
+    <div style="margin-bottom:12px;"><button class="btn small outline" id="mi-reset-all">Reset all to default</button></div>
+    <div style="overflow-x:auto;"><table><thead><tr><th>Menu entry</th><th>Symbol</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+
+  const save = async (obj, doneMsg) => {
+    const { data, error } = await sb.from('system_settings').update({ nav_icons: obj }).eq('id', 1).select('nav_icons');
+    if (error){ toast(/nav_icons/.test(error.message) ? 'Please run migration_29.sql in Supabase first, then try again.' : 'Could not save: ' + error.message); return false; }
+    if (!data || !data.length){ toast('Could not save — you do not have permission to change this setting.'); return false; }
+    state.systemSettings.nav_icons = obj;
+    renderNav(); toast(doneMsg || 'Saved'); renderMenuIconSettings(body);
+    return true;
+  };
+  const labelOf = (id) => NAV_LABEL[id] || (NAV_GROUPS.find(g => g.id === id) || {}).label || id;
+  body.querySelectorAll('[data-mi-remove]').forEach(b => b.onclick = () => save({ ...custom(), [b.dataset.miRemove]: '' }, 'Symbol removed'));
+  body.querySelectorAll('[data-mi-reset]').forEach(b => b.onclick = () => { const o = { ...custom() }; delete o[b.dataset.miReset]; save(o, 'Reset to default'); });
+  body.querySelector('#mi-reset-all').onclick = () => { if (confirm('Reset every menu symbol to its original?')) save({}, 'All symbols reset'); };
+  body.querySelectorAll('[data-mi-change]').forEach(b => b.onclick = () => {
+    const id = b.dataset.miChange;
+    let chosen = navIconValue(id) || '';
+    openModal(`<h2>Symbol for “${escapeHtml(labelOf(id))}”</h2>
+      <div id="mi-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:8px;margin:10px 0 14px;max-height:260px;overflow-y:auto;padding:2px;">
+        ${Object.keys(NAV_ICON_LIB).map(k => `<button type="button" class="mi-opt" data-k="svg:${k}" title="${k}" style="height:44px;border:2px solid #dfe3ee;border-radius:10px;background:#fff;color:#1E2A6E;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;">${navIconHtml('x', 'svg:' + k)}</button>`).join('')}</div>
+      <div class="form-row"><label>…or type your own symbol / emoji (optional)</label><input type="text" id="mi-custom" maxlength="6" placeholder="e.g. 🚚" style="max-width:140px;"></div>
+      <div style="margin:6px 0 14px;">Preview: <span id="mi-prev" style="display:inline-flex;vertical-align:middle;background:#1b2560;color:#5eead4;border-radius:8px;padding:6px 10px;"></span></div>
+      <button class="btn-primary" id="mi-save" type="button">Save symbol</button>`);
+    const grid = document.getElementById('mi-grid'), cust = document.getElementById('mi-custom');
+    const paint = () => {
+      grid.querySelectorAll('.mi-opt').forEach(o => { const on = o.dataset.k === chosen; o.style.borderColor = on ? '#2dd4bf' : '#dfe3ee'; o.style.background = on ? '#e6fbf8' : '#fff'; });
+      document.getElementById('mi-prev').innerHTML = navIconHtml('x', chosen) || '<span style="font-size:12px;">none</span>';
+    };
+    if (chosen && !chosen.startsWith('svg:')) cust.value = chosen;
+    grid.querySelectorAll('.mi-opt').forEach(o => o.onclick = () => { chosen = o.dataset.k; cust.value = ''; paint(); });
+    cust.oninput = () => { const v = cust.value.trim(); if (v) chosen = v; paint(); };
+    paint();
+    document.getElementById('mi-save').onclick = async () => {
+      const v = (cust.value.trim() || chosen || '').slice(0, 8);
+      if (!v){ toast('Pick a symbol first, or use Remove to show none.'); return; }
+      if (await save({ ...custom(), [id]: v }, 'Symbol saved')) closeModal();
+    };
+  });
 }
 
 async function renderDesignationsSettings(body){
