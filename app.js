@@ -362,6 +362,7 @@ async function afterLogin(user){
     showPendingPopupAnnouncement();
     loadAndShowNotifications();
     setupDesktopNotifications();
+    fhSetupNativeApp();
   }, 500));
 }
 
@@ -387,6 +388,66 @@ function setupSessionTimeout(){
     document.addEventListener(evt, reset, { passive: true });
   });
   reset();
+}
+
+// ---------------------------------------------------------
+// ANDROID APP (Capacitor) — only active inside the FieldHub Android app.
+// In a normal browser every function below quietly does nothing.
+//  * Push notifications: this phone gets a Firebase "token" which is saved against the
+//    logged-in user (device_tokens). The server sends alerts to those tokens even when the app is closed.
+//  * Android Back button behaves like a real app (closes popups, goes back to Dashboard, then exits).
+// ---------------------------------------------------------
+function fhIsNativeApp(){
+  try{ return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()); }
+  catch(_e){ return false; }
+}
+let _fhNativeListeners = false;
+async function fhSetupNativeApp(){
+  if (!fhIsNativeApp() || !state.user) return;
+  const plugins = window.Capacitor.Plugins || {};
+  const PN = plugins.PushNotifications, AppP = plugins.App;
+  try{
+    if (!_fhNativeListeners){
+      _fhNativeListeners = true;
+      if (AppP && AppP.addListener){
+        AppP.addListener('backButton', () => {
+          const modal = document.getElementById('active-modal');
+          if (modal){ if (typeof requestCloseModal === 'function') requestCloseModal(); else closeModal(); return; }
+          if (state.view && state.view !== 'dashboard') navigateTo('dashboard');
+          else if (AppP.exitApp) AppP.exitApp();
+        });
+      }
+      if (PN && PN.addListener){
+        PN.addListener('registration', (t) => fhSavePushToken(t && t.value));
+        PN.addListener('registrationError', (e) => console.error('Push registration failed', e));
+        // alert arrives while the app is open: show it inside the app
+        PN.addListener('pushNotificationReceived', (n) => { toast((n.title ? n.title + ': ' : '') + (n.body || '')); });
+        // person taps an alert: open the right page
+        PN.addListener('pushNotificationActionPerformed', (a) => {
+          const v = a && a.notification && a.notification.data && a.notification.data.view;
+          if (v && getAllowedViews().includes(v)) navigateTo(v);
+        });
+      }
+    }
+    if (!PN) return;
+    await PN.createChannel({ id: 'fieldhub_default', name: 'FieldHub alerts', description: 'Circulars, requests, tasks and warnings', importance: 5, visibility: 1, vibration: true, lights: true });
+    let perm = await PN.checkPermissions();
+    if (perm.receive === 'prompt' || perm.receive === 'prompt-with-rationale') perm = await PN.requestPermissions();
+    if (perm.receive !== 'granted') return;       // person said no — they can allow it later in Android settings
+    await PN.register();                           // fires the 'registration' event with this phone's token
+  }catch(e){ console.error('Native app setup failed', e); }
+}
+async function fhSavePushToken(token){
+  if (!token || !state.user) return;
+  try{ localStorage.setItem('fh_push_token', token); }catch(_e){}
+  const { error } = await sb.rpc('fh_register_push_token', { p_token: token, p_platform: 'android' });
+  if (error) console.error('Could not save push token (has migration_30.sql been run?)', error.message);
+}
+async function fhUnregisterPush(){
+  try{
+    const t = localStorage.getItem('fh_push_token');
+    if (t){ await sb.rpc('fh_unregister_push_token', { p_token: t }); localStorage.removeItem('fh_push_token'); }
+  }catch(_e){}
 }
 
 let _fhIds = null;
@@ -807,6 +868,7 @@ function clearAuthMessage(){
   el.style.display = 'none'; el.textContent = '';
 }
 async function doLogout(){
+  await fhUnregisterPush();
   await sb.auth.signOut();
   state.user = null; state.profile = null;
   const phoneEl = document.getElementById('login-phone');
