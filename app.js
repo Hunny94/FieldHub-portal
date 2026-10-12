@@ -221,7 +221,61 @@ function fhInstallFx(){
     b.appendChild(s);
     setTimeout(() => s.remove(), 650);
   }, { passive: true });
+  fhInstallMobile();
   window.addEventListener('offline', () => { if (typeof toast === 'function') toast('You are offline. Changes cannot be saved until the connection returns.'); });
+}
+
+// ---------------------------------------------------------
+// PHONE LAYOUT: ☰ menu button + slide-out drawer, compact header.
+// Runs for any screen narrower than 900px (Android app and phone browsers).
+// ---------------------------------------------------------
+function fhCloseDrawer(){ document.body.classList.remove('fh-drawer-open'); }
+function fhToggleDrawer(){ document.body.classList.toggle('fh-drawer-open'); }
+function fhInstallMobile(){
+  if (document.getElementById('fh-mobile')) return;
+  const st = document.createElement('style');
+  st.id = 'fh-mobile';
+  st.textContent = `
+#fh-menu-btn,#fh-backdrop{display:none}
+@media (max-width:900px){
+  html,body{max-width:100%;overflow-x:hidden}
+  #app-shell{display:flex!important;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+  .top-ribbon{flex:0 0 auto;display:flex!important;align-items:center;justify-content:space-between;gap:6px;padding:calc(env(safe-area-inset-top,0px) + 8px) 10px 8px!important;min-height:0!important;height:auto!important}
+  .top-ribbon-brand{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 auto}
+  .top-ribbon-brand .ribbon-logo{height:34px!important;width:auto!important;max-width:44px}
+  .ribbon-title{font-size:16px!important;line-height:1.1!important;white-space:nowrap}
+  .ribbon-subtitle{display:none!important}
+  .top-ribbon-actions{display:flex!important;align-items:center;gap:6px;flex:0 0 auto}
+  .top-ribbon-actions .ribbon-link,.top-ribbon-actions button{font-size:12px!important;padding:7px 9px!important;white-space:nowrap;line-height:1.2!important;min-width:0}
+  #ribbon-profile-name{display:inline-block;max-width:70px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;white-space:nowrap}
+  #fh-menu-btn{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:40px;height:40px;margin-right:2px;border:0;border-radius:10px;background:rgba(255,255,255,.14);color:#fff;font-size:22px;line-height:1;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #fh-menu-btn:active{background:rgba(255,255,255,.28)}
+  .app-body{display:block!important;position:relative;flex:1 1 auto;min-height:0;overflow:hidden}
+  .main-area{width:100%!important;max-width:100%!important;margin:0!important;height:100%;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-bottom:env(safe-area-inset-bottom,0px)}
+  .topbar{padding:10px 14px!important}
+  .topbar h1{font-size:19px!important}
+  .main-content{padding:12px 12px 24px!important;max-width:100%;box-sizing:border-box}
+  .main-content img,.main-content canvas,.main-content svg{max-width:100%}
+  .main-content .table-wrap,.main-content .tbl-wrap,.main-content .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .main-content table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .modal{width:94vw!important;max-width:94vw!important;max-height:90vh;overflow-y:auto}
+  .sidebar{position:fixed!important;top:0;left:0;bottom:0;height:100%!important;width:min(84vw,310px)!important;max-width:310px;margin:0!important;z-index:10000;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-top:calc(env(safe-area-inset-top,0px) + 10px)!important;transform:translateX(-105%);transition:transform .28s cubic-bezier(.2,.8,.2,1);box-shadow:none;display:block!important}
+  body.fh-drawer-open .sidebar{transform:none;box-shadow:6px 0 28px rgba(0,0,0,.45)}
+  #fh-backdrop{display:block;position:fixed;inset:0;z-index:9999;background:rgba(10,15,45,.55);opacity:0;pointer-events:none;transition:opacity .25s ease}
+  body.fh-drawer-open #fh-backdrop{opacity:1;pointer-events:auto}
+  #nav-links .nav-link,#nav-links .nav-group-header{font-size:15px;padding-top:12px;padding-bottom:12px}
+}
+@media (prefers-reduced-motion:reduce){.sidebar,#fh-backdrop{transition:none!important}}`;
+  document.head.appendChild(st);
+  const ribbon = document.querySelector('.top-ribbon');
+  if (ribbon && !document.getElementById('fh-menu-btn')){
+    const b = document.createElement('button');
+    b.id = 'fh-menu-btn'; b.type = 'button'; b.setAttribute('aria-label','Menu'); b.textContent = '☰';
+    b.onclick = (e) => { e.stopPropagation(); fhToggleDrawer(); };
+    ribbon.insertBefore(b, ribbon.firstChild);
+  }
+  const bd = document.createElement('div'); bd.id = 'fh-backdrop'; bd.onclick = fhCloseDrawer; document.body.appendChild(bd);
+  window.addEventListener('resize', () => { if (window.innerWidth > 900) fhCloseDrawer(); });
 }
 
 function fhBootSlowNotice(){
@@ -411,6 +465,7 @@ async function fhSetupNativeApp(){
       _fhNativeListeners = true;
       if (AppP && AppP.addListener){
         AppP.addListener('backButton', () => {
+          if (document.body.classList.contains('fh-drawer-open')){ fhCloseDrawer(); return; }
           const modal = document.getElementById('active-modal');
           if (modal){ if (typeof requestCloseModal === 'function') requestCloseModal(); else closeModal(); return; }
           if (state.view && state.view !== 'dashboard') navigateTo('dashboard');
@@ -461,7 +516,7 @@ function fhMyIds(force){
   return p;
 }
 async function setupDesktopNotifications(){
-  const desktopOk = ('Notification' in window);
+  const desktopOk = ('Notification' in window) && !fhIsNativeApp();
   if (desktopOk && Notification.permission === 'default') Notification.requestPermission();
   const canDesktop = desktopOk && Notification.permission === 'granted';
   const fire = (title, body) => { if (canDesktop) new Notification(title, { body }); };
@@ -1115,6 +1170,7 @@ function bindProfileMenu(){
 }
 
 async function navigateTo(view){
+  fhCloseDrawer();
   if (view === 'fieldvisits') view = 'fv_report';   // old bookmark
   if (location.hash !== '#'+view) history.pushState(null, '', '#'+view);
   state.view = view;
@@ -3777,12 +3833,34 @@ function toCSV(rows){
   return [headers.join(','), ...rows.map(r => headers.map(h=>escape(r[h])).join(','))].join('\n');
 }
 function downloadCSV(filename, csv){
+  if (fhIsNativeApp()) { fhNativeSaveText(filename, csv); return; }
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+// Inside the Android app a normal browser download does not work. Instead open the phone's
+// own Share sheet (save to Drive / WhatsApp / email / Files); if that is unavailable, show
+// the data in a box with a Copy button so nothing is ever lost.
+async function fhNativeSaveText(filename, text){
+  try{
+    const file = new File(['\ufeff' + text], filename, { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  }catch(e){ if (e && e.name === 'AbortError') return; }
+  openModal(`<h3>${escapeHtml(filename)}</h3>
+    <p class="hint">Your phone cannot save files directly from here. Tap <b>Copy</b>, then paste into Excel, Google Sheets or WhatsApp.</p>
+    <textarea id="fh-dl-text" readonly style="width:100%;height:220px;font-family:monospace;font-size:12px;"></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px;"><button class="btn-primary" id="fh-dl-copy" type="button">Copy</button><button class="btn-secondary" type="button" onclick="closeModal()">Close</button></div>`);
+  const ta = document.getElementById('fh-dl-text'); ta.value = text;
+  document.getElementById('fh-dl-copy').onclick = async () => {
+    try{ await navigator.clipboard.writeText(text); }catch(_e){ ta.select(); document.execCommand('copy'); }
+    toast('Copied.');
+  };
 }
 
 async function generateReport(){
