@@ -264,7 +264,25 @@ function fhInstallMobile(){
   #fh-backdrop{display:block;position:fixed;inset:0;z-index:9999;background:rgba(10,15,45,.55);opacity:0;pointer-events:none;transition:opacity .25s ease}
   body.fh-drawer-open #fh-backdrop{opacity:1;pointer-events:auto}
   #nav-links .nav-link,#nav-links .nav-group-header{font-size:15px;padding-top:12px;padding-bottom:12px}
+  /* header: nothing may overlap */
+  .top-ribbon-brand,.top-ribbon-brand *{position:static!important}
+  .top-ribbon-brand{overflow:hidden}
+  .top-ribbon-brand>div{min-width:0;overflow:hidden}
+  .ribbon-title{overflow:hidden;text-overflow:ellipsis}
+  #ribbon-profile-name,.ribbon-lbl{display:none!important}
+  .top-ribbon-actions .ribbon-link,.top-ribbon-actions button{padding:8px 10px!important;font-size:16px!important}
+  .fh-drawer-user{display:block;margin:0 14px 10px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.12);color:#fff;font-weight:600;font-size:14px}
+  /* two-column pages become one column */
+  .main-content .two-col,.main-content [style*="grid-template-columns:220px"],.main-content [style*="grid-template-columns:1fr 1fr"],.main-content [style*="grid-template-columns: 1fr 1fr"]{grid-template-columns:1fr!important}
+  .fh-set-grid{gap:12px!important}
+  .fh-set-nav{display:flex;overflow-x:auto;gap:16px;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+  .fh-set-grp{display:flex!important;align-items:center;gap:6px;margin:0!important;flex:0 0 auto}
+  .fh-set-lbl{white-space:nowrap;padding:0!important}
+  .fh-set-grp .btn{width:auto!important;white-space:nowrap;margin:0!important;display:inline-block!important}
+  .main-content .card{max-width:100%;box-sizing:border-box;overflow-x:auto}
+  .main-content .card table{display:table;min-width:100%}
 }
+@media (min-width:901px){.fh-drawer-user{display:none}}
 @media (prefers-reduced-motion:reduce){.sidebar,#fh-backdrop{transition:none!important}}`;
   document.head.appendChild(st);
   const ribbon = document.querySelector('.top-ribbon');
@@ -1138,7 +1156,7 @@ function renderNav(){
         </div>`;
     }
   });
-  nav.innerHTML = html;
+  nav.innerHTML = `<div class="fh-drawer-user">👤 ${escapeHtml((state.profile && (state.profile.full_name || state.profile.email)) || '')}</div>` + html;
   nav.querySelectorAll('.nav-link').forEach(a => {
     a.onclick = (e) => { e.preventDefault(); navigateTo(a.dataset.view); };
   });
@@ -3006,11 +3024,11 @@ async function renderSettings(){
   if (!flatKeys.includes(settingsTab)) settingsTab = flatKeys[0] || 'categories';
 
   main.innerHTML = `
-    <div style="display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:start;">
-      <div>
+    <div class="fh-set-grid" style="display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:start;">
+      <div class="fh-set-nav">
         ${visibleGroups.map(g => `
-          <div style="margin-bottom:18px;">
-            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); padding:0 4px 6px;">${g.label}</div>
+          <div class="fh-set-grp" style="margin-bottom:18px;">
+            <div class="fh-set-lbl" style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); padding:0 4px 6px;">${g.label}</div>
             ${g.items.map(([k,label]) => `<button class="btn small ${settingsTab===k?'':'outline'}" data-settings-tab="${k}" style="display:block; width:100%; text-align:left; margin-bottom:4px;">${label}</button>`).join('')}
           </div>`).join('')}
       </div>
