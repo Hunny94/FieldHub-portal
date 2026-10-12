@@ -5906,8 +5906,9 @@ function fvTrend(visits, issues) {
     return fvIso(new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)));
   };
   const map = new Map();
-  const get = (k) => { if (!map.has(k)) map.set(k, { on: 0, off: 0, sum: 0, n: 0, it: 0, ir: 0 }); return map.get(k); };
-  visits.forEach(v => { const o = get(key(v.visit_date)); o.n++; o.sum += Number(v.score || 0); if (v.visit_type === 'Onsite') o.on++; else o.off++; });
+  const get = (k) => { if (!map.has(k)) map.set(k, { on: 0, off: 0, sum: 0, n: 0, it: 0, ir: 0, sOn: new Set(), sOff: new Set() }); return map.get(k); };
+  visits.forEach(v => { const o = get(key(v.visit_date)); o.n++; o.sum += Number(v.score || 0); if (v.visit_type === 'Onsite') o.sOn.add(fvVisitKey(v)); else o.sOff.add(fvVisitKey(v)); });
+  map.forEach(o => { o.on = o.sOn.size; o.off = o.sOff.size; });
   issues.forEach(i => { const o = get(key(i.visit_date)); o.it++; if (i.status === 'resolved') o.ir++; });
   const keys = [...map.keys()].sort();
   const label = (k) => gran === 'month' ? new Date(k + 'T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : fvShortDate(k);
@@ -5918,6 +5919,11 @@ function fvTrend(visits, issues) {
     avg: keys.map(k => map.get(k).n ? Math.round(map.get(k).sum / map.get(k).n * 10) / 10 : null)
   };
 }
+// One VISIT = one Area Incharge, on one date, of one type (any number of riders checked in it).
+// Each rider checked is still saved as their own evaluation row, so the database never changes.
+const fvVisitKey = (v) => [v.submitted_by || v.submitted_by_name || '', v.visit_date, v.visit_type].join('|');
+const fvVisitCount = (rows) => new Set(rows.map(fvVisitKey)).size;
+const fvRiderCount = (rows) => new Set(rows.map(v => v.rider_id || v.rider_name)).size;
 const fvAvg = (rows) => rows.length ? rows.reduce((s, v) => s + Number(v.score || 0), 0) / rows.length : null;
 const fvScoreColor = (s) => fvScoreCls(s) === 'good' ? '#2e7d4f' : fvScoreCls(s) === 'fair' ? '#b9770e' : '#c0532f';
 function fvMonthsSpan(range, visits) {
@@ -5947,11 +5953,12 @@ async function fvPageReport(host) {
       const issues = d.i.filter(i => ids.has(i.visit_id));
       if (!visits.length) { res.innerHTML = emptyState(rider ? 'No visit reports for you in this period yet.' : 'No visit reports match these filters.'); return; }
       const open = issues.filter(i => i.status === 'open').length, done = issues.length - open;
-      const on = visits.filter(v => v.visit_type === 'Onsite').length, avg = fvAvg(visits);
+      const onRows = visits.filter(v => v.visit_type === 'Onsite'), offRows = visits.filter(v => v.visit_type !== 'Onsite');
+      const on = fvVisitCount(onRows), off = fvVisitCount(offRows), totalVisits = fvVisitCount(visits), ridersChecked = fvRiderCount(visits), avg = fvAvg(visits);
       const stats = rider
-        ? fvStat(visits.length, 'Visits') + fvStat(fvNum(avg) + '%', 'Average Score', fvScoreColor(avg)) + fvStat(fvNum(visits[0].score) + '%', 'Latest Score', fvScoreColor(visits[0].score))
+        ? fvStat(totalVisits, 'Visits') + fvStat(fvNum(avg) + '%', 'Average Score', fvScoreColor(avg)) + fvStat(fvNum(visits[0].score) + '%', 'Latest Score', fvScoreColor(visits[0].score))
           + fvStat(open, 'Open Issues', '#c0392b') + fvStat(done, 'Resolved Issues', '#0f7a56')
-        : fvStat(on, 'On Site Visits', '#2f4fd0') + fvStat(visits.length - on, 'Online Visits', '#3a6b17') + fvStat(visits.length, 'Total Visits', '#1c2b6e')
+        : fvStat(on, 'On Site Visits', '#2f4fd0') + fvStat(off, 'Online Visits', '#3a6b17') + fvStat(totalVisits, 'Total Visits', '#1c2b6e') + fvStat(ridersChecked, 'Riders Checked', '#5b3fa0')
           + fvStat(issues.length, 'Total Issues', '#a0522d') + fvStat(open, 'Open Issues', '#c0392b') + fvStat(done, 'Resolved Issues', '#0f7a56')
           + fvStat(fvNum(avg) + '%', 'Average Score', fvScoreColor(avg));
 
@@ -5981,13 +5988,15 @@ async function fvPageReport(host) {
           const ais = d.ai.filter(a => a.regionIds.includes(id));
           const tOn = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).onsite_kpi, 0);
           const tOff = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).online_target, 0);
-          const monthOn = d.cmv.filter(v => v.region_id === id && v.visit_type === 'Onsite').length;
+          const monthOn = fvVisitCount(d.cmv.filter(v => v.region_id === id && v.visit_type === 'Onsite'));
           const dist = (arr) => new Set(arr.map(v => v.rider_id || v.rider_name)).size;
-          return { id, name: nameOf(id), on: von.length, onT: tOn * months, onR: dist(von), off: vof.length, offT: tOff * months, offR: dist(vof),
-            tv: vs.length, tr: dist(vs), open: is.filter(i => i.status === 'open').length, res: is.filter(i => i.status === 'resolved').length, it: is.length,
+          return { id, name: nameOf(id), on: fvVisitCount(von), onT: tOn * months, onR: dist(von), off: fvVisitCount(vof), offT: tOff * months, offR: dist(vof),
+            tv: fvVisitCount(vs), tr: dist(vs), open: is.filter(i => i.status === 'open').length, res: is.filter(i => i.status === 'resolved').length, it: is.length,
             kpi: tOn > 0 ? (monthOn >= tOn ? 'ok' : 'no') : 'na', avg: fvAvg(vs) };
         }).filter(r => r.tv || r.it || regionIds.size <= 12).sort((a, b) => a.name.localeCompare(b.name));
-        const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+        const gOn = visits.filter(v => v.visit_type === 'Onsite'), gOff = visits.filter(v => v.visit_type !== 'Onsite');
+        const gTot = { on: fvVisitCount(gOn), off: fvVisitCount(gOff), tv: fvVisitCount(visits), onR: fvRiderCount(gOn), offR: fvRiderCount(gOff), tr: fvRiderCount(visits) };
+        const sum = (k) => (k in gTot ? gTot[k] : rows.reduce((s, r) => s + r[k], 0));
         const frac = (c, t) => t > 0 ? `${c}<span class="fv-note">/${t}</span>` : `${c}`;
         const kpiPill = (k) => k === 'ok' ? '<span class="fv-pill green">Achieved</span>' : k === 'no' ? '<span class="fv-pill red">Not Achieved</span>' : '<span class="fv-note">—</span>';
         teamHtml = `<div class="fv-card2"><h3>By Team</h3><div style="overflow-x:auto;"><table class="fv-table">
@@ -5997,7 +6006,7 @@ async function fvPageReport(host) {
             <td class="c">${r.tv}</td><td class="c">${r.tr}</td><td class="c" style="color:#c0392b;font-weight:600;">${r.open}</td><td class="c" style="color:#0f7a56;font-weight:600;">${r.res}</td><td class="c">${r.it}</td>
             <td class="c">${kpiPill(r.kpi)}</td><td class="c" style="font-weight:600;color:${r.avg === null ? '#999' : fvScoreColor(r.avg)};">${r.avg === null ? '—' : fvNum(r.avg) + '%'}</td></tr>`).join('')}</tbody>
           <tfoot><tr><td>Total</td><td class="c">${frac(sum('on'), sum('onT'))}</td><td class="c">${sum('onR')}</td><td class="c">${frac(sum('off'), sum('offT'))}</td><td class="c">${sum('offR')}</td><td class="c">${sum('tv')}</td><td class="c">${sum('tr')}</td><td class="c">${sum('open')}</td><td class="c">${sum('res')}</td><td class="c">${sum('it')}</td><td class="c"></td><td class="c">${fvNum(avg)}%</td></tr></tfoot></table></div>
-          <p class="fv-note" style="margin-top:8px;">Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status always looks at the <strong>current month</strong>.</p></div>`;
+          <p class="fv-note" style="margin-top:8px;">A <strong>visit</strong> is one Area Incharge visit on one date — checking several riders in it still counts as <strong>1 visit</strong>; the riders are counted in <em>Rider count</em>. Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status always looks at the <strong>current month</strong>.</p></div>`;
       }
 
       // ----- Issue Category table -----
@@ -6045,7 +6054,7 @@ async function fvKpiBoard(host) {
     if (!ais.length) { out.innerHTML = 'No Area Incharges to show.'; return; }
     const rows = ais.map(a => {
       const t = fvTargetFor(targets, a.id, evalDate), mine = visits.filter(v => v.submitted_by === a.id);
-      return { a, t, on: mine.filter(v => v.visit_type === 'Onsite').length, off: mine.filter(v => v.visit_type === 'Online').length };
+      return { a, t, on: fvVisitCount(mine.filter(v => v.visit_type === 'Onsite')), off: fvVisitCount(mine.filter(v => v.visit_type === 'Online')) };
     });
     const met = rows.filter(r => r.on >= r.t.onsite_kpi).length;
     const badge = (r) => r.t.onsite_kpi === 0 ? '<span class="fv-pill amber">No KPI</span>'
@@ -6088,7 +6097,7 @@ async function fvPageVisits(host) {
       const canEdit = fvCanManage();
       const paint = () => {
         if (!current.length) { res.innerHTML = emptyState(rider ? 'No visit reports for you in this period.' : 'No visit reports match these filters.'); return; }
-        res.innerHTML = `<div class="fv-note" style="margin:0 2px 8px;">Showing <strong>${current.length}</strong> visit${current.length === 1 ? '' : 's'} · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
+        res.innerHTML = `<div class="fv-note" style="margin:0 2px 8px;"><strong>${fvVisitCount(current)}</strong> visit${fvVisitCount(current) === 1 ? '' : 's'} · <strong>${fvRiderCount(current)}</strong> rider${fvRiderCount(current) === 1 ? '' : 's'} checked · ${current.length} rider evaluation${current.length === 1 ? '' : 's'} listed · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
           <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Visit date</th><th>Team name</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
           ${current.slice(0, shown).map(v => `<tr>
             <td>${fvFmtDate(v.visit_date)}</td>
@@ -6282,7 +6291,7 @@ async function fvOpenRider(id, name, emp, onChanged) {
   const trend = [...visits].reverse().slice(-30).map(v => ({ x: fvShortDate(v.visit_date), y: Number(v.score), n: 0 }));
   modal.innerHTML = `<button class="modal-close" onclick="requestCloseModal()">✕</button>
     <h2 style="margin:0 0 10px;">${escapeHtml(name)} <span class="fv-note">${escapeHtml(emp || '')}</span></h2>
-    <div class="fv-cards">${fvCard(visits.length, 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
+    <div class="fv-cards">${fvCard(fvVisitCount(visits), 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
       ${fvCard(visits.length ? fvNum(visits[0].score) + '%' : '—', 'Latest score', 'green')}${fvCard(open, 'Open issues', 'red')}</div>
     <div class="fv-panel"><h3>Score trend (last 30 visits)</h3>${fvLineChart(trend)}</div>
     <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
@@ -6567,7 +6576,7 @@ const FV_PAGES = {
   fv_report:    ['Every visit submitted by every Home Sampling team.', fvPageReport],
   fv_riders:    ['Individual rider evaluation history across all teams.', fvPageRiders],
   fv_issues:    ["Every issue raised during every Home Sampling team's visits.", fvPageIssues],
-  fv_visits:    ['Every individual visit, one row each.', fvPageVisits],
+  fv_visits:    ['Every rider checked, one row each (several riders in one visit count as 1 visit).', fvPageVisits],
   fv_add:       ['Record a Home Sampling visit for one of your riders.', fvPageAdd],
   fv_teams:     ['Teams and the riders assigned to them.', fvPageTeams],
   fv_checklist: ['Add, edit, or remove checkpoints and weightage. Changes apply to future visits only.', fvPageChecklist],
