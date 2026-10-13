@@ -5737,8 +5737,20 @@ function fvTargetFor(targets, pid, iso) {
       || targets.find(t => !t.profile_id && t.effective_from <= iso)
       || { onsite_kpi: 4, online_target: 20, effective_from: null };
 }
-// Riders = the Roster (working entries only) joined to an active login.
-async function fvLoadRiders() {
+// Field Visit scope: the Super Admin can switch teams (regions) and riders off for Field Visits only.
+// Nothing is deleted and the Roster / Regions are not touched; old visits stay in the reports.
+FV.off = { regions: new Set(), riders: new Set() };
+async function fvLoadScope() {
+  try {
+    const [r, p] = await Promise.all([
+      sb.from('fv_region_settings').select('region_id').eq('enabled', false),
+      sb.from('fv_rider_settings').select('rider_id').eq('enabled', false)]);
+    if (r.error || p.error) throw (r.error || p.error);
+    FV.off = { regions: new Set((r.data || []).map(x => x.region_id)), riders: new Set((p.data || []).map(x => x.rider_id)) };
+  } catch (e) { console.warn('Field Visit scope not loaded (run migration_31.sql)', e); }
+}
+// Riders = the Roster (working entries only) joined to an active login. Switched-off riders/teams are left out unless all=true.
+async function fvLoadRiders(all = false) {
   const rows = await fvFetchAll(() => sb.from('roster_entries')
     .select('rider_id, region_id, sub_region_id, status, created_at, profiles!rider_id(full_name, employee_id, status, role, designation_id), regions(name, active), sub_regions(name)')
     .neq('status', 'removed').order('created_at', { ascending: false }).order('id'));
@@ -5748,8 +5760,10 @@ async function fvLoadRiders() {
     seen.add(e.rider_id);
     out.push({ id: e.rider_id, name: e.profiles.full_name, emp: e.profiles.employee_id || '',
       region_id: e.region_id, region_name: e.regions?.name || '—', region_active: e.regions?.active !== false,
-      sub_region_name: e.sub_regions?.name || '', designation: designationLabel(e.profiles) });
+      sub_region_name: e.sub_regions?.name || '', designation: designationLabel(e.profiles),
+      fv_off: FV.off.riders.has(e.rider_id), region_off: FV.off.regions.has(e.region_id) });
   });
+  if (!all) return out.filter(x => !x.fv_off && !x.region_off).sort((a, b) => a.name.localeCompare(b.name));
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 // Area Incharges and the region(s) they work in (profile_regions first, legacy region_id only as fallback)
@@ -5763,8 +5777,8 @@ async function fvLoadAiMap() {
     return { id: a.id, name: a.full_name, emp: a.employee_id || '', regionIds: mine.length ? mine : (a.region_id ? [a.region_id] : []) };
   });
 }
-function fvRegionOptions() {
-  const list = state.regions.filter(r => fvSeesAllAreas() || state.myRegionIds.includes(r.id));
+function fvRegionOptions(all = false) {
+  const list = state.regions.filter(r => (fvSeesAllAreas() || state.myRegionIds.includes(r.id)) && (all || !FV.off.regions.has(r.id)));
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -5855,7 +5869,7 @@ async function fvListShell(host, cfg) {
       <div class="fv-fg"><label>Date</label><div class="fv-segd">${FV_SEG.map(([k, l]) => `<button type="button" data-seg="${k}" class="${f.preset === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fv-fg"><label>From</label><input type="date" data-k="from" value="${escapeHtml(shownFrom)}"></div>
       <div class="fv-fg"><label>To</label><input type="date" data-k="to" value="${escapeHtml(shownTo)}"></div>
-      ${o.region ? `<div class="fv-fg"><label>Team</label><select data-k="region"><option value="">All</option>${fvRegionOptions().map(x => fvOpt(x.id, x.name, f.region)).join('')}</select></div>` : ''}
+      ${o.region ? `<div class="fv-fg"><label>Team</label><select data-k="region"><option value="">All</option>${fvRegionOptions(true).map(x => fvOpt(x.id, x.name, f.region)).join('')}</select></div>` : ''}
       ${o.search ? `<div class="fv-fg"><label>Rider</label><input type="search" data-k="q" placeholder="name or emp ID" value="${escapeHtml(f.q)}"></div>` : ''}
       ${o.type ? `<div class="fv-fg"><label>Visit type</label><select data-k="type"><option value="">All</option>${fvOpt('Onsite', 'On-site', f.type)}${fvOpt('Online', 'Online', f.type)}</select></div>` : ''}
       ${o.by ? `<div class="fv-fg"><label>Area Incharge</label><select data-k="by"><option value="">All</option>${[...by.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([id, n]) => fvOpt(id, n, f.by)).join('')}</select></div>` : ''}
@@ -6307,32 +6321,55 @@ async function fvOpenRider(id, name, emp, onChanged) {
 // ---------------- TEAMS & RIDERS (read-only: teams = Regions, riders = Roster) ----------------
 async function fvPageTeams(host) {
   host.innerHTML = '<div class="mono">Loading…</div>';
+  const manage = isSuperAdmin();
   let riders, visits;
   try {
     const cur = fvToday().slice(0, 7);
-    [riders, visits] = await Promise.all([fvLoadRiders(), fvLoadVisits({ from: cur + '-01', to: cur + '-31' })]);
+    [riders, visits] = await Promise.all([fvLoadRiders(manage), fvLoadVisits({ from: cur + '-01', to: cur + '-31' })]);
   } catch (e) { host.innerHTML = fvError(e); return; }
+  FV.openTeams = FV.openTeams || new Set();
   const visited = new Set(visits.map(v => v.rider_id));
-  const teams = fvRegionOptions().filter(r => r.active !== false).map(r => ({ r, list: riders.filter(x => x.region_id === r.id) })).filter(t => t.list.length)
-    .sort((a, b) => a.r.name.localeCompare(b.r.name));
+  const regs = fvRegionOptions(manage).filter(r => r.active !== false);
+  let teams = regs.map(r => ({ r, list: riders.filter(x => x.region_id === r.id) }));
+  teams = manage ? teams.filter(t => t.list.length || FV.off.regions.has(t.r.id)) : teams.filter(t => t.list.length);
+  teams.sort((a, b) => a.r.name.localeCompare(b.r.name));
   if (!teams.length) { host.innerHTML = emptyState('No teams with active riders to show.'); return; }
-  host.innerHTML = `<div class="fv-stats">${fvStat(teams.length, 'Teams')}${fvStat(teams.reduce((s, t) => s + t.list.length, 0), 'Active riders', '#2f4fd0')}
-      ${fvStat(riders.filter(x => visited.has(x.id)).length, 'Visited this month', '#0f7a56')}</div>
-    ${teams.map(({ r, list }) => { const v = list.filter(x => visited.has(x.id)).length, pct = list.length ? v / list.length * 100 : 0;
-      return `<div class="fv-card2" style="padding:0;overflow:hidden;"><div class="fv-row-click" data-team="${r.id}" style="display:flex;align-items:center;gap:14px;padding:13px 16px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:180px;"><strong style="color:#1c2b6e;">${escapeHtml(r.name)}</strong><div class="fv-note">${list.length} rider${list.length === 1 ? '' : 's'} assigned</div></div>
-        <div style="min-width:210px;"><div class="fv-note">Visited this month: <strong>${v}</strong> of ${list.length}</div>
-          <span class="fv-score" style="--w:${pct.toFixed(1)}%;display:flex;"><span class="t"><i class="fv-bg-${fvScoreCls(pct)}"></i></span></span></div>
-        <span class="fv-note" data-arrow>▾</span></div>
-        <div data-list="${r.id}" style="display:none;border-top:1px solid #eef0f7;padding:8px 16px 12px;">
-          <table class="fv-table"><thead><tr><th>Rider</th><th>Employee ID</th><th>Designation</th><th>Sub-region</th><th>Visited this month</th></tr></thead><tbody>
-          ${list.map(x => `<tr><td><strong>${escapeHtml(x.name)}</strong></td><td>${escapeHtml(x.emp)}</td><td>${escapeHtml(x.designation)}</td><td>${escapeHtml(x.sub_region_name || '—')}</td>
-            <td>${visited.has(x.id) ? '<span class="fv-pill green">Yes</span>' : '<span class="fv-pill amber">Not yet</span>'}</td></tr>`).join('')}</tbody></table></div></div>`; }).join('')}
-    <p class="fv-note">Teams are your <strong>Regions</strong> and riders come from the <strong>Roster</strong>. To add, rename or deactivate a team use <em>Regions</em> (Admin menu); to move a rider between teams use the <em>Roster</em>. Changes appear here automatically.</p>`;
-  host.querySelectorAll('[data-team]').forEach(row => row.onclick = () => {
+  const live = (x) => !x.fv_off && !x.region_off;
+  const liveRiders = riders.filter(live);
+  const offTeams = teams.filter(t => FV.off.regions.has(t.r.id)).length, offRiders = riders.filter(x => x.fv_off && !x.region_off).length;
+  const sw = (on, attr) => `<button type="button" class="fv-btn ${on ? '' : 'ghost'}" ${attr} style="height:30px;min-width:92px;">${on ? '● Enabled' : '○ Disabled'}</button>`;
+  host.innerHTML = `<div class="fv-stats">${fvStat(teams.length - offTeams, 'Teams enabled')}${fvStat(liveRiders.length, 'Riders enabled', '#2f4fd0')}
+      ${fvStat(liveRiders.filter(x => visited.has(x.id)).length, 'Visited this month', '#0f7a56')}${manage ? fvStat(offTeams + ' / ' + offRiders, 'Teams / riders switched off', '#a0522d') : ''}</div>
+    ${manage ? `<div class="fv-card2" style="background:#fff8e6;"><strong>Super Admin control.</strong> Use <em>Enabled / Disabled</em> to decide which teams and riders are used in Field Visits.
+      A disabled team or rider disappears from <em>Add Visit</em>, the “Not visited” list and the team lists, but nothing is deleted — the Roster and Regions are untouched and all past visits stay in the reports.</div>` : ''}
+    ${teams.map(({ r, list }) => { const off = FV.off.regions.has(r.id), act = list.filter(live), v = act.filter(x => visited.has(x.id)).length, pct = act.length ? v / act.length * 100 : 0, isOpen = FV.openTeams.has(r.id);
+      return `<div class="fv-card2" style="padding:0;overflow:hidden;${off ? 'opacity:.7;' : ''}"><div class="fv-row-click" data-team="${r.id}" style="display:flex;align-items:center;gap:14px;padding:13px 16px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:180px;"><strong style="color:#1c2b6e;">${escapeHtml(r.name)}</strong> ${off ? '<span class="fv-pill amber">Disabled for Field Visits</span>' : ''}<div class="fv-note">${list.length} rider${list.length === 1 ? '' : 's'} assigned${manage ? ` · ${act.length} enabled` : ''}</div></div>
+        ${off ? '' : `<div style="min-width:210px;"><div class="fv-note">Visited this month: <strong>${v}</strong> of ${act.length}</div>
+          <span class="fv-score" style="--w:${pct.toFixed(1)}%;display:flex;"><span class="t"><i class="fv-bg-${fvScoreCls(pct)}"></i></span></span></div>`}
+        ${manage ? sw(!off, `data-tg-region="${r.id}"`) : ''}
+        <span class="fv-note" data-arrow>${isOpen ? '▴' : '▾'}</span></div>
+        <div data-list="${r.id}" style="display:${isOpen ? 'block' : 'none'};border-top:1px solid #eef0f7;padding:8px 16px 12px;overflow-x:auto;">
+          ${list.length ? `<table class="fv-table"><thead><tr><th>Rider</th><th>Employee ID</th><th>Designation</th><th>Sub-region</th><th>Visited this month</th>${manage ? '<th>Field Visits</th>' : ''}</tr></thead><tbody>
+          ${list.map(x => `<tr style="${x.fv_off || off ? 'opacity:.6;' : ''}"><td><strong>${escapeHtml(x.name)}</strong></td><td>${escapeHtml(x.emp)}</td><td>${escapeHtml(x.designation)}</td><td>${escapeHtml(x.sub_region_name || '—')}</td>
+            <td>${visited.has(x.id) ? '<span class="fv-pill green">Yes</span>' : '<span class="fv-pill amber">Not yet</span>'}</td>
+            ${manage ? `<td>${off ? '<span class="fv-note">Team disabled</span>' : sw(!x.fv_off, `data-tg-rider="${x.id}"`)}</td>` : ''}</tr>`).join('')}</tbody></table>` : '<div class="fv-note">No riders in this team.</div>'}</div></div>`; }).join('')}
+    <p class="fv-note">Teams are your <strong>Regions</strong> and riders come from the <strong>Roster</strong>. To add, rename or deactivate a team use <em>Regions</em> (Admin menu); to move a rider between teams use the <em>Roster</em>. ${manage ? 'Use the switches above to include or exclude teams and riders in Field Visits only.' : ''}</p>`;
+  host.querySelectorAll('[data-team]').forEach(row => row.onclick = (e) => {
+    if (e.target.closest('[data-tg-region]')) return;
     const box = host.querySelector(`[data-list="${row.dataset.team}"]`), open = box.style.display === 'none';
     box.style.display = open ? 'block' : 'none'; row.querySelector('[data-arrow]').textContent = open ? '▴' : '▾';
+    if (open) FV.openTeams.add(row.dataset.team); else FV.openTeams.delete(row.dataset.team);
   });
+  const setScope = async (btn, kind, id, enabled) => {
+    btn.disabled = true;
+    const { error } = await sb.rpc('fv_set_scope', { p_kind: kind, p_id: id, p_enabled: enabled });
+    if (error) { btn.disabled = false; toast('Could not save: ' + error.message + (/function|does not exist/i.test(error.message) ? ' (run migration_31.sql in Supabase first)' : '')); return; }
+    toast(enabled ? 'Enabled for Field Visits' : 'Disabled for Field Visits');
+    await fvLoadScope(); fvPageTeams(host);
+  };
+  host.querySelectorAll('[data-tg-region]').forEach(b => b.onclick = (e) => { e.stopPropagation(); const id = b.dataset.tgRegion; setScope(b, 'region', id, FV.off.regions.has(id)); });
+  host.querySelectorAll('[data-tg-rider]').forEach(b => b.onclick = () => { const id = b.dataset.tgRider; setScope(b, 'rider', id, FV.off.riders.has(id)); });
   fvGo(host);
 }
 
@@ -6347,6 +6384,14 @@ async function fvPageAdd(body) {
   const regions = fvRegionOptions().filter(r => r.active !== false && riders.some(x => x.region_id === r.id));
   const allowed = riders.filter(r => regions.some(g => g.id === r.region_id) && r.region_active);
   if (!allowed.length) { body.innerHTML = emptyState('There are no active riders in your region(s) to visit.'); return; }
+  // last inspection date of every rider (most recent visit by anyone)
+  const lastMap = new Map(); let lastErr = false;
+  try {
+    const rows = await fvFetchAll(() => sb.from('fv_visits').select('rider_id, visit_date, visit_type, score, submitted_by_name').order('visit_date', { ascending: false }).order('created_at', { ascending: false }));
+    rows.forEach(v => { if (!lastMap.has(v.rider_id)) lastMap.set(v.rider_id, v); });
+  } catch (e) { lastErr = true; console.warn(e); }
+  const fvAgo = (iso) => { const d = Math.round((new Date(fvToday() + 'T00:00:00') - new Date(iso + 'T00:00:00')) / 86400000); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'; };
+  const lastShort = (id) => { const l = lastMap.get(id); return l ? 'last ' + fvShortDate(l.visit_date) : (lastErr ? '' : 'never visited'); };
   const totalW = cps.reduce((s, c) => s + Number(c.weight), 0);
   const ans = {}; cps.forEach(c => { ans[c.id] = { status: '', obs: '' }; });
   let vtype = 'Onsite', riderId = '';
@@ -6374,16 +6419,18 @@ async function fvPageAdd(body) {
     const rg = body.querySelector('#fv-a-region').value, q = body.querySelector('#fv-a-search').value;
     const list = allowed.filter(r => (!rg || r.region_id === rg) && fvMatchRider({ rider_name: r.name, rider_employee_id: r.emp }, q));
     sel.innerHTML = `<option value="">${list.length ? 'Select rider (' + list.length + ')…' : 'No riders match'}</option>` +
-      list.map(r => `<option value="${r.id}" ${r.id === riderId ? 'selected' : ''}>${escapeHtml(r.name)} — ${escapeHtml(r.emp)} (${escapeHtml(r.region_name)})</option>`).join('');
+      list.map(r => `<option value="${r.id}" ${r.id === riderId ? 'selected' : ''}>${escapeHtml(r.name)} — ${escapeHtml(r.emp)} (${escapeHtml(r.region_name)})${lastShort(r.id) ? ' · ' + lastShort(r.id) : ''}</option>`).join('');
     if (!list.some(r => r.id === riderId)) { riderId = ''; showInfo(); }
   };
   const showInfo = async () => {
     const r = allowed.find(x => x.id === riderId);
     if (!r) { info.innerHTML = 'Only active riders from the Roster are listed. Deactivated riders cannot be visited.'; return; }
     info.innerHTML = `<strong>${escapeHtml(r.name)}</strong> · ${escapeHtml(r.emp)} · ${escapeHtml(r.designation)} · ${escapeHtml(r.region_name)}${r.sub_region_name ? ' / ' + escapeHtml(r.sub_region_name) : ''} <span class="fv-note">— region details are saved with this visit as they are today.</span><div id="fv-a-last" class="fv-note">Checking last visit…</div>`;
-    const { data } = await sb.from('fv_visits').select('visit_date, visit_type, score').eq('rider_id', riderId).order('visit_date', { ascending: false }).limit(1);
     const el = document.getElementById('fv-a-last'); if (!el) return;
-    el.textContent = data && data.length ? `Last visit: ${fvFmtDate(data[0].visit_date)} · ${fvTypeLabel(data[0].visit_type)} · ${fvNum(data[0].score)}%` : 'No previous visit recorded for this rider.';
+    const l = lastMap.get(riderId);
+    if (l) { const days = Math.round((new Date(fvToday() + 'T00:00:00') - new Date(l.visit_date + 'T00:00:00')) / 86400000);
+      el.innerHTML = `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:${days > 30 ? '#fde7e1' : '#e6f4ec'};color:#1c2b6e;font-size:13px;"><strong>Last inspected: ${fvFmtDate(l.visit_date)}</strong> (${fvAgo(l.visit_date)}) · ${fvTypeLabel(l.visit_type)} · score ${fvNum(l.score)}%${l.submitted_by_name ? ' · by ' + escapeHtml(l.submitted_by_name) : ''}</div>`; }
+    else el.innerHTML = lastErr ? '<div class="fv-note">Could not load the last visit date.</div>' : '<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:#fff3d6;color:#7a5a00;font-size:13px;"><strong>Never inspected</strong> — no previous visit recorded for this rider.</div>';
   };
   body.querySelector('#fv-a-region').onchange = fillRiders;
   body.querySelector('#fv-a-search').oninput = fillRiders;
@@ -6590,6 +6637,7 @@ async function renderFieldVisits(view) {
   if (!page || !getAllowedViews().includes(view)) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
   FV.f.status = ''; FV.f.cp = '';
   main.innerHTML = `<p class="fv-sub">${escapeHtml(fvIsRider() ? 'Your own visit reports only.' : page[0])}</p><div id="fv-body"></div>`;
+  await fvLoadScope();
   try { await page[1](document.getElementById('fv-body')); }
   catch (e) { console.error(e); document.getElementById('fv-body').innerHTML = fvError(e); }
 }
