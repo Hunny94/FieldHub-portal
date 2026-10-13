@@ -6109,11 +6109,18 @@ async function fvPageVisits(host) {
       current = fvFilterVisits(data, f);
       shown = 50;
       const canEdit = fvCanManage();
+      const sa = isSuperAdmin(), sel = new Set();
       const paint = () => {
         if (!current.length) { res.innerHTML = emptyState(rider ? 'No visit reports for you in this period.' : 'No visit reports match these filters.'); return; }
-        res.innerHTML = `<div class="fv-note" style="margin:0 2px 8px;"><strong>${fvVisitCount(current)}</strong> visit${fvVisitCount(current) === 1 ? '' : 's'} · <strong>${fvRiderCount(current)}</strong> rider${fvRiderCount(current) === 1 ? '' : 's'} checked · ${current.length} rider evaluation${current.length === 1 ? '' : 's'} listed · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
-          <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Visit date</th><th>Team name</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
+        const bulk = sa ? `<div class="fv-card2" style="background:#fff4f1;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;">
+            <strong style="color:#a63d1f;">Super Admin · delete</strong>
+            <span class="fv-note">Use the date / team / rider filters above, then:</span>
+            <button class="fv-btn ghost" data-delsel type="button" style="color:#b3321b;border-color:#e0a79b;" ${sel.size ? '' : 'disabled'}>Delete selected (${sel.size})</button>
+            <button class="fv-btn ghost" data-delall type="button" style="color:#b3321b;border-color:#e0a79b;">Delete all ${current.length} listed</button></div>` : '';
+        res.innerHTML = bulk + `<div class="fv-note" style="margin:0 2px 8px;"><strong>${fvVisitCount(current)}</strong> visit${fvVisitCount(current) === 1 ? '' : 's'} · <strong>${fvRiderCount(current)}</strong> rider${fvRiderCount(current) === 1 ? '' : 's'} checked · ${current.length} rider evaluation${current.length === 1 ? '' : 's'} listed · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
+          <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr>${sa ? '<th style="width:30px;"><input type="checkbox" data-selall title="Select all shown"></th>' : ''}<th>Visit date</th><th>Team name</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
           ${current.slice(0, shown).map(v => `<tr>
+            ${sa ? `<td><input type="checkbox" data-sel="${v.id}" ${sel.has(v.id) ? 'checked' : ''}></td>` : ''}
             <td>${fvFmtDate(v.visit_date)}</td>
             <td>${escapeHtml(v.region_name || '—')}${v.sub_region_name ? `<div class="fv-note">${escapeHtml(v.sub_region_name)}</div>` : ''}</td>
             <td><strong>${escapeHtml(v.rider_name)}</strong><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
@@ -6123,6 +6130,12 @@ async function fvPageVisits(host) {
           </tbody></table></div></div>
           ${current.length > shown ? `<div style="text-align:center;margin-top:4px;"><button class="fv-btn ghost" data-more type="button">Show more (${current.length - shown} left)</button></div>` : ''}`;
         res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), canEdit));
+        res.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { if (c.checked) sel.add(c.dataset.sel); else sel.delete(c.dataset.sel); paint(); });
+        const sall = res.querySelector('[data-selall]');
+        if (sall) { sall.checked = current.slice(0, shown).every(v => sel.has(v.id)); sall.onchange = () => { current.slice(0, shown).forEach(v => sall.checked ? sel.add(v.id) : sel.delete(v.id)); paint(); }; }
+        const reload = () => ctx && ctx.reload();
+        const ds = res.querySelector('[data-delsel]'); if (ds) ds.onclick = () => fvDeleteVisits([...sel], `${sel.size} selected rider evaluation(s) from the list.`, reload);
+        const da = res.querySelector('[data-delall]'); if (da) da.onclick = () => fvDeleteVisits(current.map(v => v.id), `All ${current.length} rider evaluation(s) currently listed (${fvVisitCount(current)} visit${fvVisitCount(current) === 1 ? '' : 's'}) for the dates / filters you have chosen.`, reload);
         const more = res.querySelector('[data-more]');
         if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
       };
@@ -6133,6 +6146,31 @@ async function fvPageVisits(host) {
 
 // ---------------- VISIT FORM (view / Super Admin correction) ----------------
 const fvStatusBadge = (s) => s === 'OK' ? '<span class="fv-pill green">OK</span>' : '<span class="fv-pill red">Issue</span>';
+// ---- permanent delete (Super Admin only). Issues of the deleted visits go with them. ----
+function fvDeleteVisits(ids, what, done) {
+  if (!isSuperAdmin() || !ids.length) return;
+  closeModal();
+  openModal(`<h3 style="color:#a63d1f;">Permanently delete ${ids.length} visit report${ids.length === 1 ? '' : 's'}?</h3>
+    <p>${escapeHtml(what)}</p>
+    <p class="hint"><strong>This cannot be undone.</strong> The visit reports and their issues are removed for good and all dashboards and KPI counts change. Type <strong>DELETE</strong> to confirm.</p>
+    <input id="fv-del-word" type="text" autocomplete="off" placeholder="Type DELETE" style="width:100%;padding:9px 10px;border:1px solid #d8dce8;border-radius:8px;">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn-secondary" type="button" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" id="fv-del-go" type="button" style="background:#b3321b;" disabled>Delete permanently</button></div>`);
+  const w = document.getElementById('fv-del-word'), go = document.getElementById('fv-del-go');
+  w.oninput = () => { go.disabled = w.value.trim() !== 'DELETE'; };
+  go.onclick = async () => {
+    go.disabled = true; go.textContent = 'Deleting…';
+    let total = 0;
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data, error } = await sb.rpc('fv_delete_visits', { p_ids: ids.slice(i, i + 200) });
+      if (error) { go.disabled = false; go.textContent = 'Delete permanently'; toast('Could not delete: ' + error.message + (/function|does not exist/i.test(error.message) ? ' (run migration_32.sql in Supabase first)' : '')); return; }
+      total += Number(data || 0);
+    }
+    closeModal(); toast(total + ' visit report' + (total === 1 ? '' : 's') + ' deleted');
+    if (done) done();
+  };
+}
+
 async function fvOpenVisit(id, onChanged, startEditing) {
   const { data: v, error } = await sb.from('fv_visits').select('*').eq('id', id).maybeSingle();
   if (error || !v) { toast('Could not open this visit.'); return; }
@@ -6159,7 +6197,7 @@ async function fvOpenVisit(id, onChanged, startEditing) {
       <td>${escapeHtml(a.obs || '')}${is ? `<div class="fv-note">${is.status === 'resolved' ? '✔ Resolved ' + formatDate(is.resolved_at) : '● Open issue'}</div>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>
     <p class="fv-note" style="margin-top:8px;">Score ${fvNum(v.earned_weight)} of ${fvNum(v.total_weight)} points. Checkpoint names and weightages are shown as they were on the visit date.</p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">${canEdit ? '<button class="fv-btn" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">${isSuperAdmin() ? '<button class="fv-btn ghost" id="fv-del" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete permanently</button>' : ''}${canEdit ? '<button class="fv-btn" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
 
   const editHtml = () => `${head(v.score)}
     <div class="fv-filters"><label>Visit date <input type="date" id="fv-e-date" value="${v.visit_date}" max="${fvToday()}"></label>
@@ -6176,7 +6214,8 @@ async function fvOpenVisit(id, onChanged, startEditing) {
   const collect = () => v.answers.map((a, i) => ({ cp: a.cp, status: modal.querySelector(`[data-i="${i}"]`).value, observation: modal.querySelector(`[data-o="${i}"]`).value.trim() }));
   const paint = () => {
     modal.innerHTML = closeBtn + (editing ? editHtml() : viewHtml());
-    if (!editing) { const b = modal.querySelector('#fv-edit'); if (b) b.onclick = () => { editing = true; paint(); }; }
+    if (!editing) { const b = modal.querySelector('#fv-edit'); if (b) b.onclick = () => { editing = true; paint(); };
+      const d = modal.querySelector('#fv-del'); if (d) d.onclick = () => fvDeleteVisits([v.id], `${v.rider_name} · ${fvFmtDate(v.visit_date)} · ${fvTypeLabel(v.visit_type)}`, () => { if (onChanged) onChanged(); }); }
     else {
       const upd = () => { const merged = v.answers.map((a, i) => ({ weight: a.weight, status: modal.querySelector(`[data-i="${i}"]`).value })); modal.querySelector('#fv-e-score').textContent = fvNum(calc(merged)) + '%'; };
       modal.querySelectorAll('[data-i]').forEach(s => s.onchange = upd);
@@ -6308,12 +6347,14 @@ async function fvOpenRider(id, name, emp, onChanged) {
     <div class="fv-cards">${fvCard(fvVisitCount(visits), 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
       ${fvCard(visits.length ? fvNum(visits[0].score) + '%' : '—', 'Latest score', 'green')}${fvCard(open, 'Open issues', 'red')}</div>
     <div class="fv-panel"><h3>Score trend (last 30 visits)</h3>${fvLineChart(trend)}</div>
+    ${isSuperAdmin() && visits.length ? '<div style="text-align:right;margin-bottom:8px;"><button class="fv-btn ghost" id="fv-del-rider" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete all visits of this rider</button></div>' : ''}
     <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
       ${visits.map(v => `<tr class="fv-row-click" data-vid="${v.id}"><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td><td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td><td>${escapeHtml(v.submitted_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No visits yet.</div>'}</div>
     <div class="fv-panel"><h3>Issues</h3>${issues.length ? `<div style="overflow-x:auto;max-height:220px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Issue</th><th>Observation</th><th>Status</th></tr></thead><tbody>
       ${issues.map(i => `<tr><td>${fvFmtDate(i.visit_date)}</td><td>${escapeHtml(i.checkpoint_text)}</td><td>${escapeHtml(i.observation || '')}</td>
         <td>${i.status === 'open' ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Open</span>' : `<span class="badge active">Resolved</span><div class="fv-note">${fvFmtDate((i.resolved_at || '').slice(0, 10))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No issues recorded.</div>'}</div>`;
   modal.querySelectorAll('[data-vid]').forEach(tr => tr.onclick = () => { closeModal(); fvOpenVisit(tr.dataset.vid, onChanged); });
+  const dr = modal.querySelector('#fv-del-rider'); if (dr) dr.onclick = () => fvDeleteVisits(visits.map(v => v.id), `All ${visits.length} visit report(s) of ${name} (${emp || ''}).`, () => { if (onChanged) onChanged(); });
   fvGo(modal);
 }
 
