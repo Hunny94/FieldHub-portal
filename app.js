@@ -280,6 +280,11 @@ function fhInstallMobile(){
   .fh-set-lbl{white-space:nowrap;padding:0!important}
   .fh-set-grp .btn{width:auto!important;white-space:nowrap;margin:0!important;display:inline-block!important}
   .main-content .card{max-width:100%;box-sizing:border-box;overflow-x:auto}
+  .fv-segd{display:grid!important;grid-template-columns:repeat(3,1fr);height:auto!important;width:100%;max-width:100%}
+  .fv-segd button{height:38px;border-bottom:1px solid #eef0f7;padding:0 6px!important;white-space:normal;line-height:1.15}
+  .fv-filters,.fv-fg{max-width:100%;box-sizing:border-box}
+  .fv-filters{flex-wrap:wrap}
+  .fv-fg select,.fv-fg input,.fv-filters select,.fv-filters input{max-width:100%;min-width:0}
   .main-content .card table{display:table;min-width:100%}
 }
 @media (min-width:901px){.fh-drawer-user{display:none}}
@@ -549,10 +554,17 @@ async function setupDesktopNotifications(){
     .subscribe();
 
   // New requests assigned directly to me — notify the handler
+  // (realtime only delivers rows this person is allowed to see; we alert the handler, the region's
+  //  Regional POC / Area Incharge, and Admin / Super Admin)
   sb.channel('requests-notify-' + state.user.id)
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'requests', filter: `assigned_poc_id=eq.${state.user.id}` }, (payload) => {
-      fire('FieldHub: New Request', `New "${payload.new.category}" request needs your attention.`);
-      pushNotification({ type:'Request', title:'New request assigned to you', body:payload.new.category, created_at:payload.new.created_at });
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'requests' }, (payload) => {
+      const r = payload.new || {};
+      if (r.rider_id === state.user.id) return;
+      const mine = r.assigned_poc_id === state.user.id;
+      const regionStaff = ['regional_poc','team_lead'].includes(state.profile.role) && r.region_id && (state.myRegionIds || []).includes(r.region_id);
+      if (!(mine || isAdmin() || regionStaff)) return;
+      fire('FieldHub: New Request', `New "${r.category}" request ${mine ? 'needs your attention' : 'was raised'}.`);
+      pushNotification({ type:'Request', title: mine ? 'New request assigned to you' : 'New request in your area', body:r.category, created_at:r.created_at });
     })
     .subscribe();
 
@@ -2070,7 +2082,7 @@ function openNewRequestModal(){
     e.preventDefault();
     const categoryId = document.getElementById('r-category').value;
     const category = state.categories.find(c=>c.id===categoryId);
-    const myRegionId = state.profile.region_id;
+    const myRegionId = (state.myRegionIds && state.myRegionIds[0]) || state.profile.region_id;
 
     // Work out who should handle this. Priority: a specific Super-Admin
     // configured routing rule for this region+category, then a region-wide
@@ -4616,36 +4628,78 @@ async function listStorageFolderRecursive(bucket, path){
 }
 async function renderRequestRoutingSettings(body){
   const { data: rules } = await sb.from('request_routing_rules').select('*, regions(name), categories(name)').order('created_at');
-  const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
-  const categoryOptions = `<option value="">— All categories in this region —</option>` + state.categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   const roleOptions = Object.entries(ROLE_LABEL).filter(([k])=>k!=='rider').map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+  const regions = state.regions.filter(r => r.active !== false).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const chk = (name, val, label) => `<label style="display:flex;gap:8px;align-items:center;padding:5px 4px;cursor:pointer;"><input type="checkbox" data-${name} value="${val}"> <span>${label}</span></label>`;
 
   body.innerHTML = `
-    <p class="hint" style="margin-bottom:14px;">Decide who automatically receives a new request based on the rider's region (and optionally the category). A rule with no category applies to every category in that region unless a more specific rule exists. If no rule matches, the request category's own default role is used instead.</p>
-    <form id="routing-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
-      <select id="rr-region" required>${regionOptions}</select>
-      <select id="rr-category">${categoryOptions}</select>
-      <select id="rr-role" required>${roleOptions}</select>
-      <button class="btn small" type="submit">Add Rule</button>
-    </form>
-    <table><thead><tr><th>Region</th><th>Category</th><th>Auto-assigned to</th><th></th></tr></thead><tbody>
+    <p class="hint" style="margin-bottom:14px;">Decide who automatically receives a new request based on the rider's region and the category. Tick <strong>several regions and several categories at once</strong> — one rule is created for every combination. A rule for “All categories” applies to every category in that region unless a more specific rule exists. If a rule already exists for a region + category, it is updated to the new role.</p>
+    <div class="card" style="padding:14px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;">
+        <div><div style="display:flex;justify-content:space-between;align-items:center;"><strong>1 · Regions</strong>
+            <label style="font-size:12.5px;cursor:pointer;"><input type="checkbox" id="rr-all-reg"> Select all</label></div>
+          <div style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px;">${regions.map(r => chk('rr-reg', r.id, escapeHtml(r.name))).join('')}</div></div>
+        <div><div style="display:flex;justify-content:space-between;align-items:center;"><strong>2 · Categories</strong>
+            <label style="font-size:12.5px;cursor:pointer;"><input type="checkbox" id="rr-all-cat"> Select all</label></div>
+          <div style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px;">
+            ${chk('rr-cat', '', '<em>All categories</em>')}${state.categories.map(c => chk('rr-cat', c.id, escapeHtml(c.name))).join('')}</div></div>
+        <div><strong>3 · Assign to</strong>
+          <select id="rr-role" style="width:100%;margin-top:6px;" required>${roleOptions}</select>
+          <div id="rr-preview" class="hint" style="margin:10px 0;">Choose regions and categories.</div>
+          <button class="btn" id="rr-create" type="button" disabled>Create rules</button></div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+      <strong>${(rules||[]).length} rule${(rules||[]).length === 1 ? '' : 's'}</strong>
+      <button class="btn small outline" id="rr-del-sel" type="button" disabled>Remove selected (<span id="rr-del-n">0</span>)</button></div>
+    <div style="overflow-x:auto;"><table><thead><tr><th><input type="checkbox" id="rr-sel-all"></th><th>Region</th><th>Category</th><th>Auto-assigned to</th><th></th></tr></thead><tbody>
       ${(rules||[]).map(r=>`<tr>
+        <td><input type="checkbox" data-rr-sel="${r.id}"></td>
         <td>${escapeHtml(r.regions?.name||'—')}</td>
         <td>${r.categories?.name ? escapeHtml(r.categories.name) : '<em>All categories</em>'}</td>
         <td>${ROLE_LABEL[r.target_role]||r.target_role}</td>
         <td><button class="btn small outline" data-delete-rule="${r.id}">Remove</button></td>
-      </tr>`).join('') || `<tr><td colspan="4">${emptyState('No rules yet — requests fall back to each category\'s default role.')}</td></tr>`}
-    </tbody></table>`;
+      </tr>`).join('') || `<tr><td colspan="5">${emptyState('No rules yet — requests fall back to each category\'s default role.')}</td></tr>`}
+    </tbody></table></div>`;
 
-  document.getElementById('routing-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const { error } = await sb.from('request_routing_rules').insert({
-      region_id: document.getElementById('rr-region').value,
-      category_id: document.getElementById('rr-category').value || null,
-      target_role: document.getElementById('rr-role').value
-    });
-    if (error){ toast('Could not add: ' + error.message); return; }
-    toast('Rule added'); renderSettings();
+  const q = (sel) => [...body.querySelectorAll(sel)];
+  const picked = (attr) => q(`[data-${attr}]:checked`).map(x => x.value);
+  const refresh = () => {
+    const nr = picked('rr-reg').length, nc = picked('rr-cat').length;
+    body.querySelector('#rr-preview').textContent = nr && nc ? `This will set ${nr * nc} rule${nr * nc === 1 ? '' : 's'} (${nr} region${nr === 1 ? '' : 's'} × ${nc} categor${nc === 1 ? 'y' : 'ies'}).` : 'Choose at least one region and one category.';
+    body.querySelector('#rr-create').disabled = !(nr && nc);
+  };
+  body.querySelector('#rr-all-reg').onchange = (e) => { q('[data-rr-reg]').forEach(x => x.checked = e.target.checked); refresh(); };
+  body.querySelector('#rr-all-cat').onchange = (e) => { q('[data-rr-cat]').forEach(x => x.checked = e.target.checked); refresh(); };
+  q('[data-rr-reg],[data-rr-cat]').forEach(x => x.onchange = refresh);
+
+  body.querySelector('#rr-create').onclick = async () => {
+    const regIds = picked('rr-reg'), catIds = picked('rr-cat'), role = body.querySelector('#rr-role').value;
+    const btn = body.querySelector('#rr-create'); btn.disabled = true; btn.textContent = 'Saving…';
+    const existing = new Map((rules||[]).map(r => [r.region_id + '|' + (r.category_id || ''), r]));
+    const toInsert = [], toUpdate = []; let same = 0;
+    regIds.forEach(rg => catIds.forEach(ct => {
+      const ex = existing.get(rg + '|' + ct);
+      if (!ex) toInsert.push({ region_id: rg, category_id: ct || null, target_role: role });
+      else if (ex.target_role !== role) toUpdate.push(ex.id); else same++;
+    }));
+    let err = null;
+    if (toInsert.length){ const { error } = await sb.from('request_routing_rules').insert(toInsert); if (error) err = error; }
+    if (!err && toUpdate.length){ const { error } = await sb.from('request_routing_rules').update({ target_role: role }).in('id', toUpdate); if (error) err = error; }
+    if (err){ btn.disabled = false; btn.textContent = 'Create rules'; toast('Could not save: ' + err.message); return; }
+    toast(`${toInsert.length} added, ${toUpdate.length} updated${same ? ', ' + same + ' already set' : ''}`); renderSettings();
+  };
+
+  const selAll = body.querySelector('#rr-sel-all');
+  const updSel = () => { const n = q('[data-rr-sel]:checked').length; body.querySelector('#rr-del-n').textContent = n; body.querySelector('#rr-del-sel').disabled = !n; };
+  if (selAll) selAll.onchange = () => { q('[data-rr-sel]').forEach(x => x.checked = selAll.checked); updSel(); };
+  q('[data-rr-sel]').forEach(x => x.onchange = updSel);
+  body.querySelector('#rr-del-sel').onclick = async () => {
+    const ids = q('[data-rr-sel]:checked').map(x => x.dataset.rrSel);
+    if (!ids.length || !confirm(`Remove ${ids.length} routing rule(s)?`)) return;
+    const { error } = await sb.from('request_routing_rules').delete().in('id', ids);
+    if (error){ toast('Could not remove: ' + error.message); return; }
+    toast(ids.length + ' removed'); renderSettings();
   };
   body.querySelectorAll('[data-delete-rule]').forEach(btn => {
     btn.onclick = async () => {
@@ -6688,10 +6742,21 @@ async function renderHierarchy(){
   document.getElementById('topbar-actions').innerHTML = '';
   main.innerHTML = `<div class="mono">Loading…</div>`;
 
-  const { data: profiles } = await sb.from('profiles').select('*, regions!region_id(name)').eq('status', 'active').order('full_name');
-  const { data: regionLinks } = await sb.from('profile_regions').select('profile_id, region_id');
+  // Read through a database function so that EVERY login (rider, coordinator, ...) sees the same
+  // supervisors and teammates of their own region — plain table reads are limited by row security.
+  let profiles = null;
+  const dir = await sb.rpc('fh_team_directory');
+  if (!dir.error && Array.isArray(dir.data)) profiles = dir.data.slice().sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
+  else {
+    const old = await sb.from('profiles').select('*').eq('status', 'active').order('full_name');
+    profiles = old.data || [];
+  }
   const linksByProfile = new Map();
-  (regionLinks||[]).forEach(l => { if (!linksByProfile.has(l.profile_id)) linksByProfile.set(l.profile_id, []); linksByProfile.get(l.profile_id).push(l.region_id); });
+  (profiles || []).forEach(p => { if (Array.isArray(p.region_ids) && p.region_ids.length) linksByProfile.set(p.id, p.region_ids); });
+  if (dir.error){
+    const { data: regionLinks } = await sb.from('profile_regions').select('profile_id, region_id');
+    (regionLinks||[]).forEach(l => { if (!linksByProfile.has(l.profile_id)) linksByProfile.set(l.profile_id, []); linksByProfile.get(l.profile_id).push(l.region_id); });
+  }
 
   const superAdmins = (profiles||[]).filter(p=>p.role==='super_admin');
   const inventoryCoords = (profiles||[]).filter(p=>p.role==='inventory_coordinator');
