@@ -28,7 +28,7 @@ function fhFetch(input, init){
   if (method !== 'GET' && method !== 'HEAD') return attempt().catch(fail);
   return attempt().catch(e => { if (init.signal && init.signal.aborted) throw e; return attempt(); }).catch(fail);
 }
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch: fhFetch } });
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch: fhFetch }, auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
 // Loads the Excel reader only when it is needed (the library is large, so it is no longer loaded on every visit)
 function ensureXLSX(){
   if (window.XLSX) return Promise.resolve();
@@ -431,6 +431,7 @@ async function afterLogin(user){
   const hashView = location.hash.replace('#','');
   const firstPage = navigateTo(allowedViews.includes(hashView) ? hashView : 'dashboard');
   setupSessionTimeout();
+  fhStartActivityTracking();
   // Popups, reminders, notifications and live updates are not urgent — they start only after the
   // first page has loaded, so they no longer compete with it for the connection.
   firstPage.then(() => setTimeout(() => {
@@ -450,21 +451,58 @@ window.addEventListener('hashchange', () => {
   if (view && allowedViews.includes(view) && view !== state.view) navigateTo(view);
 });
 
-let sessionTimeoutTimer = null;
+// ---------------------------------------------------------
+// AUTO SIGN-OUT (website only) + LAST-ACTIVE TRACKING
+//  * The Android app NEVER signs anyone out automatically — people must keep receiving alerts.
+//  * On the website the Super Admin chooses: off, or after N minutes of inactivity (Settings > Maintenance).
+//  * Every login records "last active" separately for Web and App (visible to the Super Admin in Team).
+// ---------------------------------------------------------
+let sessionTimeoutTimer = null, _fhIdleBound = false, _fhIdleMs = 0, _fhIdleReset = null;
 function setupSessionTimeout(){
-  const minutes = (state.systemSettings && state.systemSettings.session_timeout_minutes) || 15;
-  const TIMEOUT_MS = minutes * 60 * 1000;
+  if (sessionTimeoutTimer){ clearTimeout(sessionTimeoutTimer); sessionTimeoutTimer = null; }
+  const st = state.systemSettings || {};
+  if (fhIsNativeApp() || st.web_auto_signout_enabled === false){ _fhIdleMs = 0; _fhIdleReset = null; return; }
+  const minutes = Math.min(Math.max(parseInt(st.session_timeout_minutes, 10) || 15, 1), 10080);
+  _fhIdleMs = minutes * 60 * 1000;
   const reset = () => {
+    if (!_fhIdleMs || !state.user) return;
     if (sessionTimeoutTimer) clearTimeout(sessionTimeoutTimer);
     sessionTimeoutTimer = setTimeout(() => {
       toast(`You were signed out after ${minutes} minutes of inactivity.`);
       doLogout();
-    }, TIMEOUT_MS);
+    }, _fhIdleMs);
   };
-  ['mousemove','keydown','click','scroll','touchstart'].forEach(evt => {
-    document.addEventListener(evt, reset, { passive: true });
-  });
+  _fhIdleReset = reset;
+  if (!_fhIdleBound){
+    _fhIdleBound = true;
+    ['mousemove','keydown','click','scroll','touchstart'].forEach(evt => document.addEventListener(evt, () => { if (_fhIdleReset) _fhIdleReset(); }, { passive: true }));
+  }
   reset();
+}
+
+let _fhLastTouch = 0, _fhActBound = false;
+function fhTouchActivity(force){
+  if (!state.user) return;
+  const now = Date.now();
+  if (!force && now - _fhLastTouch < 5 * 60 * 1000) return;
+  _fhLastTouch = now;
+  Promise.resolve(sb.rpc('fh_touch_activity', { p_source: fhIsNativeApp() ? 'app' : 'web' })).then(() => {}, () => {});
+}
+function fhStartActivityTracking(){
+  fhTouchActivity(true);
+  if (_fhActBound) return;
+  _fhActBound = true;
+  ['pointerdown','keydown','touchstart','scroll'].forEach(evt => document.addEventListener(evt, () => fhTouchActivity(false), { passive: true }));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fhTouchActivity(false); });
+  setInterval(() => { if (document.visibilityState !== 'hidden') fhTouchActivity(false); }, 5 * 60 * 1000);
+}
+function fhAgo(iso){
+  if (!iso) return '';
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + ' min ago';
+  if (m < 1440) return Math.round(m / 60) + ' h ago';
+  return Math.round(m / 1440) + ' day' + (Math.round(m / 1440) === 1 ? '' : 's') + ' ago';
 }
 
 // ---------------------------------------------------------
@@ -487,6 +525,7 @@ async function fhSetupNativeApp(){
     if (!_fhNativeListeners){
       _fhNativeListeners = true;
       if (AppP && AppP.addListener){
+        AppP.addListener('appStateChange', (st) => { if (st && st.isActive) fhTouchActivity(true); });
         AppP.addListener('backButton', () => {
           if (document.body.classList.contains('fh-drawer-open')){ fhCloseDrawer(); return; }
           const modal = document.getElementById('active-modal');
@@ -2462,6 +2501,12 @@ async function renderTeam(){
   }
   await loadScopedProfiles(true);
   const pending = state.profilesInScope.filter(p=>p.status==='pending');
+  const act = new Map();
+  if (isSuperAdmin()){
+    const { data: actRows } = await sb.from('user_activity').select('*').limit(5000);
+    (actRows || []).forEach(a => act.set(a.user_id, a));
+  }
+  const actCell = (iso) => iso ? `${formatDateTime(iso)}<div class="hint" style="font-size:11.5px;">${fhAgo(iso)}</div>` : '<span class="hint">Never</span>';
 
   let html = '';
 
@@ -2506,6 +2551,11 @@ async function renderTeam(){
   const nonPending = state.profilesInScope.filter(p=>p.status!=='pending');
   const activeCount = nonPending.filter(p=>p.status==='active').length;
   const disabledCount = nonPending.filter(p=>p.status==='disabled').length;
+  if (isSuperAdmin()){
+    const recent = (k) => [...act.values()].filter(a => a[k] && Date.now() - new Date(a[k]).getTime() < 15 * 60 * 1000).length;
+    html += `<div class="card" style="padding:12px 16px;"><strong>Online in the last 15 minutes:</strong> ${recent('last_web_at')} on the website · ${recent('last_app_at')} in the Android app
+      <span class="hint"> — last-active times for everyone are in the Team directory below (Super Admin only).</span></div>`;
+  }
   html += `<div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
       <h3 style="margin:0;">Team directory (${nonPending.length} total — ${activeCount} active, ${disabledCount} disabled)</h3>
@@ -2525,12 +2575,13 @@ async function renderTeam(){
         <span>${ROLE_LABEL[role]} (${members.length} — ${groupActive} active, ${groupDisabled} disabled)</span><span class="nav-group-arrow">▾</span>
       </button>
       <div class="nav-group-items collapsed" id="${groupId}">
-        <table><thead><tr><th>Name</th><th>Mobile</th><th>Employee ID</th><th>Region(s)</th><th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+        <table><thead><tr><th>Name</th><th>Mobile</th><th>Employee ID</th><th>Region(s)</th>${isSuperAdmin()?'<th>Last active · Web</th><th>Last active · App</th>':''}<th>Status</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
         ${members.map(p=>`<tr data-team-row data-search="${escapeHtml((p.full_name+' '+(p.employee_id||'')+' '+ROLE_LABEL[role]+' '+designationLabel(p)+' '+(p.phone||'')).toLowerCase())}">
           <td>${escapeHtml(p.full_name)}${designationTag(p)}</td>
           <td class="mono">${escapeHtml(toLocalPhone(p.phone)||'—')}</td>
           <td class="mono">${escapeHtml(p.employee_id||'—')}</td>
           <td>${escapeHtml(regionNamesFor(p))}</td>
+          ${isSuperAdmin() ? `<td>${actCell(act.get(p.id)?.last_web_at)}</td><td>${actCell(act.get(p.id)?.last_app_at)}</td>` : ''}
           <td><span class="badge ${p.status}">${p.status}</span></td>
           ${isAdmin() ? `<td style="white-space:nowrap;">
             <button class="btn small outline" data-edit="${p.id}">Edit</button>
@@ -4920,8 +4971,9 @@ async function renderMaintenanceSettings(body){
     </div>
     <div class="card">
       <h3>Auto sign-out</h3>
-      <p class="hint">How many minutes of inactivity before someone is automatically signed out.</p>
-      <div class="form-row"><label>Minutes of inactivity</label><input type="number" id="maint-session-timeout" min="1" value="${sys?.session_timeout_minutes ?? 15}"></div>
+      <p class="hint">Applies to the <strong>website only</strong>. The <strong>Android app never signs anyone out automatically</strong>, so staff keep receiving alerts. People can still sign out themselves at any time.</p>
+      <div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="maint-session-on" ${sys?.web_auto_signout_enabled === false ? '' : 'checked'}> Sign people out of the website after a period of inactivity</label></div>
+      <div class="form-row"><label>Minutes of inactivity (1 – 10080)</label><input type="number" id="maint-session-timeout" min="1" max="10080" value="${sys?.session_timeout_minutes ?? 15}"></div>
       <button class="btn" id="maint-session-btn">Save</button>
     </div>
     <div class="card">
@@ -4963,11 +5015,13 @@ async function renderMaintenanceSettings(body){
     };
   };
   document.getElementById('maint-session-btn').onclick = async () => {
-    const mins = parseInt(document.getElementById('maint-session-timeout').value, 10) || 15;
-    const { error } = await sb.from('system_settings').update({ session_timeout_minutes: mins }).eq('id', 1);
-    if (error){ toast('Could not save: ' + error.message); return; }
-    state.systemSettings = { ...state.systemSettings, session_timeout_minutes: mins };
-    toast('Saved — takes effect next login (or refresh)');
+    const mins = Math.min(Math.max(parseInt(document.getElementById('maint-session-timeout').value, 10) || 15, 1), 10080);
+    const on = document.getElementById('maint-session-on').checked;
+    const { error } = await sb.from('system_settings').update({ session_timeout_minutes: mins, web_auto_signout_enabled: on }).eq('id', 1);
+    if (error){ toast('Could not save: ' + error.message + (/web_auto_signout_enabled|column/i.test(error.message) ? ' (run migration_34.sql in Supabase first)' : '')); return; }
+    state.systemSettings = { ...state.systemSettings, session_timeout_minutes: mins, web_auto_signout_enabled: on };
+    setupSessionTimeout();
+    toast(on ? `Saved — website sign-out after ${mins} minutes of inactivity` : 'Saved — website auto sign-out is OFF');
   };
   document.getElementById('maint-notif-btn').onclick = async () => {
     const count = parseInt(document.getElementById('maint-notif-count').value, 10) || 5;
