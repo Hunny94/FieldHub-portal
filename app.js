@@ -6949,7 +6949,23 @@ function tweenRosterStats(initial){
   });
 }
 
+// The normal roster is unchanged (renderRosterMain). People who manage the roster also get an
+// "On Job Training" button that opens a separate list of riders still in training.
 async function renderRoster(){
+  await renderRosterMain();
+  if (fhCanOjt()) fhAddOjtButton();
+}
+const fhCanOjt = () => isAdmin() || hasPermission('roster_manage');
+function fhAddOjtButton(){
+  const bar = document.getElementById('topbar-actions');
+  if (!bar || document.getElementById('ojt-open-btn')) return;
+  const b = document.createElement('button');
+  b.className = 'btn outline'; b.id = 'ojt-open-btn'; b.type = 'button'; b.textContent = '🎓 On Job Training';
+  b.onclick = () => renderRosterOjt();
+  bar.insertBefore(b, bar.firstChild);
+}
+
+async function renderRosterMain(){
   const main = document.getElementById('main-content');
   const canManage = isAdmin() || hasPermission('roster_manage');
   const canBulkAdd = isAdmin() || hasPermission('roster_bulk_add') || canManage;
@@ -7305,7 +7321,7 @@ async function renderRoster(){
   bindRowActions();
 }
 
-async function openRosterModal(entry){
+async function openRosterModal(entry, prefill){
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider');
   const riderOptions = riders.map(p=>`<option value="${p.id}" ${entry?.rider_id===p.id?'selected':''}>${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id||'—')})</option>`).join('');
@@ -7371,6 +7387,21 @@ async function openRosterModal(entry){
     };
     document.getElementById('ro-rider').onchange = (e) => applyRiderDefaults(e.target.value);
     if (document.getElementById('ro-rider').value) applyRiderDefaults(document.getElementById('ro-rider').value);
+    // coming from "On Job Training": pre-fill from the trainee's details and pick the matching login if there is one
+    if (prefill){
+      const norm = (x) => String(x || '').replace(/\D/g, '').slice(-10);
+      const match = riders.find(p => (prefill.employee_id && p.employee_id && String(p.employee_id).trim().toLowerCase() === String(prefill.employee_id).trim().toLowerCase())
+        || (prefill.mobile && p.phone && norm(p.phone) === norm(prefill.mobile)));
+      if (match){ document.getElementById('ro-rider').value = match.id; applyRiderDefaults(match.id); }
+      if (prefill.region_id){
+        document.getElementById('ro-region').value = prefill.region_id;
+        await loadSubRegions(prefill.region_id, prefill.sub_region_id || null);
+        await loadHotspots(prefill.region_id, prefill.sub_region_id || null, null);
+      }
+      if (prefill.mobile) document.getElementById('ro-official').value = toLocalPhone(prefill.mobile) || prefill.mobile;
+      const h = document.querySelector('#roster-form h2, #active-modal h2');
+      if (h) h.insertAdjacentHTML('afterend', `<p class="hint">Moving <strong>${escapeHtml(prefill.full_name)}</strong> from On Job Training. The rider needs an approved login (Team page) — pick it in the Rider list${match ? ' (matched automatically)' : ''}.</p>`);
+    }
   }
 
   document.getElementById('roster-form').onsubmit = async (e) => {
@@ -7409,7 +7440,142 @@ async function openRosterModal(entry){
       ? await sb.from('roster_entries').update(payload).eq('id', entry.id)
       : await sb.from('roster_entries').insert({ ...payload, created_by: state.user.id });
     if (error){ toast('Could not save: ' + error.message); return; }
-    closeModal(); toast('Saved'); renderRoster();
+    if (prefill && !entry && prefill.id){
+      await sb.from('roster_ojt').update({ status: 'moved', moved_rider_id: riderId, moved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', prefill.id);
+    }
+    closeModal(); toast(prefill && !entry ? 'Added to roster — removed from On Job Training' : 'Saved'); if (prefill && !entry) renderRosterOjt(); else renderRoster();
+  };
+}
+
+// ---------------------------------------------------------
+// ROSTER > ON JOB TRAINING (separate list; never counted in the roster numbers or approved headcount)
+// ---------------------------------------------------------
+const OJT = { status: 'in_training', region: '', q: '' };
+async function renderRosterOjt(){
+  const main = document.getElementById('main-content');
+  document.getElementById('view-title').textContent = 'Roster — On Job Training';
+  document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="ojt-back" type="button">← Back to Roster</button><button class="btn" id="ojt-add" type="button">+ Add Trainee</button>`;
+  document.getElementById('ojt-back').onclick = () => { document.getElementById('view-title').textContent = NAV_LABEL.roster || 'Roster'; renderRoster(); };
+  document.getElementById('ojt-add').onclick = () => openOjtModal(null);
+  main.innerHTML = '<div class="mono">Loading…</div>';
+  const { data: rows, error } = await sb.from('roster_ojt').select('*, regions(name), sub_regions(name)').order('joining_date', { ascending: false }).order('created_at', { ascending: false });
+  if (error){ main.innerHTML = emptyState('Could not load: ' + error.message + (/does not exist|relation/i.test(error.message) ? ' — run migration_35.sql in Supabase first.' : '')); return; }
+  const all = rows || [];
+  const desig = (r) => { const d = (state.designations || []).find(x => x.id === r.designation_id); return d ? d.name : 'Rider'; };
+  const days = (r) => Math.max(0, Math.round(((r.status === 'moved' && r.moved_at ? new Date(r.moved_at) : new Date()) - new Date(r.joining_date + 'T00:00:00')) / 86400000));
+  const cnt = (st) => all.filter(r => r.status === st).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = all.filter(r => r.status === 'in_training' && r.expected_end && r.expected_end < today).length;
+  const regionOpts = [...new Map(all.filter(r => r.region_id).map(r => [r.region_id, r.regions?.name])).entries()];
+  const statLabel = { in_training: 'In training', moved: 'Moved to roster', dropped: 'Dropped / left' };
+
+  main.innerHTML = `
+    <p class="hint" style="margin-bottom:10px;">Riders who have joined and are on <strong>On Job Training</strong>. They are kept here, <strong>separate from the Roster</strong>: they are not in the roster counts, approved headcount or Field Visits. When training is done, click <strong>Move to Roster</strong>.</p>
+    <div class="roster-stat-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      ${[['in_training', cnt('in_training'), 'sky'], ['moved', cnt('moved'), 'sage'], ['dropped', cnt('dropped'), 'clay']].map(([k, n, c]) => `<div class="card stat-card ${c}" data-ojt-stat="${k}" style="cursor:pointer;padding:12px;${OJT.status === k ? 'outline:2px solid var(--ink,#1E2A6E);' : ''}"><div class="stat-number">${n}</div><div class="stat-label">${statLabel[k]}</div></div>`).join('')}
+      <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${overdue}</div><div class="stat-label">Past expected end date</div></div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+      <select id="ojt-f-status"><option value="">All statuses</option>${Object.entries(statLabel).map(([k, v]) => `<option value="${k}" ${OJT.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <select id="ojt-f-region"><option value="">All regions</option>${regionOpts.map(([id, n]) => `<option value="${id}" ${OJT.region === id ? 'selected' : ''}>${escapeHtml(n || '')}</option>`).join('')}</select>
+      <input type="text" id="ojt-f-q" placeholder="Search name, mobile or Employee ID…" value="${escapeHtml(OJT.q)}" style="flex:1;min-width:160px;">
+      <button class="btn small outline" id="ojt-dl" type="button">Download</button>
+    </div>
+    <div id="ojt-list"></div>`;
+
+  const filtered = () => all.filter(r => (!OJT.status || r.status === OJT.status) && (!OJT.region || r.region_id === OJT.region)
+    && (!OJT.q || (r.full_name + ' ' + (r.mobile || '') + ' ' + (r.employee_id || '')).toLowerCase().includes(OJT.q.toLowerCase())));
+  const draw = () => {
+    const list = filtered();
+    document.getElementById('ojt-list').innerHTML = list.length ? `<div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>Mobile</th><th>Designation</th><th>Region</th><th>Joined</th><th>Days</th><th>Expected end</th><th>Trainer / buddy</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(r => `<tr>
+        <td><strong>${escapeHtml(r.full_name)}</strong>${r.employee_id ? `<div class="mono" style="font-size:12px;">${escapeHtml(r.employee_id)}</div>` : ''}${r.notes ? `<div class="hint" style="font-size:12px;">${escapeHtml(r.notes)}</div>` : ''}</td>
+        <td class="mono">${escapeHtml(toLocalPhone(r.mobile) || r.mobile || '—')}</td><td>${escapeHtml(desig(r))}</td>
+        <td>${escapeHtml(r.regions?.name || '—')}${r.sub_regions?.name ? `<div class="hint" style="font-size:12px;">${escapeHtml(r.sub_regions.name)}</div>` : ''}</td>
+        <td>${formatDate(r.joining_date + 'T00:00:00')}</td><td class="mono">${days(r)}</td>
+        <td>${r.expected_end ? formatDate(r.expected_end + 'T00:00:00') + (r.status === 'in_training' && r.expected_end < today ? ' <span class="badge pending">overdue</span>' : '') : '—'}</td>
+        <td>${escapeHtml(r.trainer_name || '—')}</td>
+        <td><span class="badge ${r.status === 'moved' ? 'active' : r.status === 'dropped' ? 'closed' : 'pending'}">${statLabel[r.status]}</span></td>
+        <td style="white-space:nowrap;">
+          ${r.status === 'in_training' ? `<button class="btn small" data-ojt-move="${r.id}">Move to Roster</button> ` : ''}
+          <button class="btn small outline" data-ojt-edit="${r.id}">Edit</button>
+          ${r.status === 'in_training' ? `<button class="btn small outline" data-ojt-drop="${r.id}">Dropped</button>` : ''}
+          ${r.status === 'dropped' ? `<button class="btn small outline" data-ojt-back="${r.id}">Back to training</button>` : ''}
+          ${isSuperAdmin() ? `<button class="btn small danger" data-ojt-del="${r.id}">Delete</button>` : ''}
+        </td></tr>`).join('')}</tbody></table></div>` : emptyState(all.length ? 'No trainees match these filters.' : 'No one is on job training yet. Click “+ Add Trainee”.');
+    const byId = (id) => all.find(x => x.id === id);
+    main.querySelectorAll('[data-ojt-edit]').forEach(b => b.onclick = () => openOjtModal(byId(b.dataset.ojtEdit)));
+    main.querySelectorAll('[data-ojt-move]').forEach(b => b.onclick = () => openRosterModal(null, byId(b.dataset.ojtMove)));
+    const setStatus = async (id, status, msg) => { const { error: e } = await sb.from('roster_ojt').update({ status, updated_at: new Date().toISOString() }).eq('id', id); if (e){ toast('Could not save: ' + e.message); return; } toast(msg); renderRosterOjt(); };
+    main.querySelectorAll('[data-ojt-drop]').forEach(b => b.onclick = () => { if (confirm('Mark this trainee as dropped / left?')) setStatus(b.dataset.ojtDrop, 'dropped', 'Marked as dropped'); });
+    main.querySelectorAll('[data-ojt-back]').forEach(b => b.onclick = () => setStatus(b.dataset.ojtBack, 'in_training', 'Back in training'));
+    main.querySelectorAll('[data-ojt-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('Permanently delete this trainee record?')) return;
+      const { error: e } = await sb.from('roster_ojt').delete().eq('id', b.dataset.ojtDel); if (e){ toast('Could not delete: ' + e.message); return; } toast('Deleted'); renderRosterOjt();
+    });
+  };
+  draw();
+  main.querySelectorAll('[data-ojt-stat]').forEach(c => c.onclick = () => { OJT.status = OJT.status === c.dataset.ojtStat ? '' : c.dataset.ojtStat; renderRosterOjt(); });
+  document.getElementById('ojt-f-status').onchange = (e) => { OJT.status = e.target.value; renderRosterOjt(); };
+  document.getElementById('ojt-f-region').onchange = (e) => { OJT.region = e.target.value; draw(); };
+  document.getElementById('ojt-f-q').oninput = (e) => { OJT.q = e.target.value; draw(); };
+  document.getElementById('ojt-dl').onclick = () => {
+    const list = filtered(); if (!list.length){ toast('Nothing to download.'); return; }
+    downloadCSV(`on-job-training-${today}.csv`, toCSV(list.map(r => ({ Name: r.full_name, 'Employee ID': r.employee_id || '', Mobile: toLocalPhone(r.mobile) || r.mobile || '', Designation: desig(r),
+      Region: r.regions?.name || '', 'Sub-Region': r.sub_regions?.name || '', Joined: r.joining_date, 'Days in training': days(r), 'Expected end': r.expected_end || '', Trainer: r.trainer_name || '', Status: statLabel[r.status], Notes: r.notes || '' }))));
+  };
+}
+
+async function openOjtModal(row){
+  const riderDesigs = (state.designations || []).filter(d => d.base_role === 'rider' && d.active !== false);
+  const regOpts = state.regions.filter(r => r.active !== false).map(r => `<option value="${r.id}" ${row?.region_id === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('');
+  openModal(`
+    <h2>${row ? 'Edit' : 'Add'} trainee (On Job Training)</h2>
+    <form id="ojt-form">
+      <div class="form-row"><label>Full name</label><input type="text" id="oj-name" required value="${escapeHtml(row?.full_name || '')}"></div>
+      <div class="two-col">
+        <div class="form-row"><label>Mobile</label><input type="text" id="oj-mobile" required placeholder="03xxxxxxxxx" value="${escapeHtml(row ? (toLocalPhone(row.mobile) || row.mobile || '') : '')}"></div>
+        <div class="form-row"><label>Employee ID (if issued)</label><input type="text" id="oj-emp" value="${escapeHtml(row?.employee_id || '')}"></div>
+      </div>
+      <div class="two-col">
+        <div class="form-row"><label>Region</label><select id="oj-region" required><option value="">— Select —</option>${regOpts}</select></div>
+        <div class="form-row"><label>Sub-Region / City</label><select id="oj-sub"><option value="">—</option></select></div>
+      </div>
+      <div class="form-row"><label>Designation (after training)</label><select id="oj-desig"><option value="">Rider</option>${riderDesigs.map(d => `<option value="${d.id}" ${row?.designation_id === d.id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select></div>
+      <div class="two-col">
+        <div class="form-row"><label>Joining date</label><input type="date" id="oj-join" required value="${row?.joining_date || new Date().toISOString().slice(0, 10)}"></div>
+        <div class="form-row"><label>Expected end of training</label><input type="date" id="oj-end" value="${row?.expected_end || ''}"></div>
+      </div>
+      <div class="form-row"><label>Trainer / buddy rider (optional)</label><input type="text" id="oj-trainer" value="${escapeHtml(row?.trainer_name || '')}"></div>
+      <div class="form-row"><label>Notes (optional)</label><textarea id="oj-notes" rows="2">${escapeHtml(row?.notes || '')}</textarea></div>
+      <button class="btn-primary" type="submit">Save</button>
+    </form>`);
+  const loadSubs = async (rid, sel) => {
+    const el = document.getElementById('oj-sub');
+    if (!rid){ el.innerHTML = '<option value="">—</option>'; return; }
+    const { data: subs } = await sb.from('sub_regions').select('*').eq('region_id', rid).eq('active', true).order('name');
+    el.innerHTML = '<option value="">—</option>' + (subs || []).map(s => `<option value="${s.id}" ${sel === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
+  };
+  document.getElementById('oj-region').onchange = (e) => loadSubs(e.target.value, null);
+  if (row?.region_id) loadSubs(row.region_id, row.sub_region_id);
+  document.getElementById('ojt-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      full_name: document.getElementById('oj-name').value.trim(),
+      mobile: document.getElementById('oj-mobile').value.trim(),
+      employee_id: document.getElementById('oj-emp').value.trim() || null,
+      region_id: document.getElementById('oj-region').value || null,
+      sub_region_id: document.getElementById('oj-sub').value || null,
+      designation_id: document.getElementById('oj-desig').value || null,
+      joining_date: document.getElementById('oj-join').value,
+      expected_end: document.getElementById('oj-end').value || null,
+      trainer_name: document.getElementById('oj-trainer').value.trim() || null,
+      notes: document.getElementById('oj-notes').value.trim() || null,
+      updated_at: new Date().toISOString()
+    };
+    const { error } = row ? await sb.from('roster_ojt').update(payload).eq('id', row.id) : await sb.from('roster_ojt').insert({ ...payload, created_by: state.user.id });
+    if (error){ toast('Could not save: ' + error.message); return; }
+    closeModal(); toast('Saved'); renderRosterOjt();
   };
 }
 
