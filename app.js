@@ -1081,8 +1081,10 @@ function fvNavViews(){
   if (hasPermission('field_visit_manage')) v.push('fv_checklist','fv_targets');
   return v;
 }
+// Fuel Trends sidebar group: Super Admin only
+function ftNavViews(){ return state.profile && state.profile.role === 'super_admin' ? ['ft_trend','ft_data','ft_upload'] : []; }
 function getAllowedViews(){
-  const base = [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews()];
+  const base = [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews()];
   if (isAdmin()) return base;
   const extra = [];
   const settingsKeys = ['categories_add','categories_edit','categories_remove','manage_types','circular_categories_manage'];
@@ -1098,7 +1100,8 @@ const NAV_LABEL = {
   warnings:'Warnings', knowledgebase:'Knowledge Base', resources:'Resource Links', reports:'Reports',
   compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors',
   fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
-  fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI'
+  fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI',
+  ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
@@ -1108,6 +1111,7 @@ const NAV_GROUPS = [
   { id: 'g_operations', label: 'Operations',    items: ['circulars','tasks','requests','warnings','compliance'] },
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
   { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools'] },
+  { id: 'g_fuel',       label: 'Fuel Trends',   items: ['ft_trend','ft_data','ft_upload'] },
   { id: 'g_admin',      label: 'Admin',         items: ['regions','settings','reports','activitylog'] }
 ];
 
@@ -1160,6 +1164,7 @@ const NAV_ICON_LIB = {
   layers:'<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
   activity:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   bookmark:'<path d="M6 3h12v18l-6-4-6 4z"/>',
+  fuel:'<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12"/><path d="M6 8h6"/><path d="M14 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V8l-3-3"/>',
   key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/>'
 };
 const NAV_ICON_DEFAULT = {
@@ -1168,6 +1173,7 @@ const NAV_ICON_DEFAULT = {
   expiries:'svg:clock', tools:'svg:wrench', regions:'svg:pin', settings:'svg:gear', reports:'svg:chart', activitylog:'svg:list',
   fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
   fv_checklist:'svg:clipboard', fv_targets:'svg:target',
+  ft_trend:'svg:chart', ft_data:'svg:list', ft_upload:'svg:plus', g_fuel:'svg:fuel',
   g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
 };
 // icon for a menu entry: the Super Admin's choice if there is one ('' = removed), otherwise the built-in default
@@ -1273,6 +1279,7 @@ async function navigateTo(view){
     else if (view==='releasenotes') await renderReleaseNotes();
     else if (view==='hierarchy') await renderHierarchy();
     else if (view.startsWith('fv_')) await renderFieldVisits(view);
+    else if (view.startsWith('ft_')) await renderFuelTrends(view);
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -6790,6 +6797,360 @@ async function renderFieldVisits(view) {
   try { await page[1](document.getElementById('fv-body')); }
   catch (e) { console.error(e); document.getElementById('fv-body').innerHTML = fvError(e); }
 }
+
+// =====================================================================================
+// FUEL TRENDS (Super Admin only)
+// The Excel file is read inside the browser and only a small summarised row per
+// month / rider / category is saved (table fuel_records). The file itself is never stored.
+// =====================================================================================
+const FT = { rows: null, cats: null, g: 'lead', m: 'amount', from: '', to: '', lead: '', region: '', city: '', cat: '', q: '', up: null };
+const FT_GROUPS = [['lead', 'Regional Lead / HOD'], ['region', 'Region'], ['city', 'City'], ['rider', 'Rider / ID'], ['cat', 'Category']];
+const FT_METRICS = [['amount', 'Amount (Rs)'], ['liters', 'Approved litres'], ['km', 'KM'], ['cpk', 'Cost per KM'], ['visits', 'Home sampling visits'], ['cpv', 'Cost per visit'], ['kmpl', 'KM per litre']];
+const FT_COLORS = ['#1E2A6E', '#2e7d4f', '#d9962b', '#c0532f', '#2a8fa8', '#8a4fb3', '#6b7390'];
+const ftFmt = (n, d = 0) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const ftMonthLabel = (m) => { const [y, mo] = String(m).split('-'); return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(mo) - 1] + ' ' + y; };
+const ftNorm = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const FT_FIELDS = {
+  month:  ['month', 'period', 'date', 'fuelmonth', 'monthyear', 'billingmonth'],
+  emp:    ['empid', 'employeeid', 'employeecode', 'empcode', 'id', 'riderid', 'code', 'employeeno', 'empno', 'staffid'],
+  name:   ['name', 'ridername', 'employeename', 'employee', 'rider', 'empname', 'staffname'],
+  lead:   ['regionallead', 'regionalleadhod', 'lead', 'hod', 'regionlead', 'teamlead', 'manager', 'supervisor', 'areaincharge', 'reportingto'],
+  region: ['region', 'regionname', 'zone', 'area'],
+  city:   ['city', 'cityname', 'location', 'branch', 'station'],
+  cat:    ['category', 'department', 'dept', 'vehiclecategory', 'section', 'function', 'segment', 'classification', 'fuelcategory'],
+  lit:    ['approvedliters', 'approvedlitres', 'liters', 'litres', 'ltr', 'ltrs', 'approvedltr', 'fuelliters', 'fuellitres', 'approvedqty', 'quantity', 'qty'],
+  amt:    ['approvedamount', 'amount', 'fuelamount', 'totalamount', 'cost', 'fuelcost', 'total', 'value', 'rs', 'pkr'],
+  km:     ['km', 'kms', 'kilometers', 'kilometres', 'distance', 'totalkm', 'approvedkm', 'kmtravelled', 'runningkm'],
+  vis:    ['visits', 'cases', 'casevisits', 'homesamplingvisits', 'homevisits', 'homesamplingcases', 'noofvisits', 'totalvisits', 'visitcount', 'noofcases', 'hscases']
+};
+const FT_LABEL = { month: 'Month', emp: 'Employee ID', name: 'Rider name', lead: 'Regional Lead / HOD', region: 'Region', city: 'City', cat: 'Category', lit: 'Approved litres', amt: 'Amount', km: 'KM', vis: 'Home sampling visits' };
+const FT_ORDER_EXACT = ['month', 'emp', 'name', 'lead', 'region', 'city', 'cat', 'lit', 'amt', 'km', 'vis'];
+const FT_ORDER_LOOSE = ['lit', 'amt', 'km', 'vis', 'lead', 'region', 'city', 'cat', 'month', 'emp', 'name'];
+
+function ftNum(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  let s = String(v == null ? '' : v).trim();
+  if (!s) return 0;
+  const neg = /^\(.*\)$/.test(s) || /^-/.test(s);
+  s = s.replace(/[^0-9.]/g, '');
+  const n = parseFloat(s);
+  return isFinite(n) ? (neg ? -n : n) : 0;
+}
+// -> 'YYYY-MM-01' or null
+function ftParseMonth(v) {
+  if (v == null || v === '') return null;
+  const mk = (y, m) => (y >= 2000 && y <= 2100 && m >= 1 && m <= 12) ? `${y}-${String(m).padStart(2, '0')}-01` : null;
+  if (v instanceof Date) { if (isNaN(v)) return null; const d = new Date(v.getTime() + 12 * 3600 * 1000); return mk(d.getUTCFullYear(), d.getUTCMonth() + 1); }
+  if (typeof v === 'number') { if (v > 20000 && v < 80000) { const d = new Date(Math.round((v - 25569) * 86400 * 1000)); return mk(d.getUTCFullYear(), d.getUTCMonth() + 1); } return null; }
+  const s = String(v).trim();
+  const MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  let m;
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})(?:[-\/.]\d{1,2})?/))) return mk(+m[1], +m[2]);
+  if ((m = s.match(/^(\d{1,2})[-\/.](\d{4})$/))) return mk(+m[2], +m[1]);
+  if ((m = s.match(/^\d{1,2}[-\/.](\d{1,2})[-\/.](\d{4})/))) return mk(+m[2], +m[1]);
+  if ((m = s.match(/^([A-Za-z]{3,})[\s\-,.\/']*(\d{4}|\d{2})$/))) { const i = MON.indexOf(m[1].slice(0, 3).toLowerCase()); if (i >= 0) return mk(m[2].length === 2 ? 2000 + +m[2] : +m[2], i + 1); }
+  if ((m = s.match(/^(\d{4})[\s\-,.\/']*([A-Za-z]{3,})$/))) { const i = MON.indexOf(m[2].slice(0, 3).toLowerCase()); if (i >= 0) return mk(+m[1], i + 1); }
+  if ((m = s.match(/^\d{1,2}[\s\-]([A-Za-z]{3,})[\s\-,]*(\d{4}|\d{2})$/))) { const i = MON.indexOf(m[1].slice(0, 3).toLowerCase()); if (i >= 0) return mk(m[2].length === 2 ? 2000 + +m[2] : +m[2], i + 1); }
+  return null;
+}
+// finds the header row and maps every field to a column index (-1 = not found)
+function ftDetect(grid) {
+  let best = null;
+  for (let r = 0; r < Math.min(grid.length, 20); r++) {
+    const heads = (grid[r] || []).map(ftNorm);
+    const map = {}, used = new Set();
+    FT_ORDER_EXACT.forEach(f => { const i = heads.findIndex((h, ix) => h && !used.has(ix) && FT_FIELDS[f].includes(h)); if (i >= 0) { map[f] = i; used.add(i); } });
+    FT_ORDER_LOOSE.forEach(f => {
+      if (map[f] !== undefined) return;
+      const i = heads.findIndex((h, ix) => h && !used.has(ix) && FT_FIELDS[f].some(s => s.length >= 4 && h.includes(s)));
+      if (i >= 0) { map[f] = i; used.add(i); }
+    });
+    const score = Object.keys(map).length;
+    if (!best || score > best.score) best = { row: r, map, score };
+  }
+  return best && best.score >= 2 ? best : { row: 0, map: {}, score: 0 };
+}
+
+async function ftLoadAll(force) {
+  if (FT.rows && !force) return FT.rows;
+  FT.rows = await fvFetchAll(() => sb.from('fuel_records').select('month,employee_id,rider_name,lead_name,region_name,city,category,approved_liters,amount,km,visits').order('month').order('id'));
+  FT.rows.forEach(r => { r.approved_liters = +r.approved_liters; r.amount = +r.amount; r.km = +r.km; r.visits = +r.visits; r.m = String(r.month).slice(0, 7); });
+  return FT.rows;
+}
+async function ftLoadCats(force) {
+  if (FT.cats && !force) return FT.cats;
+  const { data, error } = await sb.from('fuel_categories').select('id,name').order('name');
+  if (error) throw error;
+  FT.cats = data || [];
+  return FT.cats;
+}
+function ftEnsureStyle() {
+  if (document.getElementById('ft-style')) return;
+  const s = document.createElement('style'); s.id = 'ft-style';
+  s.textContent = `.ft-wrap{overflow-x:auto;background:#fff;border:1px solid rgba(30,42,110,.06);border-radius:12px;box-shadow:0 1px 3px rgba(30,42,110,.06)}
+.ft-wrap table td,.ft-wrap table th{white-space:nowrap}.ft-wrap td.n,.ft-wrap th.n{text-align:right;font-variant-numeric:tabular-nums}
+.ft-wrap tr.tot td{font-weight:700;background:#f3f5fb}
+.ft-chip{display:inline-flex;align-items:center;gap:6px;background:#eef1fb;border-radius:999px;padding:4px 6px 4px 11px;font-size:12px;margin:3px 4px 3px 0}
+.ft-chip button{border:0;background:#dfe4f6;border-radius:50%;width:18px;height:18px;cursor:pointer;line-height:1;color:#46506e}
+.ft-chip.new{background:#fff3d6}.ft-drop{border:2px dashed #c9d0ea;border-radius:14px;padding:26px 16px;text-align:center;background:#fafbff}
+.ft-map{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}`;
+  document.head.appendChild(s);
+}
+const ftSum = (rows) => rows.reduce((a, r) => { a.liters += r.approved_liters; a.amount += r.amount; a.km += r.km; a.visits += r.visits; return a; }, { liters: 0, amount: 0, km: 0, visits: 0 });
+function ftVal(t, m) {
+  switch (m) {
+    case 'amount': return t.amount; case 'liters': return t.liters; case 'km': return t.km; case 'visits': return t.visits;
+    case 'cpk': return t.km ? t.amount / t.km : null; case 'cpv': return t.visits ? t.amount / t.visits : null; case 'kmpl': return t.liters ? t.km / t.liters : null;
+  }
+  return 0;
+}
+const ftDec = (m) => (m === 'cpk' || m === 'cpv' || m === 'kmpl') ? 2 : 0;
+const ftKey = (r, g) => g === 'lead' ? (r.lead_name || '(none)') : g === 'region' ? (r.region_name || '(none)') : g === 'city' ? (r.city || '(none)') :
+  g === 'cat' ? (r.category || 'Uncategorised') : ((r.employee_id ? r.employee_id + ' · ' : '') + (r.rider_name || '(unknown)'));
+
+async function renderFuelTrends(view) {
+  fvEnsureStyle(); ftEnsureStyle();
+  const main = document.getElementById('main-content');
+  document.getElementById('topbar-actions').innerHTML = '';
+  if (!isSuperAdmin() || !FT_PAGES[view]) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
+  main.innerHTML = `<p class="fv-sub">${escapeHtml(FT_PAGES[view][0])}</p><div id="ft-body"><div class="mono">Loading…</div></div>`;
+  try { await FT_PAGES[view][1](document.getElementById('ft-body')); }
+  catch (e) {
+    console.error(e);
+    document.getElementById('ft-body').innerHTML = `<div class="empty-state"><p>Could not load this page: ${escapeHtml(e?.message || String(e))}</p><p class="fv-note">If this is the first time, please make sure <strong>migration_36.sql</strong> has been run in Supabase.</p></div>`;
+  }
+}
+
+// ---------------- Trends ----------------
+async function ftPageTrend(host) {
+  const all = await ftLoadAll();
+  if (!all.length) { host.innerHTML = `<div class="empty-state"><p>No fuel data yet.</p><button class="fv-btn" type="button" onclick="navigateTo('ft_upload')">Upload the first Excel file</button></div>`; return; }
+  const months = [...new Set(all.map(r => r.m))].sort();
+  if (!FT.from || !months.includes(FT.from)) FT.from = months[Math.max(0, months.length - 6)];
+  if (!FT.to || !months.includes(FT.to)) FT.to = months[months.length - 1];
+  const uniq = (k) => [...new Set(all.map(r => r[k]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  host.innerHTML = `<div class="fv-fbar">
+    <div class="fv-fg"><label>From month</label><select data-k="from">${months.map(m => fvOpt(m, ftMonthLabel(m), FT.from)).join('')}</select></div>
+    <div class="fv-fg"><label>To month</label><select data-k="to">${months.map(m => fvOpt(m, ftMonthLabel(m), FT.to)).join('')}</select></div>
+    <div class="fv-fg"><label>Regional Lead / HOD</label><select data-k="lead"><option value="">All</option>${uniq('lead_name').map(x => fvOpt(x, x, FT.lead)).join('')}</select></div>
+    <div class="fv-fg"><label>Region</label><select data-k="region"><option value="">All</option>${uniq('region_name').map(x => fvOpt(x, x, FT.region)).join('')}</select></div>
+    <div class="fv-fg"><label>City</label><select data-k="city"><option value="">All</option>${uniq('city').map(x => fvOpt(x, x, FT.city)).join('')}</select></div>
+    <div class="fv-fg"><label>Category</label><select data-k="cat"><option value="">All</option>${uniq('category').map(x => fvOpt(x, x, FT.cat)).join('')}</select></div>
+    <div class="fv-fg"><label>Rider / ID</label><input type="search" data-k="q" placeholder="name or emp ID" value="${escapeHtml(FT.q)}"></div>
+    <div class="fv-fg"><label>View by</label><div class="fv-segd" style="grid-template-columns:repeat(3,1fr)">${FT_GROUPS.map(([k, l]) => `<button type="button" data-g="${k}" class="${FT.g === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="fv-fg"><label>Chart / table shows</label><select data-k="m">${FT_METRICS.map(([k, l]) => fvOpt(k, l, FT.m)).join('')}</select></div>
+    <button class="fv-btn ghost" data-reset type="button" style="height:34px;">Clear</button></div><div id="ft-res"></div>`;
+  const res = host.querySelector('#ft-res');
+  const draw = () => {
+    if (FT.from > FT.to) { const t = FT.from; FT.from = FT.to; FT.to = t; }
+    const q = FT.q.trim().toLowerCase();
+    const rows = all.filter(r => r.m >= FT.from && r.m <= FT.to && (!FT.lead || r.lead_name === FT.lead) && (!FT.region || r.region_name === FT.region) &&
+      (!FT.city || r.city === FT.city) && (!FT.cat || r.category === FT.cat) && (!q || (r.rider_name || '').toLowerCase().includes(q) || (r.employee_id || '').toLowerCase().includes(q)));
+    const ms = months.filter(m => m >= FT.from && m <= FT.to);
+    const tot = ftSum(rows);
+    const gm = new Map();
+    rows.forEach(r => { const k = ftKey(r, FT.g); let o = gm.get(k); if (!o) { o = { k, by: new Map() }; gm.set(k, o); } let t = o.by.get(r.m); if (!t) { t = { liters: 0, amount: 0, km: 0, visits: 0 }; o.by.set(r.m, t); } t.liters += r.approved_liters; t.amount += r.amount; t.km += r.km; t.visits += r.visits; });
+    const groups = [...gm.values()].map(o => { const t = { liters: 0, amount: 0, km: 0, visits: 0 }; o.by.forEach(x => { t.liters += x.liters; t.amount += x.amount; t.km += x.km; t.visits += x.visits; }); o.t = t; return o; })
+      .sort((a, b) => b.t.amount - a.t.amount);
+    const d = ftDec(FT.m);
+    const monthTot = ms.map(m => ftSum(rows.filter(r => r.m === m)));
+    const top = groups.slice(0, 5);
+    const series = top.map((g, i) => ({ name: g.k, color: FT_COLORS[i], values: ms.map(m => g.by.has(m) ? Math.round((ftVal(g.by.get(m), FT.m) || 0) * 100) / 100 : null) }));
+    if (groups.length > 1) series.push({ name: 'All (total)', color: FT_COLORS[6], values: monthTot.map(t => Math.round((ftVal(t, FT.m) || 0) * 100) / 100) });
+    const mlabel = (FT_METRICS.find(x => x[0] === FT.m) || [])[1];
+    const shown = groups.slice(0, 300);
+    res.innerHTML = `<div class="fv-stats">
+      <div class="fv-stat"><div class="n">${ftFmt(tot.amount)}</div><div class="l">Amount (Rs)</div></div>
+      <div class="fv-stat"><div class="n">${ftFmt(tot.liters, 1)}</div><div class="l">Approved litres</div></div>
+      <div class="fv-stat"><div class="n">${ftFmt(tot.km)}</div><div class="l">KM</div></div>
+      <div class="fv-stat"><div class="n">${tot.km ? ftFmt(tot.amount / tot.km, 2) : '–'}</div><div class="l">Cost per KM (Rs)</div></div>
+      <div class="fv-stat"><div class="n">${ftFmt(tot.visits)}</div><div class="l">Home sampling visits</div></div>
+      <div class="fv-stat"><div class="n">${tot.visits ? ftFmt(tot.amount / tot.visits, 2) : '–'}</div><div class="l">Cost per visit (Rs)</div></div></div>
+      <div class="fv-chart" style="margin-bottom:16px"><h4>${escapeHtml(mlabel)} by month</h4><div class="s">Top ${top.length} by amount${groups.length > 1 ? ', plus the overall total' : ''}</div>${fvMultiLine(ms.map(ftMonthLabel), series, { legend: true, w: 640, h: 240 })}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin:6px 0 8px;flex-wrap:wrap"><strong style="color:#1c2b6e">${escapeHtml(FT_GROUPS.find(x => x[0] === FT.g)[1])} × month — ${escapeHtml(mlabel)}</strong>
+        <span><button class="fv-btn" data-dl="csv" type="button">Download CSV</button> ${fhIsNativeApp() ? '' : '<button class="fv-btn ghost" data-dl="xlsx" type="button">Download Excel</button>'}</span></div>
+      <div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(FT_GROUPS.find(x => x[0] === FT.g)[1])}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Rs/KM</th><th class="n">Visits</th></tr></thead><tbody>
+      ${shown.map(g => `<tr><td>${escapeHtml(g.k)}</td>${ms.map(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; return `<td class="n">${v == null ? '–' : ftFmt(v, d)}</td>`; }).join('')}<td class="n">${ftFmt(g.t.liters, 1)}</td><td class="n">${ftFmt(g.t.amount)}</td><td class="n">${ftFmt(g.t.km)}</td><td class="n">${g.t.km ? ftFmt(g.t.amount / g.t.km, 2) : '–'}</td><td class="n">${ftFmt(g.t.visits)}</td></tr>`).join('') || `<tr><td colspan="${ms.length + 6}" class="c">No rows for these filters.</td></tr>`}
+      <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.km ? ftFmt(tot.amount / tot.km, 2) : '–'}</td><td class="n">${ftFmt(tot.visits)}</td></tr>
+      </tbody></table></div>${groups.length > shown.length ? `<p class="fv-note">Showing the first ${shown.length} of ${groups.length}. The download contains all of them.</p>` : ''}`;
+    fvGo(res);
+    const dlRows = () => groups.map(g => {
+      const o = { [FT_GROUPS.find(x => x[0] === FT.g)[1]]: g.k };
+      ms.forEach(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; o[ftMonthLabel(m)] = v == null ? '' : Math.round(v * 100) / 100; });
+      o['Approved litres'] = Math.round(g.t.liters * 100) / 100; o['Amount'] = Math.round(g.t.amount); o['KM'] = Math.round(g.t.km);
+      o['Cost per KM'] = g.t.km ? Math.round(g.t.amount / g.t.km * 100) / 100 : ''; o['Home sampling visits'] = g.t.visits;
+      o['Cost per visit'] = g.t.visits ? Math.round(g.t.amount / g.t.visits * 100) / 100 : '';
+      return o;
+    });
+    const fname = `fuel-trend-${FT.g}-${FT.from.slice(0, 7)}_to_${FT.to.slice(0, 7)}`;
+    res.querySelector('[data-dl="csv"]').onclick = () => { const r = dlRows(); if (!r.length) { toast('Nothing to download'); return; } downloadCSV(fname + '.csv', toCSV(r)); };
+    const x = res.querySelector('[data-dl="xlsx"]');
+    if (x) x.onclick = async () => { const r = dlRows(); if (!r.length) { toast('Nothing to download'); return; } try { await ensureXLSX(); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r), 'Fuel trend'); XLSX.writeFile(wb, fname + '.xlsx'); } catch (e) { toast(e.message); } };
+  };
+  host.querySelectorAll('[data-k]').forEach(el => el.onchange = el.oninput = () => { FT[el.dataset.k] = el.value; draw(); });
+  host.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { FT.g = b.dataset.g; host.querySelectorAll('[data-g]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  host.querySelector('[data-reset]').onclick = () => { Object.assign(FT, { lead: '', region: '', city: '', cat: '', q: '', from: months[Math.max(0, months.length - 6)], to: months[months.length - 1] }); ftPageTrend(host); };
+  draw();
+}
+
+// ---------------- Uploaded data ----------------
+async function ftPageData(host) {
+  const all = await ftLoadAll(true);
+  const ms = new Map();
+  all.forEach(r => { let o = ms.get(r.m); if (!o) { o = { m: r.m, n: 0, t: { liters: 0, amount: 0, km: 0, visits: 0 } }; ms.set(r.m, o); } o.n++; o.t.liters += r.approved_liters; o.t.amount += r.amount; o.t.km += r.km; o.t.visits += r.visits; });
+  const list = [...ms.values()].sort((a, b) => b.m.localeCompare(a.m));
+  host.innerHTML = `<div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap"><span class="fv-note">${all.length} saved rows in ${list.length} month(s). Only summarised rows are kept — never the Excel file.</span>
+    <span><button class="fv-btn" data-all type="button">Download all data (CSV)</button> <button class="fv-btn ghost" onclick="navigateTo('ft_upload')" type="button">Upload more</button></span></div>
+    <div class="ft-wrap"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Rows</th><th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Rs/KM</th><th class="n">Visits</th><th></th></tr></thead><tbody>
+    ${list.map(o => `<tr><td>${ftMonthLabel(o.m)}</td><td class="n">${o.n}</td><td class="n">${ftFmt(o.t.liters, 1)}</td><td class="n">${ftFmt(o.t.amount)}</td><td class="n">${ftFmt(o.t.km)}</td><td class="n">${o.t.km ? ftFmt(o.t.amount / o.t.km, 2) : '–'}</td><td class="n">${ftFmt(o.t.visits)}</td><td><button class="fv-btn ghost" data-del="${o.m}" type="button" style="color:#c0532f">Delete month</button></td></tr>`).join('') || '<tr><td colspan="8" class="c">Nothing uploaded yet.</td></tr>'}</tbody></table></div>`;
+  host.querySelector('[data-all]').onclick = () => {
+    if (!all.length) { toast('Nothing to download'); return; }
+    downloadCSV('fuel-data-all.csv', toCSV(all.map(r => ({ Month: r.m, 'Employee ID': r.employee_id || '', Rider: r.rider_name || '', 'Regional Lead / HOD': r.lead_name || '', Region: r.region_name || '', City: r.city || '', Category: r.category, 'Approved litres': r.approved_liters, Amount: r.amount, KM: r.km, 'Home sampling visits': r.visits }))));
+  };
+  host.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    const m = b.dataset.del;
+    if (!confirm(`Permanently delete all fuel rows of ${ftMonthLabel(m)}? This cannot be undone.`)) return;
+    const { error } = await sb.rpc('fuel_delete_months', { p_months: [m] });
+    if (error) { toast('Could not delete: ' + error.message); return; }
+    toast('Month deleted'); FT.rows = null; ftPageData(host);
+  });
+}
+
+// ---------------- Upload ----------------
+async function ftPageUpload(host) {
+  const cats = await ftLoadCats(true);
+  FT.up = null;
+  const paintCats = () => {
+    host.querySelector('#ft-cats').innerHTML = (FT.cats.map(c => `<span class="ft-chip">${escapeHtml(c.name)}<button type="button" data-cd="${c.id}" title="Remove">×</button></span>`).join('')) || '<span class="fv-note">No categories yet — they are created automatically from your file, or add them here first.</span>';
+    host.querySelectorAll('[data-cd]').forEach(b => b.onclick = async () => {
+      const { error } = await sb.from('fuel_categories').delete().eq('id', b.dataset.cd);
+      if (error) { toast(error.message); return; }
+      await ftLoadCats(true); paintCats();
+    });
+  };
+  host.innerHTML = `<div class="fv-card2" style="padding:16px;margin-bottom:14px"><h4 style="margin:0 0 6px;color:#1c2b6e">1 · Categories</h4>
+      <p class="fv-note" style="margin:0 0 8px">Courier, Home Sampling, Maintenance, Support, Retail … New ones found in your file are added automatically. You can also add one before uploading.</p>
+      <div id="ft-cats"></div><div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input id="ft-newcat" placeholder="New category name" style="height:34px;padding:0 10px;border:1px solid #dfe3ee;border-radius:8px"><button class="fv-btn" id="ft-addcat" type="button">Add</button></div></div>
+    <div class="fv-card2" style="padding:16px"><h4 style="margin:0 0 6px;color:#1c2b6e">2 · Upload the Excel file</h4>
+      <p class="fv-note" style="margin:0 0 10px">Works for one month or a compiled file of many months (include a Month column). The file is only read on your device — it is not uploaded or stored; just the totals are saved.</p>
+      <div class="ft-drop"><input type="file" id="ft-file" accept=".xlsx,.xls,.csv"><p class="fv-note" style="margin:8px 0 0">Columns recognised automatically: Employee ID, Name, Regional Lead / HOD, Region, City, Category, Approved Litres, Amount, KM, Visits, Month.</p>
+      <p style="margin:8px 0 0"><button class="fv-btn ghost" id="ft-tpl" type="button">Download a blank template</button></p></div>
+      <div id="ft-prev" style="margin-top:14px"></div></div>`;
+  paintCats();
+  host.querySelector('#ft-addcat').onclick = async () => {
+    const inp = host.querySelector('#ft-newcat'), name = inp.value.trim();
+    if (!name) return;
+    if (FT.cats.some(c => c.name.toLowerCase() === name.toLowerCase())) { toast('Already exists'); return; }
+    const { error } = await sb.from('fuel_categories').insert({ name });
+    if (error) { toast(error.message); return; }
+    inp.value = ''; await ftLoadCats(true); paintCats();
+  };
+  host.querySelector('#ft-tpl').onclick = () => downloadCSV('fuel-template.csv', 'Month,Employee ID,Rider Name,Regional Lead / HOD,Region,City,Category,Approved Litres,Amount,KM,Visits\n2026-10,10846,Example Rider,Example Lead,North,Lahore,Home Sampling,40,12000,900,300\n');
+  host.querySelector('#ft-file').onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const prev = host.querySelector('#ft-prev');
+    prev.innerHTML = '<div class="mono">Reading file…</div>';
+    try {
+      await ensureXLSX();
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellDates: true });
+      const sheets = wb.SheetNames.map(n => ({ name: n, grid: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '', raw: true, blankrows: false }) })).filter(s => s.grid.length > 1);
+      if (!sheets.length) throw new Error('The file has no data.');
+      sheets.forEach(s => { s.det = ftDetect(s.grid); s.use = s.det.score >= 3; });
+      if (!sheets.some(s => s.use)) sheets[0].use = true;
+      FT.up = { file: f.name, sheets, mapHeads: null };
+      const first = sheets.find(s => s.use);
+      FT.up.mapHeads = {};
+      Object.entries(first.det.map).forEach(([k, i]) => { FT.up.mapHeads[k] = String(first.grid[first.det.row][i]); });
+      ftPaintMapping(prev);
+    } catch (err) { console.error(err); prev.innerHTML = `<div class="fv-note" style="color:#c0532f">${escapeHtml(err.message || String(err))}</div>`; }
+  };
+}
+// builds the aggregated rows from the chosen sheets and mapping
+function ftBuild(opt) {
+  const up = FT.up, agg = new Map(); let skipped = 0, read = 0;
+  up.sheets.filter(s => s.use).forEach(s => {
+    const heads = (s.grid[s.det.row] || []).map(h => String(h));
+    const idx = {};
+    Object.keys(FT_FIELDS).forEach(k => { const h = up.mapHeads[k]; if (h === undefined || h === '') return; const i = heads.findIndex(x => x === h); if (i >= 0) idx[k] = i; else if (s.det.map[k] !== undefined && up.mapHeads[k] === undefined) idx[k] = s.det.map[k]; });
+    s.grid.slice(s.det.row + 1).forEach(row => {
+      const g = (k) => idx[k] === undefined ? '' : row[idx[k]];
+      const name = String(g('name') ?? '').trim(), emp = String(g('emp') ?? '').trim();
+      const nums = ['lit', 'amt', 'km', 'vis'].map(k => ftNum(g(k)));
+      if (!name && !emp && !nums.some(x => x)) return;
+      if (/^(grand\s*)?total/i.test(name) || /^(grand\s*)?total/i.test(emp)) return;
+      read++;
+      const month = idx.month !== undefined ? (ftParseMonth(g('month')) || opt.month) : opt.month;
+      if (!month) { skipped++; return; }
+      let cat = idx.cat !== undefined ? String(g('cat') ?? '').trim() : '';
+      if (!cat) cat = opt.sheetCat ? s.name : (opt.defCat || 'Uncategorised');
+      const found = FT.cats.find(c => c.name.toLowerCase() === cat.toLowerCase());
+      if (found) cat = found.name;
+      const rec = { month, employee_id: emp, rider_name: name, lead_name: String(g('lead') ?? '').trim(), region_name: String(g('region') ?? '').trim(), city: String(g('city') ?? '').trim(), category: cat, approved_liters: 0, amount: 0, km: 0, visits: 0 };
+      const key = [month, emp.toLowerCase(), name.toLowerCase(), cat.toLowerCase()].join('|');
+      let a = agg.get(key); if (!a) { a = rec; agg.set(key, a); }
+      a.approved_liters += nums[0]; a.amount += nums[1]; a.km += nums[2]; a.visits += Math.round(nums[3]);
+      ['lead_name', 'region_name', 'city'].forEach(k => { if (!a[k] && rec[k]) a[k] = rec[k]; });
+    });
+  });
+  return { rows: [...agg.values()], skipped, read };
+}
+function ftPaintMapping(prev) {
+  const up = FT.up, first = up.sheets.find(s => s.use) || up.sheets[0];
+  const heads = (first.grid[first.det.row] || []).map(h => String(h)).filter(h => h.trim());
+  const hasCat = !!up.mapHeads.cat;
+  prev.innerHTML = `<p style="margin:0 0 8px"><strong>${escapeHtml(up.file)}</strong>${up.sheets.length > 1 ? ` — sheets: ${up.sheets.map((s, i) => `<label style="margin-right:10px"><input type="checkbox" data-sh="${i}" ${s.use ? 'checked' : ''}> ${escapeHtml(s.name)}</label>`).join('')}` : ''}</p>
+    <div class="ft-map">${Object.keys(FT_LABEL).map(k => `<div class="fv-fg"><label>${FT_LABEL[k]}</label><select data-mp="${k}"><option value="">— not in file —</option>${heads.map(h => fvOpt(h, h, up.mapHeads[k])).join('')}</select></div>`).join('')}</div>
+    <div class="fv-fbar" style="margin-top:12px" id="ft-opts">
+      <div class="fv-fg" data-o="month"><label>Month of this file (used when there is no Month column)</label><input type="month" id="ft-mo"></div>
+      <div class="fv-fg" data-o="cat"><label>Category when the file has none</label><select id="ft-dc">${(FT.cats.length ? FT.cats : [{ name: 'Uncategorised' }]).map(c => fvOpt(c.name, c.name, '')).join('')}</select></div>
+      ${up.sheets.length > 1 ? `<label class="fv-note" data-o="cat"><input type="checkbox" id="ft-sc"> Use each sheet's name as the category</label>` : ''}
+      <div class="fv-fg"><label>If these months already exist</label><select id="ft-mode"><option value="replace">Replace those months (recommended)</option><option value="add">Add on top</option></select></div></div>
+    <div id="ft-sum" style="margin-top:12px"></div>`;
+  const refresh = () => {
+    const opt = { month: prev.querySelector('#ft-mo').value ? prev.querySelector('#ft-mo').value + '-01' : '', defCat: prev.querySelector('#ft-dc').value, sheetCat: !!(prev.querySelector('#ft-sc') || {}).checked };
+    prev.querySelector('[data-o="month"]').style.display = up.mapHeads.month ? 'none' : '';
+    prev.querySelectorAll('[data-o="cat"]').forEach(x => x.style.display = up.mapHeads.cat ? 'none' : '');
+    const r = ftBuild(opt), sum = prev.querySelector('#ft-sum');
+    const monthSet = [...new Set(r.rows.map(x => x.month))].sort();
+    const catSet = new Map(); r.rows.forEach(x => catSet.set(x.category, (catSet.get(x.category) || 0) + 1));
+    const tot = ftSum(r.rows.map(x => ({ approved_liters: x.approved_liters, amount: x.amount, km: x.km, visits: x.visits })));
+    const ok = r.rows.length > 0;
+    sum.innerHTML = `<div class="fv-stats"><div class="fv-stat"><div class="n">${r.rows.length}</div><div class="l">Rows to save</div></div><div class="fv-stat"><div class="n">${monthSet.length}</div><div class="l">Month(s)</div></div>
+      <div class="fv-stat"><div class="n">${ftFmt(tot.amount)}</div><div class="l">Amount</div></div><div class="fv-stat"><div class="n">${ftFmt(tot.liters, 1)}</div><div class="l">Litres</div></div><div class="fv-stat"><div class="n">${ftFmt(tot.km)}</div><div class="l">KM</div></div><div class="fv-stat"><div class="n">${ftFmt(tot.visits)}</div><div class="l">Visits</div></div></div>
+      <p class="fv-note">Months: ${monthSet.map(ftMonthLabel).join(', ') || '–'}</p>
+      <p style="margin:4px 0">Categories: ${[...catSet.entries()].map(([c, n]) => `<span class="ft-chip ${FT.cats.some(x => x.name.toLowerCase() === c.toLowerCase()) ? '' : 'new'}">${escapeHtml(c)} · ${n}${FT.cats.some(x => x.name.toLowerCase() === c.toLowerCase()) ? '' : ' (new)'}</span>`).join('') || '–'}</p>
+      ${r.skipped ? `<p class="fv-note" style="color:#c0532f">${r.skipped} row(s) have no readable month and will be skipped — pick the month above or fix the Month column.</p>` : ''}
+      ${!up.mapHeads.amt && !up.mapHeads.lit ? '<p class="fv-note" style="color:#c0532f">No Amount or Litres column was found — please choose them above.</p>' : ''}
+      <button class="fv-btn" id="ft-go" type="button" ${ok ? '' : 'disabled'}>Save to Fuel Trends</button> <span id="ft-st" class="fv-note"></span>`;
+    const go = sum.querySelector('#ft-go');
+    go.onclick = async () => {
+      const replace = prev.querySelector('#ft-mode').value === 'replace';
+      if (replace && !confirm(`This will replace any existing data of: ${monthSet.map(ftMonthLabel).join(', ')}. Continue?`)) return;
+      go.disabled = true; const st = sum.querySelector('#ft-st');
+      try {
+        const CH = 400;
+        for (let i = 0; i < r.rows.length; i += CH) {
+          st.textContent = `Saving ${Math.min(i + CH, r.rows.length)} / ${r.rows.length}…`;
+          const chunk = r.rows.slice(i, i + CH);
+          const { error } = await sb.rpc('fuel_import_rows', { p_rows: chunk, p_months: i === 0 && replace ? monthSet : [], p_replace: i === 0 && replace });
+          if (error) throw error;
+        }
+        FT.rows = null; await ftLoadCats(true);
+        toast('Fuel data saved'); navigateTo('ft_trend');
+      } catch (e) { console.error(e); st.textContent = ''; go.disabled = false; toast('Could not save: ' + (e.message || e)); }
+    };
+  };
+  prev.querySelectorAll('[data-mp]').forEach(sel => sel.onchange = () => { if (sel.value) up.mapHeads[sel.dataset.mp] = sel.value; else delete up.mapHeads[sel.dataset.mp]; refresh(); });
+  prev.querySelectorAll('[data-sh]').forEach(cb => cb.onchange = () => { up.sheets[+cb.dataset.sh].use = cb.checked; refresh(); });
+  prev.querySelectorAll('#ft-opts input,#ft-opts select').forEach(el => el.onchange = refresh);
+  refresh();
+}
+const FT_PAGES = {
+  ft_trend:  ['Fuel trends by Regional Lead / HOD, region, city, rider and category.', ftPageTrend],
+  ft_data:   ['Months saved in the system. Delete a month or download everything.', ftPageData],
+  ft_upload: ['Upload this month\'s Excel file, or a compiled file of many months.', ftPageUpload]
+};
 
 async function renderHierarchy(){
   const main = document.getElementById('main-content');
