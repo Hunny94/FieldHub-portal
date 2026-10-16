@@ -255,6 +255,11 @@ function fhInstallSidebar(){
   st.textContent = `
 #fh-sb-pin,#fh-sb-zone{display:none}
 @keyframes fhNavIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+@keyframes fhRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes fhPulse{0%{box-shadow:0 0 0 0 rgba(30,42,110,.4)}100%{box-shadow:0 0 0 9px rgba(30,42,110,0)}}
+#main-content>*{animation:fhRise .28s ease-out backwards}
+.fh-pulse{animation:fhPulse .5s ease-out}
+body.fh-sb-auto #main-content{max-width:none!important}
 @media (min-width:901px){
   #fh-menu-btn{display:inline-flex!important;align-items:center;justify-content:center;width:34px;height:34px;margin-right:10px;border:0;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-size:18px;line-height:1;cursor:pointer;transition:background .2s}
   #fh-menu-btn:hover{background:rgba(255,255,255,.28)}
@@ -270,7 +275,7 @@ function fhInstallSidebar(){
   body.fh-sb-auto.fh-sb-peek .sidebar{transform:none;box-shadow:10px 0 30px rgba(10,15,45,.35)}
   body.fh-sb-auto #fh-sb-zone{display:block;position:fixed;left:0;top:var(--fh-top,60px);bottom:0;width:14px;z-index:59}
 }
-@media (prefers-reduced-motion:reduce){.sidebar,#nav-links .nav-link{transition:none!important;animation:none!important}}`;
+@media (prefers-reduced-motion:reduce){.sidebar,#nav-links .nav-link,#main-content>*,.fh-pulse{transition:none!important;animation:none!important}}`;
   document.head.appendChild(st);
   const side = document.querySelector('.sidebar');
   if (side && !document.getElementById('fh-sb-pin')){
@@ -284,6 +289,8 @@ function fhInstallSidebar(){
   z.addEventListener('mouseenter', open); z.addEventListener('mouseleave', shut);
   if (side){ side.addEventListener('mouseenter', open); side.addEventListener('mouseleave', shut); side.addEventListener('click', (e) => { if (e.target.closest('.nav-link') && document.body.classList.contains('fh-sb-auto')) document.body.classList.remove('fh-sb-peek'); }); }
   window.addEventListener('resize', fhSbTop);
+  // every changed option gets a short pulse (pure CSS, nothing stored)
+  document.addEventListener('change', (e) => { const t = e.target; if (t && t.closest && t.closest('#main-content') && /^(SELECT|INPUT)$/.test(t.tagName)){ t.classList.remove('fh-pulse'); void t.offsetWidth; t.classList.add('fh-pulse'); setTimeout(() => t.classList.remove('fh-pulse'), 600); } }, true);
   fhSbApply(fhSbMode());
   setTimeout(fhSbTop, 600);
 }
@@ -1313,6 +1320,7 @@ async function navigateTo(view){
   if (view === 'fieldvisits') view = 'fv_report';   // old bookmark
   if (location.hash !== '#'+view) history.pushState(null, '', '#'+view);
   state.view = view;
+  const mc0 = document.getElementById('main-content'); if (mc0) mc0.classList.remove('ft-full');
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
   document.getElementById('topbar-actions').innerHTML = '';
@@ -6868,9 +6876,9 @@ async function renderFieldVisits(view) {
 // month / rider / category is saved (table fuel_records). The file itself is never stored.
 // Charts use Plotly (loaded from the internet only when this page is opened — nothing is stored).
 // =====================================================================================
-const FT = { rows: null, cats: null, f: { month: [], cat: [], lead: [], region: [], location: [], city: [], rider: [] }, g: 'lead', m: 'amount', tab: 'overview', ctype: 'bar', up: null, fOpen: true };
-const FT_GROUPS = [['lead', 'Regional Lead / HOD'], ['region', 'Region'], ['location', 'Location / Centre'], ['city', 'City'], ['rider', 'Rider / ID'], ['cat', 'Category']];
-const FT_METRICS = [['amount', 'Amount (Rs)'], ['liters', 'Approved litres'], ['km', 'KM'], ['visits', 'Home sampling visits'], ['cpk', 'Cost per KM'], ['cpv', 'Cost per visit'], ['kmpl', 'KM per litre']];
+const FT = { rows: null, cats: null, set: null, qm: '', f: { month: [], cat: [], lead: [], region: [], location: [], city: [], rider: [] }, g: 'region', m: 'amount', tab: 'summary', up: null };
+const FT_GROUPS = [['lead', 'Regional Lead / HOD'], ['region', 'Region'], ['location', 'Location / Centre'], ['city', 'City'], ['rider', 'Team member / ID'], ['cat', 'Category']];
+const FT_METRICS = [['amount', 'Amount (Rs)'], ['liters', 'Litres'], ['km', 'KM'], ['visits', 'Home Sampling visits'], ['lpv', 'Litres per visit']];
 const FT_MC = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', km: '#2a8fa8', cpk: '#c0532f', cpv: '#8a4fb3', kmpl: '#6b7390' };
 const FT_COLORS = ['#1E2A6E', '#2e7d4f', '#d9962b', '#c0532f', '#2a8fa8', '#8a4fb3', '#b5457a', '#5b8c2a', '#a0672b', '#4a5fb5', '#9aa1bb'];
 const FT_PLOTLY = 'https://cdn.jsdelivr.net/npm/plotly.js-basic-dist-min@2.35.2/plotly-basic.min.js';
@@ -6895,7 +6903,7 @@ const FT_FIELDS = {
   km:       ['km', 'kms', 'kilometers', 'kilometres', 'distance', 'totalkm', 'approvedkm', 'kmapproved', 'kmfinal', 'finalkm', 'kmtravelled', 'runningkm'],
   vis:      ['visits', 'cases', 'casevisits', 'homesamplingvisits', 'homevisits', 'homesamplingcases', 'noofvisits', 'totalvisits', 'visitcount', 'noofcases', 'hscases']
 };
-const FT_LABEL = { month: 'Month', emp: 'Employee ID', name: 'Rider name', lead: 'Regional Lead / HOD', region: 'Region', location: 'Location / Centre', city: 'City', cat: 'Category', lit: 'Approved litres', amt: 'Amount', km: 'KM', vis: 'Home sampling visits' };
+const FT_LABEL = { month: 'Month', emp: 'Employee ID', name: 'Team member name', lead: 'Regional Lead / HOD', region: 'Region', location: 'Location / Centre', city: 'City', cat: 'Category', lit: 'Approved litres', amt: 'Amount', km: 'KM', vis: 'Home sampling visits' };
 const FT_ORDER_EXACT = ['month', 'emp', 'name', 'lead', 'region', 'location', 'city', 'cat', 'lit', 'amt', 'km', 'vis'];
 const FT_ORDER_LOOSE = ['lit', 'amt', 'km', 'vis', 'lead', 'region', 'location', 'city', 'cat', 'month', 'emp', 'name'];
 
@@ -7013,7 +7021,7 @@ function ftEnsureStyle() {
 .ft-dd-n{font-size:11px;color:#8b92ad;padding:4px 6px}
 .ft-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px;margin-bottom:10px}
 .ft-kpi{background:#fff;border:1px solid rgba(30,42,110,.07);border-radius:10px;padding:8px 11px;box-shadow:0 1px 2px rgba(30,42,110,.05);min-width:0}
-.ft-kpi .n{font-size:17px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums;color:#1c2b6e;white-space:nowrap}.ft-kpi .l{font-size:10.5px;color:#7a819c;margin-top:2px}
+.ft-kpi .n{font-size:18px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums;color:#1c2b6e;white-space:nowrap}.ft-kpi .l{font-size:10.5px;color:#7a819c;margin-top:2px}
 .ft-tabs{display:flex;gap:4px;margin-bottom:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;border-bottom:1px solid #e3e7f3}
 .ft-tabs button{border:0;background:none;padding:8px 14px;font:inherit;font-size:12.5px;font-weight:600;color:#6b7390;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s}
 .ft-tabs button:hover{color:#1E2A6E}.ft-tabs button.on{color:#1E2A6E;border-bottom-color:#1E2A6E}
@@ -7050,6 +7058,18 @@ function ftEnsureStyle() {
 .ft-sec{background:#fff;border:1px solid rgba(30,42,110,.07);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(30,42,110,.05)}
 .ft-sec h4{margin:0 0 6px;color:#1c2b6e;font-size:13px}
 .ft-tog{display:none}
+#main-content.ft-full{max-width:none!important}
+.ft-act .ft-btns{display:flex;gap:6px}.ft-act label{font-size:10px;color:#c0532f;min-height:12px;font-weight:600}
+#ft-apply{height:30px;padding:0 18px;background:#1E2A6E;color:#fff;border-color:#1E2A6E;font-weight:700}#ft-apply.dirty{animation:ftPulse 1.1s ease-in-out infinite}
+#ft-clear{height:30px;padding:0 12px}
+@keyframes ftPulse{0%,100%{box-shadow:0 0 0 0 rgba(30,42,110,.55)}50%{box-shadow:0 0 0 7px rgba(30,42,110,0)}}
+.ft-scope{margin:0 0 8px;font-size:11.5px;color:#6b7390;display:flex;flex-wrap:wrap;align-items:center;gap:2px}.ft-scope .ft-chip{padding:2px 10px;margin:2px 3px 2px 4px;background:#e8ecfa;color:#1c2b6e;font-weight:600}
+.ft-badge{display:inline-block;border:1px solid;border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:600;background:#fff}
+.ft-cn{font-size:11.5px;margin:0 0 2px;font-weight:600}
+.ft-qh{display:flex;align-items:flex-end;gap:12px;justify-content:space-between;flex-wrap:wrap}.ft-qh h4{margin:0}
+.ft-d{display:block;font-size:10.5px;font-weight:600;margin-top:2px}
+.ft-ch2{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:6px 0 8px;font-weight:700;color:#1c2b6e;font-size:14px}.ft-ch2 small{font-weight:500;color:#6b7390}
+.ft-pop{animation:fhRise .3s ease-out backwards}
 @media(max-width:700px){
   .ft-bar{grid-template-columns:1fr 1fr}.ft-bar.shut{display:none}
   .ft-tog{display:inline-flex;margin-bottom:8px;border:1px solid #dfe3ee;background:#fff;border-radius:8px;padding:7px 12px;font:inherit;font-size:12px;color:#1E2A6E;font-weight:600}
@@ -7071,6 +7091,7 @@ function ftDrop(host, o) {
   host.innerHTML = `<label>${escapeHtml(o.label)}</label><button type="button" class="ft-dd-b"><span class="t"></span><i>▾</i></button><div class="ft-dd-p"><input type="search" placeholder="Search…" autocomplete="off"><div class="ft-dd-a"></div><div class="ft-dd-l"></div></div>`;
   const btn = host.querySelector('.ft-dd-b'), tx = host.querySelector('.t'), q = host.querySelector('input'), act = host.querySelector('.ft-dd-a'), list = host.querySelector('.ft-dd-l');
   let shown = [];
+  const pulse = () => { btn.classList.remove('fh-pulse'); void btn.offsetWidth; btn.classList.add('fh-pulse'); };
   const none = o.none || (o.multi ? 'All' : '— none —');
   const sel = () => o.multi ? new Set(o.get()) : o.get();
   const label = (v) => { const f = o.options().find(x => x[0] === v); return f ? f[1] : v; };
@@ -7098,8 +7119,8 @@ function ftDrop(host, o) {
     const row = e.target.closest('.ft-opt'); if (!row) return;
     e.preventDefault();
     const x = list._cap[+row.dataset.i]; if (!x) return;
-    if (o.multi) { const s = sel(); s.has(x[0]) ? s.delete(x[0]) : s.add(x[0]); o.set([...s]); paintBtn(); paintList(); }
-    else { o.set(x[0]); paintBtn(); ftCloseDrop(); }
+    if (o.multi) { const s = sel(); s.has(x[0]) ? s.delete(x[0]) : s.add(x[0]); o.set([...s]); paintBtn(); paintList(); pulse(); }
+    else { o.set(x[0]); paintBtn(); ftCloseDrop(); pulse(); }
   };
   act.onclick = (e) => {
     const a = e.target.dataset.a; if (!a) return;
@@ -7125,17 +7146,17 @@ const ftSum = (rows) => rows.reduce((a, r) => { a.liters += r.approved_liters; a
 function ftVal(t, m) {
   switch (m) {
     case 'amount': return t.amount; case 'liters': return t.liters; case 'km': return t.km; case 'visits': return t.visits;
-    case 'cpk': return t.km ? t.amount / t.km : null; case 'cpv': return t.visits ? t.amount / t.visits : null; case 'kmpl': return t.liters ? t.km / t.liters : null;
+    case 'lpv': return t.visits ? t.liters / t.visits : null;
   }
   return 0;
 }
-const ftDec = (m) => (m === 'cpk' || m === 'cpv' || m === 'kmpl') ? 2 : 0;
-const ftIsRatio = (m) => m === 'cpk' || m === 'cpv' || m === 'kmpl';
-const ftMetricName = (m) => (FT_METRICS.find(x => x[0] === m) || [])[1] || m;
+const ftDec = (m) => m === 'lpv' ? 2 : 0;
+const ftMetricName = (m) => ({ amount: 'Amount (Rs)', liters: 'Litres', km: 'KM', visits: 'Visits', lpv: 'Litres per visit' })[m] || m;
+const isHS = (c) => /home\s*sampling/i.test(c || '');
 const FT_FKEY = { month: 'm', cat: 'category', lead: 'lead_name', region: 'region_name', location: 'location', city: 'city', rider: 'rk' };
 const ftKey = (r, g) => (r[FT_FKEY[g]] || (g === 'cat' ? 'Uncategorised' : '(none)'));
-function ftFilter(rows, skip) {
-  const f = FT.f;
+function ftFilter(rows, skip, f) {
+  f = f || FT.f;
   return rows.filter(r => Object.keys(FT_FKEY).every(k => k === skip || !f[k].length || f[k].includes(r[FT_FKEY[k]] || (k === 'cat' ? 'Uncategorised' : ''))));
 }
 function ftByMonth(rows, ms) {
@@ -7150,15 +7171,38 @@ function ftMonthsRange(all) {
   while (y < ey || (y === ey && m <= em)) { out.push(`${y}-${String(m).padStart(2, '0')}`); m++; if (m > 12) { m = 1; y++; } }
   return out;
 }
+// limits (max litres per month per category) and Rs/KM per month
+async function ftLoadSettings(force) {
+  if (FT.set && !force) return FT.set;
+  const set = { limits: new Map(), rates: new Map(), ok: true };
+  try {
+    const [a, b] = await Promise.all([sb.from('fuel_limits').select('category,max_liters'), sb.from('fuel_rates').select('month,rs_per_km')]);
+    if (a.error || b.error) throw (a.error || b.error);
+    (a.data || []).forEach(x => set.limits.set(String(x.category).toLowerCase(), +x.max_liters));
+    (b.data || []).forEach(x => set.rates.set(String(x.month).slice(0, 7), +x.rs_per_km));
+  } catch (e) { set.ok = false; set.err = e.message || String(e); }
+  FT.set = set; return set;
+}
+const ftLimit = (c) => (FT.set && FT.set.limits.get(String(c || '').toLowerCase())) || null;
+const ftNationwide = () => !['lead', 'region', 'location', 'city', 'rider'].some(k => FT.f[k].length);
+// ▲ / ▼ text against the limit
+function ftStatus(l, lim) {
+  if (!lim) return { t: 'No limit set', c: '#8b92ad', up: null };
+  const d = l - lim, p = Math.abs(d) / lim * 100;
+  if (d > 0) return { t: `▲ ${ftFmt(d)} L over the limit (+${p.toFixed(1)}%)`, c: '#c0532f', up: true, d };
+  if (d < 0) return { t: `▼ ${ftFmt(-d)} L under the limit (−${p.toFixed(1)}%)`, c: '#2e7d4f', up: false, d };
+  return { t: 'Exactly at the limit', c: '#d9962b', up: null, d };
+}
 
 // ---------------- charts (Plotly) ----------------
 const ftTouch = () => ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const ftReduced = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function ftLayout(extra, narrow) {
   return Object.assign({
-    font: { family: 'Inter,system-ui,sans-serif', size: 11, color: '#46506e' }, margin: { l: 46, r: 12, t: 26, b: 30 },
-    paper_bgcolor: '#ffffff', plot_bgcolor: '#ffffff', hovermode: 'x unified', hoverlabel: { font: { size: 11 }, namelength: -1 },
-    legend: { orientation: 'h', y: -0.18, x: 0, font: { size: 10 } },
-    xaxis: { type: 'category', gridcolor: '#eef0f7', automargin: true, tickfont: { size: narrow ? 9 : 10 } },
+    font: { family: 'Inter,system-ui,sans-serif', size: 11, color: '#46506e' }, margin: { l: 50, r: 14, t: 26, b: 34 },
+    paper_bgcolor: '#ffffff', plot_bgcolor: '#ffffff', hovermode: 'closest', hoverlabel: { font: { size: 12 }, namelength: -1 },
+    legend: { orientation: 'h', y: -0.2, x: 0, font: { size: 11 } },
+    xaxis: { type: 'category', gridcolor: '#eef0f7', automargin: true, tickfont: { size: narrow ? 9 : 11 } },
     yaxis: { gridcolor: '#eef0f7', zeroline: false, automargin: true, separatethousands: true, tickfont: { size: 10 } },
     dragmode: ftTouch() ? false : 'zoom'
   }, extra || {});
@@ -7166,7 +7210,7 @@ function ftLayout(extra, narrow) {
 async function ftSavePng(gd, name, title) {
   try {
     const w = Math.max(900, gd.clientWidth * 1.6), h = Math.max(520, gd.clientHeight * 1.6);
-    await Plotly.relayout(gd, { 'title.text': title, 'title.font.size': 15, 'margin.t': 46 });
+    await Plotly.relayout(gd, { 'title.text': title, 'title.font.size': 15, 'margin.t': 50 });
     const url = await Plotly.toImage(gd, { format: 'png', width: w, height: h, scale: 2 });
     await Plotly.relayout(gd, { 'title.text': '', 'margin.t': 26 });
     const blob = await (await fetch(url)).blob(), file = new File([blob], name + '.png', { type: 'image/png' });
@@ -7178,76 +7222,108 @@ async function ftSavePng(gd, name, title) {
     setTimeout(() => URL.revokeObjectURL(a.href), 1500);
   } catch (e) { if (e && e.name === 'AbortError') return; console.error(e); toast('Could not create the image'); }
 }
-// specs: [{ id, title, sub, traces, layout, csv, h, wide }]
-async function ftRenderCharts(host, specs, opt = {}) {
+const ftZeroK = (t) => t.orientation === 'h' ? 'x' : 'y';
+// specs: [{ id, title, sub, traces, layout, csv, h, wide }]. Bars/lines grow in with a short animation (skipped when the phone asks for reduced motion).
+async function ftRenderCharts(host, specs) {
   await ftEnsurePlotly();
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
-  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div><div class="ft-plot" style="height:${s.h || 250}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
+  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
-  const plots = host.querySelectorAll('.ft-plot');
+  const plots = host.querySelectorAll('.ft-plot'), anim = !ftReduced();
   specs.forEach((s, i) => {
     const d = plots[i], narrow = d.clientWidth < 460;
     const cfg = { responsive: true, displaylogo: false, displayModeBar: true, scrollZoom: false,
       modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
       modeBarButtonsToAdd: [{ name: 'png', title: 'Download as PNG', icon: Plotly.Icons.camera, click: (gd) => ftSavePng(gd, s.id, s.title) }] };
-    Plotly.react(d, s.traces, ftLayout(typeof s.layout === 'function' ? s.layout(narrow) : s.layout, narrow), cfg);
+    const lay = ftLayout(typeof s.layout === 'function' ? s.layout(narrow) : s.layout, narrow);
+    const start = anim ? s.traces.map(t => { const k = ftZeroK(t), c = Object.assign({}, t); if (Array.isArray(t[k])) c[k] = t[k].map(v => v == null ? null : 0); return c; }) : s.traces;
+    Plotly.react(d, start, lay, cfg).then(() => {
+      if (!anim) return;
+      return Plotly.animate(d, { data: s.traces.map(t => ({ [ftZeroK(t)]: t[ftZeroK(t)] })), traces: s.traces.map((_, k) => k) }, { transition: { duration: 650, easing: 'cubic-out' }, frame: { duration: 650, redraw: false } });
+    }).catch(() => { try { Plotly.react(d, s.traces, lay, cfg); } catch (e) {} });
     host.querySelector(`[data-png="${i}"]`).onclick = () => ftSavePng(d, s.id, s.title);
     host.querySelector(`[data-csv="${i}"]`).onclick = () => { if (!s.csv || !s.csv.length) { toast('Nothing to download'); return; } downloadCSV(s.id + '.csv', toCSV(s.csv)); };
   });
 }
-const ftHover = (m) => `%{y:,.${ftDec(m)}f}<extra>%{fullData.name}</extra>`;
-function ftMetricTrace(ms, tots, m, extra) {
-  const y = tots.map(t => { const v = ftVal(t, m); return v == null ? null : Math.round(v * 100) / 100; });
-  const bar = !ftIsRatio(m);
-  return Object.assign({ x: ms.map(ftMonthLabel), y, name: ftMetricName(m), type: bar ? 'bar' : 'scatter', mode: bar ? undefined : 'lines+markers', connectgaps: false, hovertemplate: ftHover(m),
-    marker: bar ? { color: FT_MC[m] } : { color: FT_MC[m], size: 7 }, line: bar ? undefined : { color: FT_MC[m], width: 2.5 } }, extra || {});
+// ---- chart building blocks: every bar and point shows its number ----
+const ftTF = (n) => ({ size: n > 10 ? 9 : 11, color: '#2b3350' });
+const ftRng = (arr, extra) => [0, Math.max(1, ...arr.filter(v => v != null), extra || 0) * 1.22];
+function ftBar(ms, vals, name, color, d, colors) {
+  return { type: 'bar', x: ms.map(ftMonthLabel), y: vals, name, text: vals.map(v => v == null ? '' : ftFmt(v, d || 0)), textposition: 'outside', cliponaxis: false, textfont: ftTF(ms.length),
+    marker: { color: colors || color }, hovertemplate: `%{x}<br><b>%{y:,.${d || 0}f}</b><extra>${name}</extra>` };
 }
-// the full set for one selection: a combined chart + one chart per measure
-function ftSpecsFor(rows, ms, tag, title) {
-  const tots = ftByMonth(rows, ms), L = ms.map(ftMonthLabel);
-  const csv = (cols) => ms.map((m, i) => { const o = { Month: ftMonthLabel(m) }; cols.forEach(c => { const v = ftVal(tots[i], c); o[ftMetricName(c)] = v == null ? '' : Math.round(v * 100) / 100; }); return o; });
+function ftLine(ms, vals, name, color, d) {
+  return { type: 'scatter', mode: 'lines+markers+text', x: ms.map(ftMonthLabel), y: vals, name, text: vals.map(v => v == null ? '' : ftFmt(v, d || 0)), textposition: 'top center', cliponaxis: false, textfont: ftTF(ms.length), connectgaps: false,
+    marker: { color, size: 8 }, line: { color, width: 3 }, hovertemplate: `%{x}<br><b>%{y:,.${d || 0}f}</b><extra>${name}</extra>` };
+}
+const ftLimShape = (lim, yref) => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref, y0: lim, y1: lim, line: { color: '#c0532f', width: 2, dash: 'dash' } });
+const ftLimNote = (lim, yref) => ({ xref: 'paper', x: 1, xanchor: 'right', yref, y: lim, yanchor: 'bottom', text: `Limit ${ftFmt(lim)} L`, showarrow: false, font: { color: '#c0532f', size: 11 } });
+function ftCsvMonths(ms, tots, cols) { return ms.map((m, i) => { const o = { Month: ftMonthLabel(m) }; cols.forEach(c => { const v = ftVal(tots[i], c); o[ftMetricName(c)] = v == null ? '' : Math.round(v * 100) / 100; }); return o; }); }
+const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3' };
+
+// one category: a combined chart (one panel per measure, same months underneath) + one chart per measure
+function ftCatSpecs(rows, ms, cat, tag) {
+  const hs = isHS(cat), tots = ftByMonth(rows, ms), nat = ftNationwide(), lim = nat ? ftLimit(cat) : null;
+  const A = tots.map(t => Math.round(t.amount)), Lt = tots.map(t => Math.round(t.liters * 10) / 10), V = tots.map(t => t.visits), P = tots.map(t => t.visits ? Math.round(t.liters / t.visits * 100) / 100 : null);
+  const lcols = lim ? Lt.map(v => v > lim ? '#c0532f' : '#2e7d4f') : null;
+  const panels = [{ k: 'amount', t: 'Amount (Rs)', v: A, d: 0 }, { k: 'liters', t: lim ? `Litres — red bars are above the ${ftFmt(lim)} L limit` : 'Litres', v: Lt, d: 0 }];
+  if (hs) panels.push({ k: 'visits', t: 'Visits', v: V, d: 0 }, { k: 'lpv', t: 'Litres per visit', v: P, d: 2 });
+  const n = panels.length, gap = 0.1, h = (1 - gap * (n - 1)) / n, csvCols = hs ? ['amount', 'liters', 'km', 'visits', 'lpv'] : ['amount', 'liters', 'km'];
+  const traces = panels.map((p, i) => { const t = p.k === 'lpv' ? ftLine(ms, p.v, p.t, FT_C.lpv, 2) : ftBar(ms, p.v, ftMetricName(p.k), FT_C[p.k], 0, p.k === 'liters' && lcols ? lcols : null); t.yaxis = i ? 'y' + (i + 1) : 'y'; t.showlegend = false; return t; });
   const comb = {
-    id: `${tag}-combined`, title: `${title}: amount, litres & visits`, sub: 'bars = amount · lines = litres, visits', wide: true, h: 330,
-    traces: [
-      ftMetricTrace(ms, tots, 'amount', { yaxis: 'y' }),
-      ftMetricTrace(ms, tots, 'liters', { type: 'scatter', mode: 'lines+markers', yaxis: 'y2', marker: { color: FT_MC.liters, size: 7 }, line: { color: FT_MC.liters, width: 2.5 }, hovertemplate: ftHover('liters') }),
-      ftMetricTrace(ms, tots, 'visits', { type: 'scatter', mode: 'lines+markers', yaxis: 'y3', marker: { color: FT_MC.visits, size: 7 }, line: { color: FT_MC.visits, width: 2.5, dash: 'dot' }, hovertemplate: ftHover('visits') })
-    ],
-    layout: (narrow) => ({ margin: { l: 50, r: 10, t: 26, b: 40 }, xaxis: { type: 'category', gridcolor: '#eef0f7', automargin: true, domain: [0, narrow ? 0.8 : 0.9], tickfont: { size: narrow ? 9 : 10 } },
-      yaxis: { title: { text: 'Amount (Rs)', font: { size: 10, color: FT_MC.amount } }, gridcolor: '#eef0f7', zeroline: false, separatethousands: true, tickfont: { size: 10 } },
-      yaxis2: { title: { text: 'Litres', font: { size: 10, color: FT_MC.liters } }, overlaying: 'y', side: 'right', showgrid: false, zeroline: false, tickfont: { size: 10, color: FT_MC.liters }, rangemode: 'tozero' },
-      yaxis3: { title: { text: 'Visits', font: { size: 10, color: FT_MC.visits } }, overlaying: 'y', side: 'right', anchor: 'free', position: narrow ? 0.97 : 0.985, showgrid: false, zeroline: false, tickfont: { size: 10, color: FT_MC.visits }, rangemode: 'tozero' },
-      legend: { orientation: 'h', y: -0.2, x: 0, font: { size: 10 } } }),
-    csv: csv(['amount', 'liters', 'visits', 'km', 'cpk', 'cpv', 'kmpl'])
+    id: `${tag}-combined`, title: `${cat} — all together`, sub: `${n} panels, same months`, wide: true, h: 190 * n + 70, traces,
+    layout: (narrow) => {
+      const L = { margin: { l: 56, r: 14, t: 24, b: 40 }, hovermode: 'closest', showlegend: false, shapes: [], annotations: [], xaxis: { type: 'category', anchor: n > 1 ? 'y' + n : 'y', gridcolor: '#eef0f7', automargin: true, tickfont: { size: narrow ? 9 : 11 } } };
+      panels.forEach((p, i) => { const top = 1 - i * (h + gap), name = i ? 'yaxis' + (i + 1) : 'yaxis', yref = i ? 'y' + (i + 1) : 'y';
+        L[name] = { domain: [top - h, top], range: ftRng(p.v, p.k === 'liters' ? lim : 0), gridcolor: '#eef0f7', zeroline: false, separatethousands: true, tickfont: { size: 10 }, automargin: true };
+        L.annotations.push({ xref: 'paper', yref: 'paper', x: 0, y: top, xanchor: 'left', yanchor: 'bottom', text: `<b>${p.t}</b>`, showarrow: false, font: { size: 12, color: '#1c2b6e' } });
+        if (p.k === 'liters' && lim) { L.shapes.push(ftLimShape(lim, yref)); L.annotations.push(ftLimNote(lim, yref)); } });
+      return L;
+    }, csv: ftCsvMonths(ms, tots, csvCols)
   };
-  const one = (m, h) => ({ id: `${tag}-${m}`, title: ftMetricName(m), sub: '', h: h || 230, traces: [ftMetricTrace(ms, tots, m)], layout: { showlegend: false, margin: { l: 46, r: 10, t: 26, b: 30 } }, csv: csv([m]) });
-  return [comb, one('amount'), one('liters'), one('visits'), one('km'), one('cpk'), one('kmpl'), one('cpv')].map(s => (s.traces[0].x = L, s));
+  const one = (k, title, vals, d, extra) => {
+    const t = k === 'lpv' ? ftLine(ms, vals, title, FT_C[k], d) : ftBar(ms, vals, title, FT_C[k], d, extra && extra.colors);
+    return { id: `${tag}-${k}`, title: `${cat} — ${title}`, sub: '', h: 270, traces: [t], note: extra && extra.note, noteColor: extra && extra.noteColor,
+      layout: { showlegend: false, hovermode: 'closest', yaxis: { range: ftRng(vals, extra && extra.lim), gridcolor: '#eef0f7', zeroline: false, separatethousands: true, automargin: true, tickfont: { size: 10 } },
+        shapes: extra && extra.lim ? [ftLimShape(extra.lim, 'y')] : [], annotations: extra && extra.lim ? [ftLimNote(extra.lim, 'y')] : [] }, csv: ftCsvMonths(ms, tots, [k]) };
+  };
+  const out = [comb, one('amount', 'Amount (Rs)', A, 0), one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
+  if (hs) out.push(one('visits', 'Visits', V, 0), one('lpv', 'Litres per visit', P, 2));
+  return out;
 }
-function ftGroupSpecs(rows, ms, g, m, ctype, topN = 8) {
-  const L = ms.map(ftMonthLabel), gm = new Map();
-  rows.forEach(r => { const k = ftKey(r, g); let o = gm.get(k); if (!o) gm.set(k, o = { k, by: new Map(), t: { liters: 0, amount: 0, km: 0, visits: 0 } });
-    let t = o.by.get(r.m); if (!t) o.by.set(r.m, t = { liters: 0, amount: 0, km: 0, visits: 0 });
-    [t, o.t].forEach(x => { x.liters += r.approved_liters; x.amount += r.amount; x.km += r.km; x.visits += r.visits; }); });
-  const groups = [...gm.values()].sort((a, b) => (ftVal(b.t, m) || 0) - (ftVal(a.t, m) || 0) || b.t.amount - a.t.amount);
-  const gname = FT_GROUPS.find(x => x[0] === g)[1], mname = ftMetricName(m), d = ftDec(m);
-  const top = groups.slice(0, topN), rest = groups.slice(topN);
-  const line = ftIsRatio(m) || ctype === 'line';
-  const traces = top.map((o, i) => ({ x: L, y: ms.map(x => { const v = o.by.has(x) ? ftVal(o.by.get(x), m) : null; return v == null ? null : Math.round(v * 100) / 100; }), name: o.k.length > 34 ? o.k.slice(0, 33) + '…' : o.k,
-    type: line ? 'scatter' : 'bar', mode: line ? 'lines+markers' : undefined, connectgaps: false, marker: { color: FT_COLORS[i % FT_COLORS.length], size: 6 }, line: { width: 2.2, color: FT_COLORS[i % FT_COLORS.length] }, hovertemplate: `%{y:,.${d}f}<extra>%{fullData.name}</extra>` }));
-  if (rest.length && !ftIsRatio(m)) {
-    const agg = ms.map(x => { const t = { liters: 0, amount: 0, km: 0, visits: 0 }; rest.forEach(o => { const z = o.by.get(x); if (z) { t.liters += z.liters; t.amount += z.amount; t.km += z.km; t.visits += z.visits; } }); return Math.round(ftVal(t, m) * 100) / 100; });
-    traces.push({ x: L, y: agg, name: `Others (${rest.length})`, type: line ? 'scatter' : 'bar', mode: line ? 'lines+markers' : undefined, marker: { color: '#c3c8dc', size: 6 }, line: { width: 2, color: '#c3c8dc' }, hovertemplate: `%{y:,.${d}f}<extra>%{fullData.name}</extra>` });
-  }
-  const csvTrend = groups.map(o => { const r = { [gname]: o.k }; ms.forEach(x => { const v = o.by.has(x) ? ftVal(o.by.get(x), m) : null; r[ftMonthLabel(x)] = v == null ? '' : Math.round(v * 100) / 100; }); return r; });
-  const rk = groups.slice(0, 20), nm = (s) => s.length > 30 ? s.slice(0, 29) + '…' : s;
-  return [
-    { id: `${g}-${m}-trend`, title: `${mname} by month — top ${top.length} ${gname}`, sub: ftIsRatio(m) || ctype === 'line' ? 'lines' : 'stacked', wide: true, h: 340, traces, layout: { barmode: 'stack', legend: { orientation: 'h', y: -0.2, x: 0, font: { size: 10 } }, margin: { l: 50, r: 10, t: 26, b: 40 } }, csv: csvTrend },
-    { id: `${g}-${m}-ranking`, title: `Ranking — ${mname} (total for the selection)`, sub: `top ${rk.length} of ${groups.length}`, wide: true, h: Math.max(220, rk.length * 26 + 50),
-      traces: [{ type: 'bar', orientation: 'h', y: rk.map(o => nm(o.k)).reverse(), x: rk.map(o => Math.round((ftVal(o.t, m) || 0) * 100) / 100).reverse(), text: rk.map(o => ftFmt(ftVal(o.t, m) || 0, d)).reverse(), textposition: 'outside', cliponaxis: false, customdata: rk.map(o => o.k).reverse(),
-        marker: { color: FT_MC[m] || '#1E2A6E' }, hovertemplate: '%{customdata}<br>%{x:,.' + d + 'f}<extra></extra>' }],
-      layout: { hovermode: 'closest', showlegend: false, margin: { l: 150, r: 60, t: 26, b: 28 }, xaxis: { gridcolor: '#eef0f7', separatethousands: true }, yaxis: { type: 'category', automargin: true, tickfont: { size: 10 } } },
-      csv: groups.map(o => ({ [gname]: o.k, 'Approved litres': Math.round(o.t.liters * 100) / 100, Amount: Math.round(o.t.amount), KM: Math.round(o.t.km), 'Cost per KM': o.t.km ? Math.round(o.t.amount / o.t.km * 100) / 100 : '', 'Home sampling visits': o.t.visits, 'Cost per visit': o.t.visits ? Math.round(o.t.amount / o.t.visits * 100) / 100 : '' })) }
-  ];
+// several categories: stacked by category, with the total written on top
+function ftOverallSpecs(rows, ms, cats) {
+  const L = ms.map(ftMonthLabel), out = [];
+  const mk = (m, only) => {
+    const list = only ? cats.filter(isHS) : cats, tots = ms.map(() => 0), traces = [];
+    list.forEach((c, i) => {
+      const t = ftByMonth(rows.filter(r => (r.category || 'Uncategorised') === c), ms), vals = t.map(x => Math.round(ftVal(x, m) * 10) / 10);
+      vals.forEach((v, j) => tots[j] += v);
+      traces.push({ type: 'bar', x: L, y: vals, name: c, marker: { color: FT_COLORS[i % FT_COLORS.length] }, hovertemplate: `%{x}<br>${c}: <b>%{y:,.0f}</b><extra></extra>` });
+    });
+    traces.push({ type: 'scatter', mode: 'text', x: L, y: tots, text: tots.map(v => ftFmt(v)), textposition: 'top center', textfont: ftTF(ms.length), showlegend: false, hoverinfo: 'skip', cliponaxis: false });
+    return { id: `all-${m}`, title: `${ftMetricName(m)} by month${only ? ' — Home Sampling' : ' — by category'}`, sub: only ? '' : 'stacked, total on top', wide: true, h: 320, traces,
+      layout: { barmode: 'stack', hovermode: 'closest', yaxis: { range: ftRng(tots), gridcolor: '#eef0f7', zeroline: false, separatethousands: true, automargin: true, tickfont: { size: 10 } }, margin: { l: 56, r: 14, t: 26, b: 56 } },
+      csv: ms.map((x, j) => { const o = { Month: L[j] }; traces.slice(0, -1).forEach(t => o[t.name] = t.y[j]); o.Total = tots[j]; return o; }) };
+  };
+  out.push(mk('amount'), mk('liters'));
+  if (cats.some(isHS)) out.push(mk('visits', true));
+  return out;
+}
+// ranking: who / which region used how much (total of the chosen months), numbers on every bar
+function ftRankSpecs(rows, ms, g) {
+  const gname = FT_GROUPS.find(x => x[0] === g)[1], gm = new Map();
+  rows.forEach(r => { const k = ftKey(r, g); let o = gm.get(k); if (!o) gm.set(k, o = { k, t: { liters: 0, amount: 0, km: 0, visits: 0 } }); o.t.liters += r.approved_liters; o.t.amount += r.amount; o.t.km += r.km; o.t.visits += r.visits; });
+  const groups = [...gm.values()], hasV = groups.some(o => o.t.visits > 0), nm = (s) => s.length > 28 ? s.slice(0, 27) + '…' : s;
+  const mk = (m) => {
+    const gl = groups.filter(o => ftVal(o.t, m) != null && (m !== 'visits' || o.t.visits > 0)).sort((a, b) => ftVal(b.t, m) - ftVal(a.t, m)), top = gl.slice(0, 15), d = ftDec(m);
+    return { id: `rank-${g}-${m}`, title: `${ftMetricName(m)} — ${gname}`, sub: `top ${top.length} of ${gl.length}`, h: Math.max(240, top.length * 30 + 60),
+      traces: [{ type: 'bar', orientation: 'h', y: top.map(o => nm(o.k)).reverse(), x: top.map(o => Math.round(ftVal(o.t, m) * 100) / 100).reverse(), text: top.map(o => ftFmt(ftVal(o.t, m), d)).reverse(), textposition: 'outside', cliponaxis: false, textfont: { size: 11, color: '#2b3350' },
+        customdata: top.map(o => o.k).reverse(), marker: { color: FT_C[m] }, hovertemplate: `%{customdata}<br><b>%{x:,.${d}f}</b><extra></extra>` }],
+      layout: (narrow) => ({ hovermode: 'closest', showlegend: false, margin: { l: narrow ? 100 : 150, r: 64, t: 12, b: 28 }, xaxis: { range: ftRng(top.map(o => ftVal(o.t, m))), gridcolor: '#eef0f7', separatethousands: true }, yaxis: { type: 'category', automargin: true, tickfont: { size: 10 } } }),
+      csv: gl.map(o => ({ [gname]: o.k, Litres: Math.round(o.t.liters * 100) / 100, 'Amount (Rs)': Math.round(o.t.amount), KM: Math.round(o.t.km), Visits: o.t.visits })) };
+  };
+  return [mk('amount'), mk('liters')].concat(hasV ? [mk('visits'), mk('lpv')] : []);
 }
 
 // ---------------- pages ----------------
@@ -7255,113 +7331,182 @@ async function renderFuelTrends(view) {
   fvEnsureStyle(); ftEnsureStyle();
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
+  main.classList.add('ft-full');
   if (!isSuperAdmin() || !FT_PAGES[view]) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
   main.innerHTML = `<div class="ft-root"><p class="fv-sub" style="margin:0 0 8px">${escapeHtml(FT_PAGES[view][0])}</p><div id="ft-body"><div class="mono">Loading…</div></div></div>`;
   try { await FT_PAGES[view][1](document.getElementById('ft-body')); }
   catch (e) {
     console.error(e);
-    document.getElementById('ft-body').innerHTML = `<div class="empty-state"><p>Could not load this page: ${escapeHtml(e?.message || String(e))}</p><p class="fv-note">If this is the first time, please make sure <strong>migration_36.sql</strong> and <strong>migration_37.sql</strong> have been run in Supabase.</p></div>`;
+    document.getElementById('ft-body').innerHTML = `<div class="empty-state"><p>Could not load this page: ${escapeHtml(e?.message || String(e))}</p><p class="fv-note">If this is the first time, please make sure <strong>migration_36.sql</strong>, <strong>migration_37.sql</strong> and <strong>migration_38.sql</strong> have been run in Supabase.</p></div>`;
   }
 }
+// numbers count up quickly (skipped for reduced motion)
+function ftCount(el, to, fmt) {
+  if (ftReduced() || !isFinite(to)) { el.textContent = fmt(to); return; }
+  const t0 = performance.now(), dur = 450;
+  const step = (t) => { const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); el.textContent = fmt(to * e); if (p < 1) requestAnimationFrame(step); else el.textContent = fmt(to); };
+  requestAnimationFrame(step);
+}
+const ftPop = (el) => { el.classList.remove('ft-pop'); void el.offsetWidth; el.classList.add('ft-pop'); };
 
 async function ftPageTrend(host) {
-  const all = await ftLoadAll();
+  const all = await ftLoadAll(); await ftLoadSettings(); await ftLoadCats().catch(() => {});
   if (!all.length) { host.innerHTML = `<div class="empty-state"><p>No fuel data yet.</p><button class="fv-btn" type="button" onclick="navigateTo('ft_upload')">Upload the first Excel file</button></div>`; return; }
+  if (!['summary', 'compare', 'rates', 'table'].includes(FT.tab)) FT.tab = 'summary';
   const allMs = ftMonthsRange(all);
-  const FILT = [['month', 'Month'], ['cat', 'Category'], ['lead', 'Regional Lead / HOD'], ['region', 'Region'], ['location', 'Location / Centre'], ['city', 'City'], ['rider', 'Rider / ID']];
+  const FILT = [['month', 'Month'], ['cat', 'Category'], ['region', 'Region'], ['lead', 'Regional Lead / HOD'], ['location', 'Location / Centre'], ['city', 'City'], ['rider', 'Team member / ID']];
+  const D = {}; Object.keys(FT.f).forEach(k => D[k] = FT.f[k].slice());
   const optsFor = (k) => {
     if (k === 'month') return allMs.slice().reverse().map(m => [m, ftMonthLabel(m)]);
-    const set = new Set(); ftFilter(all, k).forEach(r => { const v = r[FT_FKEY[k]] || (k === 'cat' ? 'Uncategorised' : ''); if (v) set.add(v); });
+    const set = new Set(); ftFilter(all, k, D).forEach(r => { const v = r[FT_FKEY[k]] || (k === 'cat' ? 'Uncategorised' : ''); if (v) set.add(v); });
     return [...set].sort((a, b) => a.localeCompare(b)).map(v => [v, v]);
   };
   host.innerHTML = `<button class="ft-tog" type="button" id="ft-tog">Filters ▾</button>
-    <div class="ft-bar" id="ft-bar">${FILT.map(([k]) => `<div class="fv-fg" data-d="${k}"></div>`).join('')}<div class="fv-fg" data-d="g"></div><div class="fv-fg" data-d="m"></div>
-      <div class="fv-fg ft-clr"><label>&nbsp;</label><button class="fv-btn ghost" data-reset type="button" style="height:30px;padding:0 12px">Clear filters</button></div></div>
-    <div class="ft-kpis" id="ft-kpis"></div>
-    <div class="ft-tabs" id="ft-tabs">${[['overview', 'Overview'], ['group', 'By group'], ['cats', 'Per category'], ['table', 'Table & download']].map(([k, l]) => `<button type="button" data-t="${k}" class="${FT.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="ft-bar" id="ft-bar">${FILT.map(([k]) => `<div class="fv-fg" data-d="${k}"></div>`).join('')}
+      <div class="fv-fg ft-act"><label id="ft-dirty">&nbsp;</label><div class="ft-btns"><button class="fv-btn" id="ft-apply" type="button">Apply</button><button class="fv-btn ghost" id="ft-clear" type="button">Clear</button></div></div></div>
+    <div id="ft-scope" class="ft-scope"></div><div class="ft-kpis" id="ft-kpis"></div>
+    <div class="ft-tabs" id="ft-tabs">${[['summary', 'Summary'], ['compare', 'Compare'], ['rates', 'Rs/KM & limits'], ['table', 'Table & download']].map(([k, l]) => `<button type="button" data-t="${k}" class="${FT.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div id="ft-res"></div>`;
   const drops = [];
-  FILT.forEach(([k, l]) => drops.push(ftDrop(host.querySelector(`[data-d="${k}"]`), { label: l, multi: true, options: () => optsFor(k), get: () => FT.f[k], set: (v) => { FT.f[k] = v; draw(); } })));
-  drops.push(ftDrop(host.querySelector('[data-d="g"]'), { label: 'View as', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'lead'; draw(); }, none: 'Regional Lead / HOD' }));
-  drops.push(ftDrop(host.querySelector('[data-d="m"]'), { label: 'Measure', options: () => FT_METRICS, get: () => FT.m, set: (v) => { FT.m = v || 'amount'; draw(); }, none: 'Amount (Rs)' }));
-  const res = host.querySelector('#ft-res'), kp = host.querySelector('#ft-kpis'), bar = host.querySelector('#ft-bar');
-  const tog = host.querySelector('#ft-tog');
-  const togTxt = () => { const n = Object.values(FT.f).filter(v => v.length).length; tog.textContent = (bar.classList.contains('shut') ? 'Filters ▸' : 'Filters ▾') + (n ? ` · ${n} active` : ''); };
+  const dirty = () => JSON.stringify(D) !== JSON.stringify(FT.f);
+  const paintDirty = () => { const d = dirty(); host.querySelector('#ft-apply').classList.toggle('dirty', d); host.querySelector('#ft-dirty').textContent = d ? 'Press Apply to update ↓' : ' '; };
+  FILT.forEach(([k, l]) => drops.push(ftDrop(host.querySelector(`[data-d="${k}"]`), { label: l, multi: true, options: () => optsFor(k), get: () => D[k], set: (v) => { D[k] = v; drops.forEach(x => x.refresh()); paintDirty(); } })));
+  const res = host.querySelector('#ft-res'), kp = host.querySelector('#ft-kpis'), bar = host.querySelector('#ft-bar'), tog = host.querySelector('#ft-tog'), scope = host.querySelector('#ft-scope');
+  const togTxt = () => { const n = Object.values(FT.f).filter(v => v.length).length; tog.textContent = (bar.classList.contains('shut') ? 'Filters ▸' : 'Filters ▾') + (n ? ` · ${n} applied` : ''); };
   if (window.innerWidth <= 700) bar.classList.add('shut');
   tog.onclick = () => { bar.classList.toggle('shut'); togTxt(); };
-  host.querySelector('[data-reset]').onclick = () => { Object.keys(FT.f).forEach(k => FT.f[k] = []); draw(); };
+  host.querySelector('#ft-apply').onclick = () => { Object.keys(D).forEach(k => FT.f[k] = D[k].slice()); paintDirty(); if (window.innerWidth <= 700) bar.classList.add('shut'); draw(true); };
+  host.querySelector('#ft-clear').onclick = () => { Object.keys(D).forEach(k => { D[k] = []; FT.f[k] = []; }); drops.forEach(x => x.refresh()); paintDirty(); draw(true); };
   host.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { FT.tab = b.dataset.t; host.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b)); drawBody(); });
   let rows = [], ms = [], seq = 0;
-  const monthsSel = () => FT.f.month.length ? allMs.filter(m => FT.f.month.includes(m)) : allMs;
-  function matrixRows() {
-    const gm = new Map();
-    rows.forEach(r => { const k = ftKey(r, FT.g); let o = gm.get(k); if (!o) gm.set(k, o = { k, by: new Map(), t: { liters: 0, amount: 0, km: 0, visits: 0 } });
-      let t = o.by.get(r.m); if (!t) o.by.set(r.m, t = { liters: 0, amount: 0, km: 0, visits: 0 });
-      [t, o.t].forEach(x => { x.liters += r.approved_liters; x.amount += r.amount; x.km += r.km; x.visits += r.visits; }); });
-    return [...gm.values()].sort((a, b) => (ftVal(b.t, FT.m) || 0) - (ftVal(a.t, FT.m) || 0));
-  }
-  function draw() {
-    drops.forEach(d => d.refresh()); togTxt();
-    rows = ftFilter(all, null); ms = monthsSel().filter(m => true);
-    const tot = ftSum(rows), K = (n, l, full) => `<div class="ft-kpi" title="${escapeHtml(full || '')}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-    kp.innerHTML = K(ftCompact(tot.amount), 'Amount (Rs)', ftFmt(tot.amount)) + K(ftCompact(tot.liters), 'Approved litres', ftFmt(tot.liters, 1)) + K(ftCompact(tot.km), 'KM', ftFmt(tot.km)) +
-      K(tot.km ? ftFmt(tot.amount / tot.km, 2) : '–', 'Cost per KM (Rs)') + K(tot.liters ? ftFmt(tot.km / tot.liters, 2) : '–', 'KM per litre') + K(ftCompact(tot.visits), 'HS visits', ftFmt(tot.visits)) + K(tot.visits ? ftFmt(tot.amount / tot.visits, 1) : '–', 'Cost per visit (Rs)') + K(ftFmt(new Set(rows.map(r => r.rk)).size), 'Riders');
+  function draw(animate) {
+    drops.forEach(d => d.refresh()); togTxt(); paintDirty();
+    rows = ftFilter(all, null); ms = FT.f.month.length ? allMs.filter(m => FT.f.month.includes(m)) : allMs;
+    const f = FT.f, parts = [f.cat.length ? f.cat.join(', ') : 'All categories', f.region.length ? f.region.join(', ') : 'All regions'];
+    ['lead', 'location', 'city', 'rider'].forEach(k => { if (f[k].length) parts.push(f[k].length > 2 ? `${f[k].length} ${FT_GROUPS.find(x => x[0] === k)[1]}` : f[k].join(', ')); });
+    parts.push(f.month.length ? `${f.month.length} month${f.month.length > 1 ? 's' : ''}` : `${ftMonthLabel(allMs[0])} – ${ftMonthLabel(allMs[allMs.length - 1])}`);
+    scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')}`;
+    const tot = ftSum(rows), hs = rows.some(r => isHS(r.category) && r.visits > 0), hsT = ftSum(rows.filter(r => isHS(r.category)));
+    const rate = [...ms].reverse().find(m => FT.set && FT.set.rates.has(m));
+    const tiles = [[tot.amount, 'Amount (Rs)', ftCompact], [tot.liters, 'Litres', ftCompact], [tot.km, 'KM', ftCompact]];
+    if (hs) tiles.push([hsT.visits, 'Home Sampling visits', ftCompact], [hsT.visits ? hsT.liters / hsT.visits : 0, 'Litres per visit', (v) => ftFmt(v, 2)]);
+    tiles.push([new Set(rows.map(r => r.rk)).size, 'Team members', (v) => ftFmt(v)]);
+    if (rate) tiles.push([FT.set.rates.get(rate), `Rs/KM (${ftMonthLabel(rate)})`, (v) => ftFmt(v, 2)]);
+    kp.innerHTML = tiles.map(([v, l]) => `<div class="ft-kpi"><div class="n">0</div><div class="l">${l}</div></div>`).join('');
+    kp.querySelectorAll('.ft-kpi').forEach((el, i) => { const [v, , fm] = tiles[i]; el.title = fm === ftCompact ? ftFmt(v, 1) : ''; ftCount(el.querySelector('.n'), v, fm); });
     drawBody();
   }
   async function drawBody() {
-    const my = ++seq;
+    const my = ++seq; ftPop(res);
     try {
-      if (!rows.length) { res.classList.remove('ft-charts'); res.innerHTML = '<div class="empty-state"><p>No rows for these filters.</p></div>'; return; }
-      if (FT.tab === 'overview') { res.innerHTML = '<div class="mono">Loading charts…</div>'; await ftRenderCharts(res, ftSpecsFor(rows, ms, 'all', 'Selection')); }
-      else if (FT.tab === 'group') {
-        res.classList.remove('ft-charts');
-        res.innerHTML = `<div class="ft-tb"><span class="fv-note">Showing ${escapeHtml(ftMetricName(FT.m))} by ${escapeHtml(FT_GROUPS.find(x => x[0] === FT.g)[1])} — change "View as" and "Measure" above.</span>${ftIsRatio(FT.m) ? '' : `<button type="button" data-ct="${FT.ctype === 'bar' ? 'line' : 'bar'}">Switch to ${FT.ctype === 'bar' ? 'lines' : 'stacked bars'}</button>`}</div><div id="ft-gc"></div>`;
-        const b = res.querySelector('[data-ct]'); if (b) b.onclick = () => { FT.ctype = b.dataset.ct; drawBody(); };
-        await ftRenderCharts(res.querySelector('#ft-gc'), ftGroupSpecs(rows, ms, FT.g, FT.m, FT.ctype));
-      }
-      else if (FT.tab === 'cats') await drawCats(my);
+      if (!rows.length) { res.classList.remove('ft-charts'); res.innerHTML = '<div class="empty-state"><p>No data for these filters.</p></div>'; return; }
+      res.classList.remove('ft-charts');
+      if (FT.tab === 'summary') await drawSummary(my);
+      else if (FT.tab === 'compare') await drawCompare(my);
+      else if (FT.tab === 'rates') await ftRatesBox(res, all, allMs, () => { FT.set = null; ftLoadSettings().then(() => { draw(); }); });
       else drawTable();
     } catch (e) { console.error(e); res.classList.remove('ft-charts'); res.innerHTML = `<div class="empty-state"><p>${escapeHtml(e.message || e)}</p></div>`; }
   }
-  async function drawCats(my) {
-    res.classList.remove('ft-charts');
+  // ----- Summary: quick month review + charts for the chosen categories -----
+  async function drawSummary(my) {
     const cm = new Map(); rows.forEach(r => { const k = r.category || 'Uncategorised'; let o = cm.get(k); if (!o) cm.set(k, o = []); o.push(r); });
     const cats = [...cm.entries()].sort((a, b) => ftSum(b[1]).amount - ftSum(a[1]).amount);
-    res.innerHTML = `<div class="fv-note" style="margin-bottom:6px">Each category has its own combined chart and individual charts (amount, litres, visits, KM, cost per KM, KM per litre). Use the filters above to narrow by lead, city, rider or month.</div>
-      <div class="ft-card wide" style="margin-bottom:10px"><div class="ft-ch"><h4>Compare categories</h4><small>stacked by category</small></div><div id="ft-cmp" class="ft-charts" style="margin:0"></div></div>
-      ${cats.map(([c, rs], i) => { const t = ftSum(rs); return `<details class="ft-det" data-ci="${i}" ${i === 0 ? 'open' : ''}><summary>${escapeHtml(c)} <small>Rs ${ftCompact(t.amount)} · ${ftFmt(t.liters)} L · ${ftFmt(t.km)} km · ${ftFmt(t.visits)} visits · ${t.km ? ftFmt(t.amount / t.km, 2) : '–'}/km</small></summary><div class="in"><div class="ft-body"></div></div></details>`; }).join('')}`;
-    const cmp = res.querySelector('#ft-cmp');
-    const sp = ['amount', 'liters', 'visits'].map(m => { const s = ftGroupSpecs(rows, ms, 'cat', m, 'bar', 10)[0]; s.wide = false; s.h = 260; s.title = `${ftMetricName(m)} by category`; return s; });
-    await ftRenderCharts(cmp, sp);
-    const fill = async (det) => {
-      const box = det.querySelector('.ft-body'); if (box.dataset.done) return; box.dataset.done = '1';
-      const [c, rs] = cats[+det.dataset.ci];
-      await ftRenderCharts(box, ftSpecsFor(rs, ms, 'cat' + det.dataset.ci + '-' + ftNorm(c).slice(0, 20), c));
-    };
-    res.querySelectorAll('details.ft-det').forEach(det => { det.addEventListener('toggle', () => { if (det.open) fill(det); }); if (det.open) fill(det); });
+    res.innerHTML = `<div class="ft-sec" id="ft-q"></div><div id="ft-over"></div><div id="ft-cs"></div>`;
+    drawQuick(res.querySelector('#ft-q'));
+    const over = res.querySelector('#ft-over'), cs = res.querySelector('#ft-cs');
+    if (cats.length > 1) await ftRenderCharts(over, ftOverallSpecs(rows, ms, cats.map(c => c[0])));
+    const banner = (c) => { const m = [...ms].reverse().find(x => all.some(r => r.m === x && (r.category || 'Uncategorised') === c)); if (!m) return '';
+      const l = ftSum(all.filter(r => r.m === m && (r.category || 'Uncategorised') === c)).liters, s = ftStatus(l, ftLimit(c));
+      return `<span class="ft-badge" style="color:${s.c};border-color:${s.c}">${ftMonthLabel(m)} nationwide: ${ftFmt(l)} L · ${s.t}</span>`; };
+    const hdr = ([c, rs]) => { const t = ftSum(rs); return `<span>${escapeHtml(c)}</span> <small>Rs ${ftCompact(t.amount)} · ${ftFmt(t.liters)} L${isHS(c) ? ` · ${ftFmt(t.visits)} visits` : ''}</small> ${banner(c)}`; };
+    if (cats.length === 1) {
+      cs.innerHTML = `<div class="ft-ch2">${hdr(cats[0])}</div><div class="ft-body"></div>`;
+      await ftRenderCharts(cs.querySelector('.ft-body'), ftCatSpecs(cats[0][1], ms, cats[0][0], 'c0'));
+      return;
+    }
+    cs.innerHTML = `<div class="fv-note" style="margin:4px 0 8px">Open a category to see its own combined chart and separate charts.</div>` + cats.map((c, i) => `<details class="ft-det" data-ci="${i}" ${i === 0 ? 'open' : ''}><summary>${hdr(c)}</summary><div class="in"><div class="ft-body"></div></div></details>`).join('');
+    const fill = async (det) => { const box = det.querySelector('.ft-body'); if (box.dataset.done) return; box.dataset.done = '1'; const [c, rs] = cats[+det.dataset.ci]; await ftRenderCharts(box, ftCatSpecs(rs, ms, c, 'c' + det.dataset.ci)); };
+    cs.querySelectorAll('details.ft-det').forEach(det => { det.addEventListener('toggle', () => { if (det.open) fill(det); }); if (det.open) fill(det); });
   }
+  // ----- quick review of one month -----
+  function drawQuick(box) {
+    const have = ms.filter(m => rows.some(r => r.m === m));
+    if (!FT.qm || !have.includes(FT.qm)) FT.qm = have[have.length - 1];
+    box.innerHTML = `<div class="ft-qh"><h4>Quick month review</h4><div class="fv-fg" id="ft-qm" style="min-width:150px"></div></div><div class="ft-kpis" id="ft-qk" style="margin:8px 0 0"></div>`;
+    const paint = () => {
+      const i = allMs.indexOf(FT.qm), prev = i > 0 ? allMs[i - 1] : null, cur = ftSum(rows.filter(r => r.m === FT.qm)), pv = prev ? ftSum(rows.filter(r => r.m === prev)) : null;
+      const hs = rows.some(r => r.m === FT.qm && isHS(r.category) && r.visits > 0), hc = ftSum(rows.filter(r => r.m === FT.qm && isHS(r.category)));
+      const dl = (a, b) => (!pv || !b) ? '' : `<span class="ft-d" style="color:${a >= b ? '#c0532f' : '#2e7d4f'}">${a >= b ? '▲' : '▼'} ${Math.abs((a - b) / b * 100).toFixed(1)}% vs ${ftMonthLabel(prev).slice(0, 3)}</span>`;
+      const t = [['Amount (Rs)', cur.amount, pv && pv.amount, 0], ['Litres', cur.liters, pv && pv.liters, 0], ['KM', cur.km, pv && pv.km, 0]];
+      const k = box.querySelector('#ft-qk'), rate = FT.set && FT.set.rates.get(FT.qm);
+      k.innerHTML = t.map(([l, v, p, d]) => `<div class="ft-kpi"><div class="n">${ftFmt(v, d)}</div><div class="l">${l}</div>${dl(v, p)}</div>`).join('') +
+        (hs ? `<div class="ft-kpi"><div class="n">${ftFmt(hc.visits)}</div><div class="l">Home Sampling visits</div></div><div class="ft-kpi"><div class="n">${hc.visits ? ftFmt(hc.liters / hc.visits, 2) : '–'}</div><div class="l">Litres per visit</div></div>` : '') +
+        (rate ? `<div class="ft-kpi"><div class="n">${ftFmt(rate, 2)}</div><div class="l">Rs/KM</div></div>` : '');
+      ftPop(k);
+    };
+    ftDrop(box.querySelector('#ft-qm'), { label: 'Month', options: () => have.slice().reverse().map(m => [m, ftMonthLabel(m)]), get: () => FT.qm, set: (v) => { FT.qm = v || FT.qm; paint(); }, none: ftMonthLabel(FT.qm) });
+    paint();
+  }
+  // ----- Compare: ranking -----
+  async function drawCompare(my) {
+    res.innerHTML = `<div class="ft-tb"><div class="fv-fg" id="ft-vg" style="min-width:220px"></div><span class="fv-note" style="flex:1;min-width:200px">Ranking of the ${escapeHtml(FT_GROUPS.find(x => x[0] === FT.g)[1])} — total of the selected months, biggest first. Apply the filters above first (for example one category).</span></div><div id="ft-rk"></div>`;
+    ftDrop(res.querySelector('#ft-vg'), { label: 'Compare by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; drawBody(); }, none: 'Region' });
+    await ftRenderCharts(res.querySelector('#ft-rk'), ftRankSpecs(rows, ms, FT.g));
+  }
+  // ----- Table & download -----
   function drawTable() {
-    res.classList.remove('ft-charts');
-    const groups = matrixRows(), gname = FT_GROUPS.find(x => x[0] === FT.g)[1], d = ftDec(FT.m), tot = ftSum(rows), shown = groups.slice(0, 400);
-    const monthTot = ftByMonth(rows, ms);
-    res.innerHTML = `<div class="ft-tb"><strong style="color:#1c2b6e">${escapeHtml(gname)} × month — ${escapeHtml(ftMetricName(FT.m))}</strong><span style="flex:1"></span>
+    const gname = FT_GROUPS.find(x => x[0] === FT.g)[1], gm = new Map();
+    rows.forEach(r => { const k = ftKey(r, FT.g); let o = gm.get(k); if (!o) gm.set(k, o = { k, by: new Map(), t: { liters: 0, amount: 0, km: 0, visits: 0 } });
+      let t = o.by.get(r.m); if (!t) o.by.set(r.m, t = { liters: 0, amount: 0, km: 0, visits: 0 });
+      [t, o.t].forEach(x => { x.liters += r.approved_liters; x.amount += r.amount; x.km += r.km; x.visits += r.visits; }); });
+    if (!FT.m || !['amount', 'liters', 'km', 'visits', 'lpv'].includes(FT.m)) FT.m = 'amount';
+    const groups = [...gm.values()].sort((a, b) => (ftVal(b.t, FT.m) || 0) - (ftVal(a.t, FT.m) || 0)), d = ftDec(FT.m), tot = ftSum(rows), monthTot = ftByMonth(rows, ms), shown = groups.slice(0, 400);
+    res.innerHTML = `<div class="ft-tb"><div class="fv-fg" id="ft-tg" style="min-width:180px"></div><div class="fv-fg" id="ft-tm" style="min-width:160px"></div><span style="flex:1"></span>
         <button class="fv-btn" data-dl="csv" type="button">Download CSV</button>${fhIsNativeApp() ? '' : '<button class="fv-btn ghost" data-dl="xlsx" type="button">Download Excel</button>'}</div>
-      <div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(gname)}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Rs/KM</th><th class="n">Visits</th></tr></thead><tbody>
-      ${shown.map(g => `<tr><td>${escapeHtml(g.k)}</td>${ms.map(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; return `<td class="n">${v == null ? '–' : ftFmt(v, d)}</td>`; }).join('')}<td class="n">${ftFmt(g.t.liters, 1)}</td><td class="n">${ftFmt(g.t.amount)}</td><td class="n">${ftFmt(g.t.km)}</td><td class="n">${g.t.km ? ftFmt(g.t.amount / g.t.km, 2) : '–'}</td><td class="n">${ftFmt(g.t.visits)}</td></tr>`).join('')}
-      <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.km ? ftFmt(tot.amount / tot.km, 2) : '–'}</td><td class="n">${ftFmt(tot.visits)}</td></tr></tbody></table></div>
+      <div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(gname)}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Visits</th></tr></thead><tbody>
+      ${shown.map(g => `<tr><td>${escapeHtml(g.k)}</td>${ms.map(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; return `<td class="n">${v == null ? '–' : ftFmt(v, d)}</td>`; }).join('')}<td class="n">${ftFmt(g.t.liters, 1)}</td><td class="n">${ftFmt(g.t.amount)}</td><td class="n">${ftFmt(g.t.km)}</td><td class="n">${g.t.visits ? ftFmt(g.t.visits) : '–'}</td></tr>`).join('')}
+      <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.visits ? ftFmt(tot.visits) : '–'}</td></tr></tbody></table></div>
       ${groups.length > shown.length ? `<p class="fv-note">Showing the first ${shown.length} of ${groups.length}. The download contains all of them.</p>` : ''}`;
+    ftDrop(res.querySelector('#ft-tg'), { label: 'Rows by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; drawBody(); }, none: 'Region' });
+    ftDrop(res.querySelector('#ft-tm'), { label: 'Cells show', options: () => FT_METRICS, get: () => FT.m, set: (v) => { FT.m = v || 'amount'; drawBody(); }, none: 'Amount (Rs)' });
     const dl = () => groups.map(g => { const o = { [gname]: g.k }; ms.forEach(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; o[ftMonthLabel(m)] = v == null ? '' : Math.round(v * 100) / 100; });
-      o['Approved litres'] = Math.round(g.t.liters * 100) / 100; o['Amount'] = Math.round(g.t.amount); o['KM'] = Math.round(g.t.km); o['Cost per KM'] = g.t.km ? Math.round(g.t.amount / g.t.km * 100) / 100 : ''; o['Home sampling visits'] = g.t.visits; o['Cost per visit'] = g.t.visits ? Math.round(g.t.amount / g.t.visits * 100) / 100 : ''; return o; });
-    const fname = `fuel-trend-${FT.g}-${FT.m}`;
+      o['Litres'] = Math.round(g.t.liters * 100) / 100; o['Amount'] = Math.round(g.t.amount); o['KM'] = Math.round(g.t.km); o['Visits'] = g.t.visits || ''; return o; });
+    const fname = `fuel-${FT.g}-${FT.m}`;
     res.querySelector('[data-dl="csv"]').onclick = () => { const r = dl(); if (!r.length) { toast('Nothing to download'); return; } downloadCSV(fname + '.csv', toCSV(r)); };
     const x = res.querySelector('[data-dl="xlsx"]');
-    if (x) x.onclick = async () => { const r = dl(); if (!r.length) { toast('Nothing to download'); return; } try { await ensureXLSX(); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r), 'Fuel trend'); XLSX.writeFile(wb, fname + '.xlsx'); } catch (e) { toast(e.message); } };
+    if (x) x.onclick = async () => { const r = dl(); if (!r.length) { toast('Nothing to download'); return; } try { await ensureXLSX(); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r), 'Fuel'); XLSX.writeFile(wb, fname + '.xlsx'); } catch (e) { toast(e.message); } };
   }
   draw();
 }
 
+// ---------------- Rs/KM per month + litres limit per category ----------------
+async function ftRatesBox(box, all, allMs, changed) {
+  const set = await ftLoadSettings();
+  if (!set.ok) { box.innerHTML = `<div class="empty-state"><p>Could not load limits and rates: ${escapeHtml(set.err)}</p><p class="fv-note">Please run <strong>migration_38.sql</strong> in Supabase.</p></div>`; return; }
+  const catSet = new Set(all.map(r => r.category || 'Uncategorised')); (FT.cats || []).forEach(c => catSet.add(c.name)); set.limits.forEach((v, k) => { if (![...catSet].some(c => c.toLowerCase() === k)) catSet.add(k); });
+  const cats = [...catSet].sort((a, b) => a.localeCompare(b)), last12 = allMs.slice(-12);
+  const inp = 'style="height:30px;width:120px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;font:inherit;font-size:12px;box-sizing:border-box"';
+  const cell = (c, m) => { const l = ftSum(all.filter(r => r.m === m && (r.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); if (!l && !lim) return '<td class="n">–</td>'; if (!lim) return `<td class="n">${ftFmt(l)}</td>`;
+    const s = ftStatus(l, lim); return `<td class="n" style="color:${s.c};font-weight:600" title="${escapeHtml(s.t)}">${ftFmt(l)} ${s.up === true ? '▲' : s.up === false ? '▼' : '='}</td>`; };
+  const rateMonths = [...new Set([...allMs, ...set.rates.keys()])].sort().reverse();
+  box.innerHTML = `<div class="ft-sec"><h4>Litres limit per month, by category</h4><p class="fv-note" style="margin:0 0 8px">Set the maximum litres allowed for a category in a month (nationwide). Months above the limit show <b style="color:#c0532f">▲ red</b>, below <b style="color:#2e7d4f">▼ green</b>. The limit also appears as a dashed line on the Summary charts.</p>
+      <div class="ft-wrap" style="max-height:none"><table class="fv-table"><thead><tr><th>Category</th><th>Max litres / month</th><th></th>${last12.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}</tr></thead><tbody>
+      ${cats.map((c, i) => `<tr><td>${escapeHtml(c)}</td><td><input ${inp} type="number" min="0" step="any" data-lim="${i}" value="${ftLimit(c) || ''}" placeholder="e.g. 11000"></td><td><button class="fv-btn" data-sl="${i}" type="button" style="height:28px">Save</button></td>${last12.map(m => cell(c, m)).join('')}</tr>`).join('')}</tbody></table></div>
+      <p style="margin:8px 0 0"><button class="fv-btn ghost" id="ft-dl-lim" type="button">Download limits &amp; status (CSV)</button></p></div>
+    <div class="ft-sec"><h4>Rs/KM by month</h4><p class="fv-note" style="margin:0 0 8px">Type the Rs/KM of any month (also months not uploaded yet) and press Save. Clear the box and Save to remove it.</p>
+      <div class="ft-tb"><input id="ft-nm" type="month" ${inp}><input id="ft-nr" type="number" min="0" step="any" ${inp} placeholder="Rs/KM"><button class="fv-btn" id="ft-add" type="button" style="height:30px">Add / update</button><span style="flex:1"></span><button class="fv-btn ghost" id="ft-dl-rate" type="button">Download Rs/KM (CSV)</button></div>
+      <div class="ft-wrap" style="max-height:340px"><table class="fv-table"><thead><tr><th>Month</th><th>Rs/KM</th><th></th></tr></thead><tbody>
+      ${rateMonths.map(m => `<tr><td>${ftMonthLabel(m)}</td><td><input ${inp} type="number" min="0" step="any" data-rate="${m}" value="${set.rates.has(m) ? set.rates.get(m) : ''}" placeholder="–"></td><td><button class="fv-btn" data-sr="${m}" type="button" style="height:28px">Save</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  const rpc = async (fn, args, msg) => { const { error } = await sb.rpc(fn, args); if (error) { toast('Could not save: ' + error.message); return false; } toast(msg); changed(); return true; };
+  box.querySelectorAll('[data-sl]').forEach(b => b.onclick = () => { const i = +b.dataset.sl, v = box.querySelector(`[data-lim="${i}"]`).value; rpc('fuel_set_limit', { p_cat: cats[i], p_max: v === '' ? null : +v }, 'Limit saved'); });
+  box.querySelectorAll('[data-sr]').forEach(b => b.onclick = () => { const m = b.dataset.sr, v = box.querySelector(`[data-rate="${m}"]`).value; rpc('fuel_set_rate', { p_month: m + '-01', p_rate: v === '' ? null : +v }, 'Rs/KM saved'); });
+  box.querySelector('#ft-add').onclick = () => { const m = box.querySelector('#ft-nm').value, v = box.querySelector('#ft-nr').value; if (!m || v === '') { toast('Choose a month and enter the Rs/KM'); return; } rpc('fuel_set_rate', { p_month: m + '-01', p_rate: +v }, 'Rs/KM saved'); };
+  box.querySelector('#ft-dl-rate').onclick = () => { const r = [...set.rates].sort().map(([m, v]) => ({ Month: ftMonthLabel(m), 'Rs/KM': v })); if (!r.length) { toast('No Rs/KM saved yet'); return; } downloadCSV('fuel-rs-per-km.csv', toCSV(r)); };
+  box.querySelector('#ft-dl-lim').onclick = () => { const r = cats.map(c => { const o = { Category: c, 'Max litres per month': ftLimit(c) || '' }; last12.forEach(m => { const l = ftSum(all.filter(x => x.m === m && (x.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); o[ftMonthLabel(m) + ' litres'] = Math.round(l); o[ftMonthLabel(m) + ' status'] = lim && l ? (l > lim ? 'Over by ' + Math.round(l - lim) : l < lim ? 'Under by ' + Math.round(lim - l) : 'At limit') : ''; }); return o; }); downloadCSV('fuel-limits-status.csv', toCSV(r)); };
+}
+
 // ---------------- Saved data: months, edit rows, tools ----------------
-const FT_EDIT_COLS = [['month', 'Month', 'month'], ['employee_id', 'Emp ID'], ['rider_name', 'Rider'], ['lead_name', 'Lead / HOD'], ['region_name', 'Region'], ['location', 'Location'], ['city', 'City'], ['category', 'Category'],
+const FT_EDIT_COLS = [['month', 'Month', 'month'], ['employee_id', 'Emp ID'], ['rider_name', 'Team member'], ['lead_name', 'Lead / HOD'], ['region_name', 'Region'], ['location', 'Location'], ['city', 'City'], ['category', 'Category'],
   ['approved_liters', 'Litres', 'num'], ['amount', 'Amount', 'num'], ['km', 'KM', 'num'], ['visits', 'Visits', 'num']];
 const FTE = { f: { month: [], cat: [], lead: [] }, q: '', page: 0, tab: 'months' };
 async function ftPageData(host) {
@@ -7381,7 +7526,7 @@ function dMonths(body, all, reload) {
     ${list.map(o => `<tr><td>${ftMonthLabel(o.m)}</td><td class="n">${o.n}</td><td class="n">${ftFmt(o.t.liters, 1)}</td><td class="n">${ftFmt(o.t.amount)}</td><td class="n">${ftFmt(o.t.km)}</td><td class="n">${o.t.km ? ftFmt(o.t.amount / o.t.km, 2) : '–'}</td><td class="n">${ftFmt(o.t.visits)}</td><td><button class="fv-btn ghost" data-del="${o.m}" type="button" style="color:#c0532f;height:28px">Delete month</button></td></tr>`).join('') || '<tr><td colspan="8">Nothing uploaded yet.</td></tr>'}</tbody></table></div>`;
   body.querySelector('[data-all]').onclick = () => {
     if (!all.length) { toast('Nothing to download'); return; }
-    downloadCSV('fuel-data-all.csv', toCSV(all.map(r => ({ Month: r.m, 'Employee ID': r.employee_id || '', Rider: r.rider_name || '', 'Regional Lead / HOD': r.lead_name || '', Region: r.region_name || '', Location: r.location || '', City: r.city || '', Category: r.category, 'Approved litres': r.approved_liters, Amount: r.amount, KM: r.km, 'Home sampling visits': r.visits }))));
+    downloadCSV('fuel-data-all.csv', toCSV(all.map(r => ({ Month: r.m, 'Employee ID': r.employee_id || '', 'Team member': r.rider_name || '', 'Regional Lead / HOD': r.lead_name || '', Region: r.region_name || '', Location: r.location || '', City: r.city || '', Category: r.category, 'Approved litres': r.approved_liters, Amount: r.amount, KM: r.km, 'Home sampling visits': r.visits }))));
   };
   body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     const m = b.dataset.del;
@@ -7447,12 +7592,12 @@ function dEdit(body, all, reload) {
   paint();
 }
 function dTools(body, all, reload) {
-  const RF = [['lead_name', 'Regional Lead / HOD'], ['region_name', 'Region'], ['location', 'Location / Centre'], ['city', 'City'], ['category', 'Category'], ['rider_name', 'Rider name']];
+  const RF = [['lead_name', 'Regional Lead / HOD'], ['region_name', 'Region'], ['location', 'Location / Centre'], ['city', 'City'], ['category', 'Category'], ['rider_name', 'Team member name']];
   let field = 'lead_name', old = '';
   body.innerHTML = `<div class="ft-sec"><h4>Fix spelling everywhere</h4><p class="fv-note" style="margin:0 0 8px">Pick a value, type the correct one, and every saved row with it is updated (also merges two spellings into one).</p>
       <div class="ft-map"><div class="fv-fg" data-r="f"></div><div class="fv-fg" data-r="o"></div><div class="fv-fg"><label>Correct value</label><input id="rn-new" style="height:30px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;font:inherit;font-size:12px;box-sizing:border-box;width:100%" placeholder="e.g. Ali Sattar"></div></div>
       <p style="margin:10px 0 0"><button class="fv-btn" id="rn-go" type="button">Rename everywhere</button> <span id="rn-st" class="fv-note"></span></p></div>
-    <div class="ft-sec"><h4>Clean names in saved data</h4><p class="fv-note" style="margin:0 0 8px">Makes "ALI SATTAR", "ali sattar" and "Ali  Sattar" one person shown as <strong>Ali Sattar</strong> (riders &amp; leads), and gives same-spelling regions, cities, locations and categories a single spelling. New uploads are cleaned automatically.</p>
+    <div class="ft-sec"><h4>Clean names in saved data</h4><p class="fv-note" style="margin:0 0 8px">Makes "ALI SATTAR", "ali sattar" and "Ali  Sattar" one person shown as <strong>Ali Sattar</strong> (team members &amp; leads), and gives same-spelling regions, cities, locations and categories a single spelling. New uploads are cleaned automatically.</p>
       <button class="fv-btn" id="cl-go" type="button">Clean saved data now</button> <span id="cl-st" class="fv-note"></span></div>`;
   const vals = () => [...new Set(all.map(r => r[{ lead_name: 'lead_name', region_name: 'region_name', location: 'location', city: 'city', category: 'category', rider_name: 'rider_name' }[field]]).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map(v => [v, v]);
   let dO;
@@ -7504,7 +7649,7 @@ async function ftPageUpload(host) {
     if (error) { toast(error.message); return; }
     inp.value = ''; await ftLoadCats(true); paintCats();
   };
-  host.querySelector('#ft-tpl').onclick = () => downloadCSV('fuel-template.csv', 'Month,Employee ID,Rider Name,Regional Lead / HOD,Region,Location,City,Category,Approved Litres,Amount,KM,Visits\n2026-10,10846,Example Rider,Example Lead,North,DHA Lahore,Lahore,Home Sampling,40,12000,900,300\n');
+  host.querySelector('#ft-tpl').onclick = () => downloadCSV('fuel-template.csv', 'Month,Employee ID,Team Member Name,Regional Lead / HOD,Region,Location,City,Category,Approved Litres,Amount,KM,Visits\n2026-10,10846,Example Team Member,Example Lead,North,DHA Lahore,Lahore,Home Sampling,40,12000,900,300\n');
   host.querySelector('#ft-file').onchange = async (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
