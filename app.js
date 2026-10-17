@@ -71,7 +71,7 @@ const ROLE_LABEL = {
 // Designations (Settings -> Designations): a display title such as "Trainee Rider"
 // that sits ON TOP of one of the real roles. The role (base_role) still decides
 // permissions, navigation, RLS and every role check in the app; the designation
-// only changes the label Team Member see. If a person's role was changed after their
+// only changes the label people see. If a person's role was changed after their
 // designation was set (so they no longer match), we fall back to the role label.
 const DESIGNATION_BASE_ROLES = ['rider','coordinator','regional_poc','team_lead','inventory_coordinator'];
 function designationOf(p){
@@ -531,7 +531,7 @@ window.addEventListener('hashchange', () => {
 
 // ---------------------------------------------------------
 // AUTO SIGN-OUT (website only) + LAST-ACTIVE TRACKING
-//  * The Android app NEVER signs anyone out automatically — Team Member must keep receiving alerts.
+//  * The Android app NEVER signs anyone out automatically — people must keep receiving alerts.
 //  * On the website the Super Admin chooses: off, or after N minutes of inactivity (Settings > Maintenance).
 //  * Every login records "last active" separately for Web and App (visible to the Super Admin in Team).
 // ---------------------------------------------------------
@@ -1185,7 +1185,7 @@ const NAV_LABEL = {
 const NAV_GROUPS = [
   { id: 'g_dash',       label: null,            items: ['dashboard'] },
   { id: 'g_knowledge',  label: 'Knowledgebase', items: ['knowledgebase','resources','releasenotes'] },
-  { id: 'g_Team Member',     label: 'Team Member',        items: ['team','roster','hierarchy'] },
+  { id: 'g_people',     label: 'People',        items: ['team','roster','hierarchy'] },
   { id: 'g_operations', label: 'Operations',    items: ['circulars','tasks','requests','warnings','compliance'] },
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
   { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools'] },
@@ -1252,7 +1252,7 @@ const NAV_ICON_DEFAULT = {
   fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
   fv_checklist:'svg:clipboard', fv_targets:'svg:target',
   ft_trend:'svg:chart', ft_data:'svg:list', ft_upload:'svg:plus', g_fuel:'svg:fuel',
-  g_knowledge:'svg:book', g_Team Member:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
+  g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
 };
 // icon for a menu entry: the Super Admin's choice if there is one ('' = removed), otherwise the built-in default
 function navIconValue(id){
@@ -2766,8 +2766,8 @@ async function renderTeam(){
       if (!ids.length) return;
       const noRegionCount = pending.filter(p=>ids.includes(p.id) && !p.region_id).length;
       const confirmMsg = noRegionCount
-        ? `Approve ${ids.length} Team Member? ${noRegionCount} of them have no region set yet — you'll need to edit those individually afterward to assign a region and add them to Roster.`
-        : `Approve ${ids.length} Team Member? Remember to add each of them to Roster afterward.`;
+        ? `Approve ${ids.length} people? ${noRegionCount} of them have no region set yet — you'll need to edit those individually afterward to assign a region and add them to Roster.`
+        : `Approve ${ids.length} people? Remember to add each of them to Roster afterward.`;
       if (!confirm(confirmMsg)) return;
       const { error } = await sb.from('profiles').update({ status: 'active' }).in('id', ids);
       if (error){ toast('Could not approve: ' + error.message); return; }
@@ -3145,7 +3145,7 @@ async function renderSettings(){
       ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
       ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
     ]},
-    { label: 'Team Member', items: [
+    { label: 'People', items: [
       ['designations','Designations', () => isSuperAdmin()],
     ]},
     { label: 'Regions', items: [
@@ -3966,7 +3966,7 @@ async function renderReports(){
           <option value="circulars">Circulars &amp; Acknowledgments</option>
           <option value="expiry">Expiry Items</option>
           <option value="warnings">Warnings</option>` : ''}
-          ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for internal use)</option>` : ''}
+          ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for salary processing)</option>` : ''}
         </select></div>
         <div></div>
         <div class="form-row"><label>Date range</label><select id="rep-preset">
@@ -4173,7 +4173,7 @@ async function renderDesignationsSettings(body){
   }
   // approved_headcount exists only after migration_26.sql has been run
   const hasHC = (desigs||[]).length > 0 && ('approved_headcount' in desigs[0]);
-  // Team Member counts. Everyone is counted exactly once, in ONE bucket:
+  // People counts. Everyone is counted exactly once, in ONE bucket:
   // Pending -> Pending; otherwise if their latest Roster entry is Resigned/Terminated/
   // Transferred -> that bucket; otherwise Active (login on) or Disabled/Other.
   const [{ data: allProfiles }, { data: allRoster }] = await Promise.all([
@@ -4194,7 +4194,7 @@ async function renderDesignationsSettings(body){
     }
     return p.status === 'active' ? 'active' : 'disabled';
   };
-  // Team Member who never picked a designation count under the designation named after their role
+  // People who never picked a designation count under the designation named after their role
   const defaultDesigForRole = {};
   desigs.forEach(d => {
     if (d.name.trim().toLowerCase() === (ROLE_LABEL[d.base_role]||'').toLowerCase() && !defaultDesigForRole[d.base_role]) defaultDesigForRole[d.base_role] = d.id;
@@ -4206,7 +4206,7 @@ async function renderDesignationsSettings(body){
   };
   const emptyRow = () => ({ total:0, active:0, pending:0, disabled:0, resigned:0, terminated:0, transferred:0 });
   const rowStats = {};
-  const counts = {};   // Team Member who explicitly have this designation saved (used to lock role / block delete)
+  const counts = {};   // people who explicitly have this designation saved (used to lock role / block delete)
   const grandStats = emptyRow();
   (allProfiles||[]).forEach(p => {
     const key = rowKeyOf(p);
@@ -4221,7 +4221,7 @@ async function renderDesignationsSettings(body){
 
   const roleOptionsHtml = (sel) => DESIGNATION_BASE_ROLES.map(r => `<option value="${r}" ${sel===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('');
   body.innerHTML = `
-    <p class="hint" style="margin-bottom:14px;">A designation is the job title Team Member choose at sign-up and see across the portal (e.g. <em>Trainee Rider</em>). Each one <strong>works like</strong> one of the existing roles — that decides its permissions, menus and access, so a Trainee Rider can do exactly what a Rider can. <strong>Disable</strong> hides a designation from new sign-ups without affecting Team Member who already have it. <strong>Delete</strong> is only possible when nobody is counted under it.</p>
+    <p class="hint" style="margin-bottom:14px;">A designation is the job title people choose at sign-up and see across the portal (e.g. <em>Trainee Rider</em>). Each one <strong>works like</strong> one of the existing roles — that decides its permissions, menus and access, so a Trainee Rider can do exactly what a Rider can. <strong>Disable</strong> hides a designation from new sign-ups without affecting people who already have it. <strong>Delete</strong> is only possible when nobody is counted under it.</p>
     <form id="new-desig-form" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
       <input type="text" id="desig-name" placeholder="Designation name, e.g. Trainee Rider" required style="flex:1; min-width:200px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
       <select id="desig-role" title="Works like">${roleOptionsHtml('rider')}</select>
@@ -4229,7 +4229,7 @@ async function renderDesignationsSettings(body){
       <button class="btn small" type="submit">Add</button>
     </form>
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px;">
-      <div class="card stat-card sky" style="padding:12px;"><div class="stat-number">${grandStats.total}</div><div class="stat-label" style="font-size:12px;">Total Team Member</div></div>
+      <div class="card stat-card sky" style="padding:12px;"><div class="stat-number">${grandStats.total}</div><div class="stat-label" style="font-size:12px;">Total People</div></div>
       <div class="card stat-card clay" style="padding:12px;"><div class="stat-number">${grandStats.active}</div><div class="stat-label" style="font-size:12px;">Active</div></div>
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.pending}</div><div class="stat-label" style="font-size:12px;">Pending Approval</div></div>
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.resigned}</div><div class="stat-label" style="font-size:12px;">Resigned</div></div>
@@ -4237,7 +4237,7 @@ async function renderDesignationsSettings(body){
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.transferred}</div><div class="stat-label" style="font-size:12px;">Transferred</div></div>
       <div class="card stat-card amber" style="padding:12px;"><div class="stat-number">${grandStats.disabled}</div><div class="stat-label" style="font-size:12px;">Disabled / Other</div></div>
     </div>
-    <div style="overflow-x:auto;"><table><thead><tr><th>Designation</th><th>Works like</th><th>Approved Headcount</th><th>Team Member</th><th>Active</th><th>Pending</th><th>Disabled / Other</th><th>Resigned</th><th>Terminated</th><th>Transferred</th><th>Status</th><th></th></tr></thead><tbody>
+    <div style="overflow-x:auto;"><table><thead><tr><th>Designation</th><th>Works like</th><th>Approved Headcount</th><th>People</th><th>Active</th><th>Pending</th><th>Disabled / Other</th><th>Resigned</th><th>Terminated</th><th>Transferred</th><th>Status</th><th></th></tr></thead><tbody>
       ${(desigs||[]).map(d => `<tr>
         <td><strong>${escapeHtml(d.name)}</strong></td>
         <td>${ROLE_LABEL[d.base_role]||d.base_role}</td>
@@ -4257,7 +4257,7 @@ async function renderDesignationsSettings(body){
       <tr style="font-weight:700; border-top:2px solid var(--line);"><td>Grand Total</td><td></td><td></td>${statCells(grandStats)}<td colspan="2"></td></tr>
     </tbody></table></div>
     ${hasHC ? '' : '<p class="hint" style="margin-top:10px;">To track an approved headcount per designation, run <strong>migration_26.sql</strong> in Supabase.</p>'}
-    <p class="hint" style="margin-top:10px;">Each person is counted once. <strong>Resigned / Terminated / Transferred</strong> come from their latest Roster entry; <strong>Disabled / Other</strong> are Team Member whose login is off for any other reason. Team Member who never chose a designation are counted under the designation named after their role (e.g. Rider).</p>`;
+    <p class="hint" style="margin-top:10px;">Each person is counted once. <strong>Resigned / Terminated / Transferred</strong> come from their latest Roster entry; <strong>Disabled / Other</strong> are people whose login is off for any other reason. People who never chose a designation are counted under the designation named after their role (e.g. Rider).</p>`;
 
   const refresh = async () => { await loadDesignations(); renderSettings(); };
   const friendly = (err, verb) => (err.code === '23505')
@@ -4289,7 +4289,7 @@ async function renderDesignationsSettings(body){
         <div class="form-row"><label>Name</label><input type="text" id="ed-name" value="${escapeHtml(d.name)}" required></div>
         <div class="form-row"><label>Works like</label>
           <select id="ed-role" ${inUse?'disabled':''}>${roleOptionsHtml(d.base_role)}</select>
-          ${inUse ? `<span class="field-hint">Locked because ${counts[d.id]} ${counts[d.id]===1?'person uses':'Team Member use'} this designation. Create a new designation if you need a different role.</span>` : ''}
+          ${inUse ? `<span class="field-hint">Locked because ${counts[d.id]} ${counts[d.id]===1?'person uses':'people use'} this designation. Create a new designation if you need a different role.</span>` : ''}
         </div>
         ${hasHC ? `<div class="form-row"><label>Approved headcount (optional)</label><input type="number" min="0" step="1" id="ed-hc" value="${d.approved_headcount ?? ''}"><span class="field-hint">Total approved positions for this designation across all regions — used for "Pending Hiring" in Roster. Leave blank if not tracked.</span></div>` : ''}
         <button class="btn-primary" type="submit">Save</button>
@@ -4326,7 +4326,7 @@ async function renderDesignationsSettings(body){
     const d = desigs.find(x => x.id === btn.dataset.deleteDesig);
     const inUseCount = Math.max(counts[d.id]||0, (rowStats[d.id]||{}).total||0);
     if (inUseCount > 0){
-      toast(`Cannot delete "${d.name}" — ${inUseCount} ${inUseCount===1?'person is':'Team Member are'} using it. Disable it instead, or change those Team Member's designation first.`);
+      toast(`Cannot delete "${d.name}" — ${inUseCount} ${inUseCount===1?'person is':'people are'} using it. Disable it instead, or change those people's designation first.`);
       return;
     }
     if (!confirm(`Permanently delete the designation "${d.name}"? This cannot be undone.`)) return;
@@ -4648,7 +4648,7 @@ const GRANTABLE_PERMISSIONS = [
   ['circular_categories_manage', 'Manage Circular Categories'],
   ['circular_push_kb', 'Push a Circular to Knowledge Base'],
   ['warnings_issue_to_coordinator', 'Area Incharge: issue warnings to Coordinators'],
-  ['export_active_employees', 'Download active-employee list (e.g. for internal use only)'],
+  ['export_active_employees', 'Download active-employee list (e.g. for salary processing)'],
   ['tool_bulk_update', 'Bulk-update Tool records'],
   ['roster_bulk_add', 'Roster — Bulk Add'],
   ['roster_bulk_update', 'Roster — Bulk Update'],
@@ -4934,7 +4934,7 @@ const TABLE_FRIENDLY_NAMES = {
   system_settings: "Portal-wide settings (word limits, etc.) — always tiny",
   branding_settings: "Logo / background / favicon settings",
   users: "Supabase's internal login accounts list (not your own data)",
-  refresh_tokens: "Not passwords — small internal tokens that keep Team Member signed in without re-entering their password. Pure technical housekeeping.",
+  refresh_tokens: "Not passwords — small internal tokens that keep people signed in without re-entering their password. Pure technical housekeeping.",
   sessions: "A record of who's currently logged in and from where. Internal housekeeping, not something you manage directly.",
   identities: "Internal Supabase Auth housekeeping — not FieldHub data.",
   audit_log_entries: "Supabase's own internal login audit trail (separate from FieldHub's own Activity Log).",
@@ -5058,8 +5058,8 @@ async function renderMaintenanceSettings(body){
     </div>
     <div class="card">
       <h3>Auto sign-out</h3>
-      <p class="hint">Applies to the <strong>website only</strong>. The <strong>Android app never signs anyone out automatically</strong>, so staff keep receiving alerts. Team Member can still sign out themselves at any time.</p>
-      <div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="maint-session-on" ${sys?.web_auto_signout_enabled === false ? '' : 'checked'}> Sign Team Member out of the website after a period of inactivity</label></div>
+      <p class="hint">Applies to the <strong>website only</strong>. The <strong>Android app never signs anyone out automatically</strong>, so staff keep receiving alerts. People can still sign out themselves at any time.</p>
+      <div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="maint-session-on" ${sys?.web_auto_signout_enabled === false ? '' : 'checked'}> Sign people out of the website after a period of inactivity</label></div>
       <div class="form-row"><label>Minutes of inactivity (1 – 10080)</label><input type="number" id="maint-session-timeout" min="1" max="10080" value="${sys?.session_timeout_minutes ?? 15}"></div>
       <button class="btn" id="maint-session-btn">Save</button>
     </div>
@@ -7914,7 +7914,7 @@ async function renderHierarchy(){
   // A person's real working region(s) come from profile_regions if they
   // have any rows there; the legacy single region_id field is only a
   // fallback for when profile_regions is empty. Checking both with OR
-  // (the previous bug) caused Team Member to show under two regions whenever
+  // (the previous bug) caused people to show under two regions whenever
   // a stale region_id was left over from before they were switched to
   // multi-region assignment.
   const personRegionIds = (p) => {
@@ -8029,7 +8029,7 @@ function tweenRosterStats(initial){
   });
 }
 
-// The normal roster is unchanged (renderRosterMain). Team Member who manage the roster also get an
+// The normal roster is unchanged (renderRosterMain). People who manage the roster also get an
 // "On Job Training" button that opens a separate list of riders still in training.
 async function renderRoster(){
   await renderRosterMain();
@@ -8662,7 +8662,7 @@ async function openOjtModal(row){
 function openBulkRosterModal(){
   openModal(`
     <h2>Bulk add to roster</h2>
-    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off, Hotspot (optional)</strong> — one rider per line. It's fine to also include the rider's Name as an extra column right after Employee ID (it'll be ignored — we already know their name from Employee ID); it's just there because that's usually how Team Member copy from Excel. Works with comma-separated or pasted directly from Excel. Region/Shift names must match existing ones exactly (Settings → Sub-Regions / Shift Types).</p>
+    <p class="hint">Paste rows as: <strong>Employee ID, Region, Sub-Region/City (optional), Shift name, Day Off, Hotspot (optional)</strong> — one rider per line. It's fine to also include the rider's Name as an extra column right after Employee ID (it'll be ignored — we already know their name from Employee ID); it's just there because that's usually how people copy from Excel. Works with comma-separated or pasted directly from Excel. Region/Shift names must match existing ones exactly (Settings → Sub-Regions / Shift Types).</p>
     <form id="bulk-roster-form">
       <textarea id="br-rows" rows="8" placeholder="EMP1001, Lahore, 1, 7:00 AM - 7:00 PM, Sunday, DHA Phase 5
 EMP1002, Ali Khan, Multan, , 8:00 AM - 8:00 PM, Monday"></textarea>
