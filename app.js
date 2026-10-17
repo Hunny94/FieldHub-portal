@@ -7066,6 +7066,21 @@ function ftEnsureStyle() {
 .ft-sec{background:#fff;border:1px solid rgba(30,42,110,.07);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(30,42,110,.05)}
 .ft-sec h4{margin:0 0 6px;color:#1c2b6e;font-size:13px}
 .ft-tog{display:none}
+.ft-sc{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:8px}
+.ft-tile{position:relative;text-align:left;background:#fff;border:1.5px solid rgba(30,42,110,.1);border-radius:12px;padding:10px 12px 8px;cursor:pointer;font:inherit;color:inherit;box-shadow:0 1px 3px rgba(30,42,110,.06);transition:transform .2s,box-shadow .2s,border-color .2s;overflow:hidden;animation:fhRise .35s backwards}
+.ft-tile:before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c);opacity:.85}
+.ft-tile:hover{transform:translateY(-3px);box-shadow:0 8px 20px rgba(30,42,110,.15)}
+.ft-tile.on{border-color:var(--c);box-shadow:0 6px 18px rgba(30,42,110,.16);background:linear-gradient(180deg,#fff,#f7f8fe)}
+.ft-tile .tl{font-size:11px;color:#6b7390;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+.ft-tile .tv{font-size:22px;font-weight:700;color:#1c2b6e;font-variant-numeric:tabular-nums;line-height:1.25}
+.ft-tile .ts{font-size:10.5px;color:#8b92ad;margin-bottom:2px}
+.ft-dp{font-size:11px;font-weight:700;margin-left:4px;vertical-align:middle}
+.ft-sp{display:block;width:100%;height:30px;margin-top:2px;animation:ftReveal .9s .15s ease-out backwards}
+@keyframes ftReveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.ft-vt{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0 6px}
+.ft-all{border:1px solid #dfe3ee;background:#fff;border-radius:999px;padding:5px 14px;font:inherit;font-size:12px;font-weight:600;color:#1E2A6E;cursor:pointer;transition:background .15s,color .15s}
+.ft-all:hover{background:#eef1fb}.ft-all.on{background:#1E2A6E;color:#fff}
+.ft-mt{margin:8px 0 4px}.ft-mt>summary{cursor:pointer;font-weight:600;color:#1E2A6E;font-size:12.5px;padding:6px 2px}
 #main-content.ft-full{max-width:none!important}
 .ft-act .ft-btns{display:flex;gap:6px}.ft-act label{font-size:10px;color:#c0532f;min-height:12px;font-weight:600}
 #ft-apply{height:30px;padding:0 18px;background:#1E2A6E;color:#fff;border-color:#1E2A6E;font-weight:700}#ft-apply.dirty{animation:ftPulse 1.1s ease-in-out infinite}
@@ -7084,8 +7099,9 @@ function ftEnsureStyle() {
   .ft-dd.open .ft-dd-p{position:fixed;left:8px;right:8px;bottom:8px;top:auto;width:auto;min-width:0;max-width:none;box-sizing:border-box;max-height:72vh;z-index:10050;box-shadow:0 -6px 40px rgba(10,15,45,.4)}
   .ft-dd.open .ft-dd-l{max-height:44vh}
   .ft-kpi .n{font-size:15px}.ft-wrap{max-height:60vh}
+  .ft-sc{grid-template-columns:1fr 1fr;gap:8px}.ft-tile .tv{font-size:18px}.ft-tile .ts{font-size:9.5px}
 }
-@media(prefers-reduced-motion:reduce){.ft-root>*,.ft-card,.ft-dd.open .ft-dd-p{animation:none!important}}`;
+@media(prefers-reduced-motion:reduce){.ft-root>*,.ft-card,.ft-tile,.ft-sp,.ft-dd.open .ft-dd-p{animation:none!important}}`;
   document.head.appendChild(s);
 }
 
@@ -7309,7 +7325,45 @@ function ftCatSpecs(rows, ms, cat, tag) {
   };
   const out = [comb, one('amount', 'Amount (Rs)', A, 0), one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
   if (hs) out.push(one('visits', 'Visits', V, 0), one('lpv', 'Litres per visit', P, 2));
+  out.by = { amount: out[1], liters: out[2], visits: out[3], lpv: out[4] };
   return out;
+}
+
+// ---- executive view of one category: tiles (trend + month-on-month) -> tap a tile to see its chart; "All charts" shows them together ----
+function ftSpark(vals, color) {
+  const v = vals.map((x, i) => [i, x]).filter(p => p[1] != null);
+  if (v.length < 2) return '';
+  const mx = Math.max(...v.map(p => p[1])), mn = Math.min(...v.map(p => p[1])), n = vals.length - 1 || 1, W = 100, H = 28;
+  const X = (i) => 2 + (W - 4) * i / n, Y = (y) => mx === mn ? H / 2 : H - 3 - (H - 6) * (y - mn) / (mx - mn);
+  const d = v.map((p, k) => `${k ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(' '), l = v[v.length - 1];
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ft-sp"><path d="${d}" pathLength="1" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${X(l[0]).toFixed(1)}" cy="${Y(l[1]).toFixed(1)}" r="2.6" fill="${color}"/></svg>`;
+}
+async function ftRenderCat(box, rows, ms, cat, tag) {
+  const hs = isHS(cat), tots = ftByMonth(rows, ms), specs = ftCatSpecs(rows, ms, cat, tag);
+  const have = tots.map((t, i) => (t.amount || t.liters || t.visits || t.km) ? i : -1).filter(i => i >= 0), li = have.length ? have[have.length - 1] : -1, pi = have.length > 1 ? have[have.length - 2] : -1;
+  const keys = hs ? ['amount', 'liters', 'visits', 'lpv'] : ['amount', 'liters'], sum = ftSum(rows);
+  const tile = (k) => {
+    const vals = tots.map(t => { const v = ftVal(t, k); return v == null ? null : v; }), d = ftDec(k), cur = li >= 0 ? vals[li] : null, prv = pi >= 0 ? vals[pi] : null;
+    const tot = k === 'lpv' ? (sum.visits ? sum.liters / sum.visits : 0) : ftVal(sum, k), avg = k === 'lpv' ? tot : tot / (have.length || 1);
+    const dl = (cur != null && prv) ? `<span class="ft-dp" style="color:${cur >= prv ? '#c0532f' : '#2e7d4f'}">${cur >= prv ? '▲' : '▼'} ${Math.abs((cur - prv) / prv * 100).toFixed(1)}%</span>` : '';
+    return `<button type="button" class="ft-tile" data-k="${k}" style="--c:${FT_C[k]}"><div class="tl">${ftMetricName(k)}</div><div class="tv">${cur == null ? '–' : ftFmt(cur, d)} ${dl}</div><div class="ts">${li >= 0 ? ftMonthLabel(ms[li]) : ''}${k === 'lpv' ? '' : ` · total ${ftCompact(tot)}`} · avg ${k === 'lpv' ? ftFmt(avg, 2) : ftCompact(avg)}</div>${ftSpark(vals, FT_C[k])}</button>`;
+  };
+  const dl2 = (a, b) => (!b) ? '' : `<span style="color:${a >= b ? '#c0532f' : '#2e7d4f'};font-size:10.5px"> ${a >= b ? '▲' : '▼'}${Math.abs((a - b) / b * 100).toFixed(1)}%</span>`;
+  const tbl = `<details class="ft-mt"><summary>Month-by-month numbers</summary><div class="ft-wrap" style="max-height:280px"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Amount (Rs)</th><th class="n">Litres</th><th class="n">KM</th>${hs ? '<th class="n">Visits</th><th class="n">Litres / visit</th>' : ''}</tr></thead><tbody>${
+    ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td><td class="n">${ftFmt(t.km)}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td><td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}</tr>`; }).join('')
+  }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.amount)}</td><td class="n">${ftFmt(sum.liters)}</td><td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td><td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}</tr></tbody></table></div></details>`;
+  box.innerHTML = `<div class="ft-sc">${keys.map(tile).join('')}</div><div class="ft-vt"><span class="fv-note">Tap a box to see its chart</span><button type="button" class="ft-all" data-all>All charts together</button></div><div class="ft-cv"></div>${tbl}`;
+  const cv = box.querySelector('.ft-cv'), allBtn = box.querySelector('[data-all]');
+  let sel = box._sel || 'amount', all = !!box._all;
+  const show = async () => {
+    box.querySelectorAll('.ft-tile').forEach(t => t.classList.toggle('on', !all && t.dataset.k === sel));
+    allBtn.classList.toggle('on', all); ftPop(cv);
+    if (all) { const sp = keys.map(k => { const c = Object.assign({}, specs.by[k]); c.h = 230; c.wide = false; return c; }); await ftRenderCharts(cv, sp); }
+    else { const c = Object.assign({}, specs.by[sel]); c.h = 310; c.wide = true; await ftRenderCharts(cv, [c]); }
+  };
+  box.querySelectorAll('.ft-tile').forEach(t => t.onclick = () => { sel = t.dataset.k; all = false; box._sel = sel; box._all = false; show(); });
+  allBtn.onclick = () => { all = !all; box._all = all; show(); };
+  await show();
 }
 // several categories: stacked by category, with the total written on top
 function ftOverallSpecs(rows, ms, cats) {
@@ -7441,11 +7495,11 @@ async function ftPageTrend(host) {
     const hdr = ([c, rs]) => { const t = ftSum(rs); return `<span>${escapeHtml(c)}</span> <small>Rs ${ftCompact(t.amount)} · ${ftFmt(t.liters)} L${isHS(c) ? ` · ${ftFmt(t.visits)} visits` : ''}</small> ${banner(c)}`; };
     if (cats.length === 1) {
       cs.innerHTML = `<div class="ft-ch2">${hdr(cats[0])}</div><div class="ft-body"></div>`;
-      await ftRenderCharts(cs.querySelector('.ft-body'), ftCatSpecs(cats[0][1], ms, cats[0][0], 'c0'));
+      await ftRenderCat(cs.querySelector('.ft-body'), cats[0][1], ms, cats[0][0], 'c0');
       return;
     }
     cs.innerHTML = `<div class="fv-note" style="margin:4px 0 8px">Open a category to see its own combined chart and separate charts.</div>` + cats.map((c, i) => `<details class="ft-det" data-ci="${i}" ${i === 0 ? 'open' : ''}><summary>${hdr(c)}</summary><div class="in"><div class="ft-body"></div></div></details>`).join('');
-    const fill = async (det) => { const box = det.querySelector('.ft-body'); if (box.dataset.done) return; box.dataset.done = '1'; const [c, rs] = cats[+det.dataset.ci]; await ftRenderCharts(box, ftCatSpecs(rs, ms, c, 'c' + det.dataset.ci)); };
+    const fill = async (det) => { const box = det.querySelector('.ft-body'); if (box.dataset.done) return; box.dataset.done = '1'; const [c, rs] = cats[+det.dataset.ci]; await ftRenderCat(box, rs, ms, c, 'c' + det.dataset.ci); };
     cs.querySelectorAll('details.ft-det').forEach(det => { det.addEventListener('toggle', () => { if (det.open) fill(det); }); if (det.open) fill(det); });
   }
   // ----- quick review of one month -----
