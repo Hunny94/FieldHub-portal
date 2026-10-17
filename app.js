@@ -3966,7 +3966,7 @@ async function renderReports(){
           <option value="circulars">Circulars &amp; Acknowledgments</option>
           <option value="expiry">Expiry Items</option>
           <option value="warnings">Warnings</option>` : ''}
-          ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for salary processing)</option>` : ''}
+          ${canExportEmployees ? `<option value="active_employees">Active Employees (e.g. for internal use)</option>` : ''}
         </select></div>
         <div></div>
         <div class="form-row"><label>Date range</label><select id="rep-preset">
