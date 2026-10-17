@@ -159,6 +159,7 @@ function fhProgress(on){
 }
 function fhInstallFx(){
   if (document.getElementById('fh-fx')) return;
+  try { fhInstallSort(); } catch (e) { console.warn(e); }
   const st = document.createElement('style');
   st.id = 'fh-fx';
   st.textContent = `
@@ -254,6 +255,70 @@ function fhSbTogglePin(){
   fhSbApply(m);
   if (m === 'pinned') fhSbGo();
 }
+// ---------------------------------------------------------
+// Click-to-sort on every table header (A→Z / Z→A, small→large / large→small), added in code.
+// ---------------------------------------------------------
+function fhInstallSort(){
+  if (window.__fhSort) return; window.__fhSort = true;
+  const st = document.createElement('style');
+  st.textContent = 'th[data-fhs]{cursor:pointer;user-select:none}th[data-fhs]:hover{background:rgba(30,42,110,.07)}th[data-fhs]::after{content:" \\2195";opacity:.3;font-size:.85em}th[data-fhs=asc]::after{content:" \\25B2";opacity:.9}th[data-fhs=desc]::after{content:" \\25BC";opacity:.9}';
+  document.head.appendChild(st);
+  const num = (s) => { const t = s.replace(/[,\s]/g, '').replace(/^(Rs\.?|PKR)/i, '').replace(/[%▲▼]/g, ''); if (!/^[-+]?\d+(\.\d+)?[kKmM]?$/.test(t)) return NaN; let v = parseFloat(t); if (/k$/i.test(t)) v *= 1e3; else if (/m$/i.test(t)) v *= 1e6; return v; };
+  const val = (td) => {
+    const s = (td ? td.textContent : '').trim();
+    if (!s || /^[–—-]$/.test(s)) return null;
+    const n = num(s); if (!isNaN(n)) return { n };
+    if (/^\d{4}-\d{2}-\d{2}/.test(s) || /^\d{1,2}[ -][A-Za-z]{3,9}[ -]\d{4}/.test(s)){ const d = Date.parse(s); if (!isNaN(d)) return { n: d }; }
+    return { s: s.toLowerCase() };
+  };
+  const sortTable = (t, idx, dir) => {
+    const tb = t.tBodies[0], all = [...tb.rows], tot = all.filter(r => r.classList.contains('tot')), rows = all.filter(r => !r.classList.contains('tot'));
+    rows.sort((a, b) => {
+      if (!dir) return a.__o - b.__o;
+      const x = val(a.cells[idx]), y = val(b.cells[idx]);
+      if (!x && !y) return a.__o - b.__o; if (!x) return 1; if (!y) return -1;
+      const c = (x.n != null && y.n != null) ? x.n - y.n : String(x.n != null ? x.n : x.s).localeCompare(String(y.n != null ? y.n : y.s), undefined, { numeric: true, sensitivity: 'base' });
+      return (dir === 'desc' ? -c : c) || a.__o - b.__o;
+    });
+    rows.forEach(r => tb.appendChild(r)); tot.forEach(r => tb.appendChild(r));
+  };
+  const enhance = (t) => {
+    if (t.__fhs || t.hasAttribute('data-nosort') || !t.tHead || !t.tBodies[0] || t.tHead.rows.length !== 1) return;
+    const body = [...t.tBodies[0].rows], hr = t.tHead.rows[0];
+    if (body.length < 2 || [...hr.cells].some(c => c.colSpan > 1) || body.some(r => !r.classList.contains('tot') && (r.cells.length !== hr.cells.length || [...r.cells].some(c => c.colSpan > 1)))) return;
+    t.__fhs = 1; body.forEach((r, i) => { r.__o = i; });
+    [...hr.cells].forEach(th => { if (th.tagName !== 'TH' || !th.textContent.trim() || th.querySelector('input,button')) return; th.dataset.fhs = 'none'; th.title = 'Click to sort — A→Z / small→large, again for Z→A / large→small, again to reset'; });
+  };
+  let tick = 0;
+  const scan = () => { tick = 0; document.querySelectorAll('table').forEach(enhance); };
+  new MutationObserver(() => { if (!tick) tick = setTimeout(scan, 120); }).observe(document.body, { childList: true, subtree: true });
+  document.addEventListener('click', (e) => {
+    const th = e.target.closest && e.target.closest('th[data-fhs]'); if (!th) return;
+    const t = th.closest('table'); if (!t || !t.__fhs) return;
+    const hr = th.parentNode, cur = th.dataset.fhs, next = cur === 'none' ? 'asc' : cur === 'asc' ? 'desc' : 'none';
+    [...hr.cells].forEach(c => { if (c.dataset.fhs) c.dataset.fhs = 'none'; });
+    th.dataset.fhs = next; sortTable(t, [...hr.cells].indexOf(th), next === 'none' ? null : next);
+  });
+  scan();
+}
+// A disabled / removed person is signed out within about a minute, even if they never close the app.
+function fhWatchAccount(){
+  if (window.__fhAcc) return; window.__fhAcc = 1;
+  const check = async () => {
+    if (!state.user || document.hidden) return;
+    try {
+      const { data, error } = await sb.from('profiles').select('status').eq('id', state.user.id).maybeSingle();
+      if (error) return;
+      if (!data || data.status !== 'active'){
+        toast('Your account is disabled. Signing you out…');
+        setTimeout(async () => { try { await sb.auth.signOut(); } catch (_) {} location.reload(); }, 1200);
+      }
+    } catch (_) {}
+  };
+  setInterval(check, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
+
 function fhInstallSidebar(){
   if (document.getElementById('fh-sbcss')) return;
   const st = document.createElement('style'); st.id = 'fh-sbcss';
@@ -470,6 +535,12 @@ async function afterLogin(user){
   if (error || !profile){ toast('Could not load your profile. Try refreshing.'); return; }
   state.profile = profile;
 
+  if (profile.status === 'disabled'){
+    toast('This account is disabled. Please contact your supervisor.');
+    try { await sb.auth.signOut(); } catch (_) {}
+    setTimeout(() => location.reload(), 1800);
+    return;
+  }
   if (profile.status !== 'active'){
     document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('app-shell').style.display = 'none';
@@ -477,6 +548,7 @@ async function afterLogin(user){
     return;
   }
 
+  fhWatchAccount();
   if (profile.must_change_password){
     showForcedPasswordChange();
     return;
@@ -949,7 +1021,7 @@ async function loadReferenceData(skipSystemSettings){
     sb.from('expiry_item_types').select('*').eq('active', true).order('name'),
     sb.from('compliance_item_types').select('*').eq('active', true).order('name'),
     sb.from('profile_regions').select('region_id').eq('profile_id', state.user.id),
-    sb.from('custom_permissions').select('permission_key').eq('profile_id', state.user.id),
+    sb.from('custom_permissions').select('permission_key, expires_at').eq('profile_id', state.user.id),
     skipSystemSettings ? Promise.resolve({ data: state.systemSettings }) : sb.from('system_settings').select('*').eq('id', 1).maybeSingle()
   ]);
   state.warningTypes = wt.data || [];
@@ -958,7 +1030,10 @@ async function loadReferenceData(skipSystemSettings){
   state.myRegionIds = (myRegions.data && myRegions.data.length)
     ? myRegions.data.map(r=>r.region_id)
     : (state.profile.region_id ? [state.profile.region_id] : []);
-  state.myPermissions = new Set((myPerms.data || []).map(p => p.permission_key));
+  state.myPermExp = {};
+  const livePerms = (myPerms.data || []).filter(p => !p.expires_at || new Date(p.expires_at) > new Date());
+  livePerms.forEach(p => { if (p.expires_at) state.myPermExp[p.permission_key] = new Date(p.expires_at).getTime(); });
+  state.myPermissions = new Set(livePerms.map(p => p.permission_key));
   state.systemSettings = sys.data || {};
 }
 
@@ -1012,7 +1087,7 @@ function bindAuthForms(){
     const phone = toE164(document.getElementById('login-phone').value.trim());
     const password = document.getElementById('login-password').value;
     const { data, error } = await sb.auth.signInWithPassword({ phone, password });
-    if (error){ showAuthMessage(error.message); return; }
+    if (error){ showAuthMessage(/banned/i.test(error.message) ? 'This account is disabled. Please contact your supervisor.' : error.message); return; }
     await afterLogin(data.user);
   };
 
@@ -1160,16 +1235,28 @@ function fvNavViews(){
   return v;
 }
 // Fuel Trends sidebar group: Super Admin only
-function ftNavViews(){ return state.profile && state.profile.role === 'super_admin' ? ['ft_trend','ft_data','ft_upload'] : []; }
+function ftNavViews(){
+  if (!state.profile) return [];
+  if (state.profile.role === 'super_admin') return ['ft_trend','ft_data','ft_upload'];
+  const v = [];
+  if (hasPermission('ft_trend') || hasPermission('ft_upload')) v.push('ft_trend');
+  if (hasPermission('ft_upload')) v.push('ft_data','ft_upload');
+  return v;
+}
+// Fuel Trends access: Super Admin, or a granted permission (Settings > Access Control)
+function ftCanView(view){ return isSuperAdmin() || (view === 'ft_trend' ? (hasPermission('ft_trend') || hasPermission('ft_upload')) : hasPermission('ft_upload')); }
 function getAllowedViews(){
   const base = [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews()];
-  if (isAdmin()) return base;
   const extra = [];
+  // any page can be switched on for one person (Settings > Access Control)
+  Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
+  if (isAdmin()) return [...base, ...extra];
+  if (!base.includes('settings') && [...state.myPermissions].some(k => k.startsWith('settings:') && hasPermission(k))) extra.push('settings');
   const settingsKeys = ['categories_add','categories_edit','categories_remove','manage_types','circular_categories_manage'];
   const regionsKeys = ['regions_add','regions_edit','regions_remove'];
-  if (!base.includes('settings') && settingsKeys.some(k => hasPermission(k))) extra.push('settings');
-  if (!base.includes('regions') && regionsKeys.some(k => hasPermission(k))) extra.push('regions');
-  if (!base.includes('reports') && hasPermission('export_active_employees')) extra.push('reports');
+  if (!base.includes('settings') && !extra.includes('settings') && settingsKeys.some(k => hasPermission(k))) extra.push('settings');
+  if (!base.includes('regions') && !extra.includes('regions') && regionsKeys.some(k => hasPermission(k))) extra.push('regions');
+  if (!base.includes('reports') && !extra.includes('reports') && hasPermission('export_active_employees')) extra.push('reports');
   return [...base, ...extra];
 }
 const NAV_LABEL = {
@@ -1376,7 +1463,12 @@ function isSuperAdmin(){ return state.profile.role === 'super_admin'; }
 // Super Admin always has every permission. Everyone else only has a
 // permission if it was explicitly granted via Settings > Permissions
 // (custom_permissions table, loaded into state.myPermissions at login).
-function hasPermission(key){ return isSuperAdmin() || state.myPermissions.has(key); }
+function hasPermission(key){
+  if (isSuperAdmin()) return true;
+  if (!state.myPermissions.has(key)) return false;
+  const e = state.myPermExp && state.myPermExp[key];
+  return !e || e > Date.now();
+}
 
 // ---------------------------------------------------------
 // DASHBOARD
@@ -2455,7 +2547,7 @@ async function openNewExpiryModal(){
     const wrap = document.getElementById('e-rider-wrap');
     if (checkedRegions.length === 1){
       wrap.style.display = 'block';
-      const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.region_id===checkedRegions[0]);
+      const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active' && p.region_id===checkedRegions[0]);
       document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>' +
         riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' ('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
     } else {
@@ -3141,7 +3233,7 @@ async function renderSettings(){
     { label: 'Types & Categories', items: [
       ['warningtypes','Warning Types', () => isAdmin() || hasPermission('manage_types')],
       ['expirytypes','Expiry Item Types', () => isAdmin() || hasPermission('manage_types')],
-      ['tooltypes','Tool Types', () => isAdmin() || hasPermission('manage_types')],
+      ['tooltypes','Tool Types', () => isAdmin() || hasPermission('manage_types') || hasPermission('tooltypes_manage')],
       ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
       ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
     ]},
@@ -3160,7 +3252,7 @@ async function renderSettings(){
       ['popups','Popup Announcements', () => isSuperAdmin()],
     ]},
     { label: 'System', items: [
-      ['permissions','Permissions', () => isSuperAdmin()],
+      ['permissions','Access Control (who can open what)', () => isSuperAdmin()],
       ['storage','Storage Usage', () => isSuperAdmin()],
       ['trash','Trash (restore deleted items)', () => isSuperAdmin()],
       ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
@@ -3168,7 +3260,7 @@ async function renderSettings(){
     ]}
   ];
   const visibleGroups = groups
-    .map(g => ({ label: g.label, items: g.items.filter(([,,can]) => can()) }))
+    .map(g => ({ label: g.label, items: g.items.filter(([k,,can]) => can() || (k !== 'permissions' && hasPermission('settings:' + k))) }))
     .filter(g => g.items.length);
   const flatKeys = visibleGroups.flatMap(g => g.items.map(([k]) => k));
   if (!flatKeys.includes(settingsTab)) settingsTab = flatKeys[0] || 'categories';
@@ -3588,7 +3680,7 @@ async function renderWarnings(){
 async function openEditWarningModal(w){
   await loadScopedProfiles();
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
-  const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role));
+  const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role) && (p.status==='active' || p.id===w.rider_id));
   const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${escapeHtml(designationLabel(p))})</option>`).join('');
   openModal(`
     <h2>Edit warning</h2>
@@ -3632,7 +3724,7 @@ async function openNewWarningModal(){
   const canTargetCoordinators = isAdmin() || ['regional_poc','inventory_coordinator'].includes(state.profile.role)
     || (state.profile.role === 'team_lead' && hasPermission('warnings_issue_to_coordinator'));
   const targetRoles = canTargetCoordinators ? ['rider','coordinator'] : ['rider'];
-  const riders = state.profilesInScope.filter(p=>targetRoles.includes(p.role));
+  const riders = state.profilesInScope.filter(p=>targetRoles.includes(p.role) && p.status==='active');
   const options = riders.map(p=>`<option value="${p.id}" data-empid="${escapeHtml(p.employee_id||'—')}" data-region="${escapeHtml(state.regions.find(r=>r.id===p.region_id)?.name||'—')}">${escapeHtml(p.full_name)} ${p.employee_id?'('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
@@ -3870,7 +3962,7 @@ async function renderCompliance(){
 
   // Staff/Admin view: who has/hasn't submitted, with a month picker and CSV export
   await loadScopedProfiles();
-  const riders = state.profilesInScope.filter(p=>p.role==='rider');
+  const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active');
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
 
@@ -4655,92 +4747,120 @@ const GRANTABLE_PERMISSIONS = [
   ['team_bulk_add', 'Team — Bulk Add Riders'],
   ['team_bulk_approve', 'Team — Bulk Approve pending members'],
   ['hotspot_bulk_add', 'Hotspots — Bulk Add'],
+  ['roster_ojt', 'Roster — On Job Training'],
+  ['tooltypes_manage', 'Tool Types — add / edit tool categories'],
   ['field_visit_manage', 'Field Visit Reports — Manager rights (manage checklist & KPIs, correct any visit, see all teams)']
 ];
+const SETTINGS_TAB_LABELS = [['categories','Request Categories'],['circularcategories','Circular Categories'],['requestrouting','Request Auto-Routing'],['warningtypes','Warning Types'],['expirytypes','Expiry Item Types'],['tooltypes','Tool Types'],['compliancetypes','Compliance Items'],['shifttypes','Shift Types'],['designations','Designations'],['subregions','Sub-Regions / Cities'],['hotspots','Hotspots'],['notice','Home Notice'],['branding','Login Page Branding'],['menuicons','Menu Icons'],['homebanner','Home Banner'],['popups','Popup Announcements'],['storage','Storage Usage'],['trash','Trash'],['maintenance','Maintenance & Word Limits'],['shortcuts','Keyboard Shortcuts']];
+function permSections(){
+  const pages = Object.keys(NAV_LABEL).filter(v => !v.startsWith('ft_') && v !== 'dashboard').map(v => ['page:' + v, NAV_LABEL[v]]);
+  return [
+    ['Pages (show in the menu)', pages],
+    ['Fuel Trends', [['ft_trend','Fuel Trends — view Trends'],['ft_upload','Fuel Trends — upload, edit saved data, limits & Rs/KM']]],
+    ['Settings tabs', SETTINGS_TAB_LABELS.map(([k,l]) => ['settings:' + k, l])],
+    ['Actions', GRANTABLE_PERMISSIONS]
+  ];
+}
+function permLabel(k){ for (const [, list] of permSections()){ const f = list.find(x => x[0] === k); if (f) return f[1]; } return k; }
+const permLocalDate = (iso) => iso ? new Date(iso).toLocaleDateString('sv-SE') : '';
+const permShowDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '';
 async function renderPermissionsSettings(body){
   await loadScopedProfiles();
-  const staff = state.profilesInScope.filter(p => !['rider','super_admin'].includes(p.role) && p.status==='active');
-
-  body.innerHTML = `<p class="hint" style="margin-bottom:14px;">Grant a specific person extra access beyond their normal role — e.g. let one Coordinator manage categories, or let one Area Incharge download the active-employee list.</p>
+  sb.rpc('fh_purge_expired_perms').then(() => {}, () => {});
+  const people = state.profilesInScope.filter(p => p.role !== 'super_admin' && p.status === 'active');
+  body.innerHTML = `<p class="hint" style="margin-bottom:14px;">Switch any page, tab or action on or off for any person. Tick <strong>Until</strong> to make it temporary — it switches itself off after that date, so you never have to remember. (A page or tab shows the screen; what the person can see or change inside it still follows their role, region and the action permissions below.)</p>
     <div class="form-row"><label>Search for a person</label>
-      <input type="text" id="perm-user-search" placeholder="Type a name…" autocomplete="off">
+      <input type="text" id="perm-user-search" placeholder="Type a name or Employee ID…" autocomplete="off">
       <div id="perm-user-results" style="border:1px solid var(--line); border-radius:8px; margin-top:6px; max-height:220px; overflow-y:auto; display:none;"></div>
     </div>
-    <div id="perm-selected-user" class="card" style="display:none; margin-top:16px;"></div>`;
-
-  const searchInput = document.getElementById('perm-user-search');
-  const resultsBox = document.getElementById('perm-user-results');
-  const selectedBox = document.getElementById('perm-selected-user');
-  let highlightedIndex = -1;
-
-  const highlightRow = (index) => {
-    const rows = resultsBox.querySelectorAll('[data-pick-user]');
-    rows.forEach(r => r.style.background = '');
-    if (rows[index]){ rows[index].style.background = 'var(--line)'; rows[index].scrollIntoView({block:'nearest'}); }
-    highlightedIndex = index;
-  };
-
+    <div id="perm-selected-user" class="card" style="display:none; margin-top:16px;"></div>
+    <div id="perm-all" style="margin-top:22px;"></div>`;
+  const searchInput = body.querySelector('#perm-user-search'), resultsBox = body.querySelector('#perm-user-results'), selectedBox = body.querySelector('#perm-selected-user'), allBox = body.querySelector('#perm-all');
+  let hi = -1;
+  const highlightRow = (i) => { const rows = resultsBox.querySelectorAll('[data-pick-user]'); rows.forEach(r => r.style.background = ''); if (rows[i]){ rows[i].style.background = 'var(--line)'; rows[i].scrollIntoView({ block:'nearest' }); } hi = i; };
   searchInput.oninput = () => {
-    const q = searchInput.value.trim().toLowerCase();
-    highlightedIndex = -1;
-    if (!q){ resultsBox.style.display = 'none'; resultsBox.innerHTML=''; return; }
-    const matches = staff.filter(p => p.full_name.toLowerCase().includes(q) || (p.employee_id||'').toLowerCase().includes(q)).slice(0, 20);
+    const q = searchInput.value.trim().toLowerCase(); hi = -1;
+    if (!q){ resultsBox.style.display = 'none'; resultsBox.innerHTML = ''; return; }
+    const matches = people.filter(p => (p.full_name||'').toLowerCase().includes(q) || (p.employee_id||'').toLowerCase().includes(q)).slice(0, 20);
     resultsBox.innerHTML = matches.length
-      ? matches.map(p => `<div class="perm-result-row" data-pick-user="${p.id}" style="padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line);">
-          <strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${ROLE_LABEL[p.role]}${p.employee_id?' · '+escapeHtml(p.employee_id):''}</span>
-        </div>`).join('')
+      ? matches.map(p => `<div class="perm-result-row" data-pick-user="${p.id}" style="padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line);"><strong>${escapeHtml(p.full_name)}</strong> <span class="mono">· ${ROLE_LABEL[p.role]||p.role}${p.employee_id ? ' · ' + escapeHtml(p.employee_id) : ''}</span></div>`).join('')
       : `<div style="padding:9px 12px; color:var(--muted);">No match</div>`;
     resultsBox.style.display = 'block';
-    resultsBox.querySelectorAll('[data-pick-user]').forEach(row => {
-      row.onclick = () => selectPermUser(row.dataset.pickUser);
-    });
+    resultsBox.querySelectorAll('[data-pick-user]').forEach(row => { row.onclick = () => selectPermUser(row.dataset.pickUser); });
   };
-
   searchInput.onkeydown = (e) => {
-    const rows = resultsBox.querySelectorAll('[data-pick-user]');
-    if (!rows.length) return;
-    if (e.key === 'ArrowDown'){ e.preventDefault(); highlightRow(Math.min(highlightedIndex+1, rows.length-1)); }
-    else if (e.key === 'ArrowUp'){ e.preventDefault(); highlightRow(Math.max(highlightedIndex-1, 0)); }
-    else if (e.key === 'Enter'){ e.preventDefault(); if (highlightedIndex>=0 && rows[highlightedIndex]) selectPermUser(rows[highlightedIndex].dataset.pickUser); }
+    const rows = resultsBox.querySelectorAll('[data-pick-user]'); if (!rows.length) return;
+    if (e.key === 'ArrowDown'){ e.preventDefault(); highlightRow(Math.min(hi + 1, rows.length - 1)); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); highlightRow(Math.max(hi - 1, 0)); }
+    else if (e.key === 'Enter'){ e.preventDefault(); if (hi >= 0 && rows[hi]) selectPermUser(rows[hi].dataset.pickUser); }
     else if (e.key === 'Escape'){ resultsBox.style.display = 'none'; }
   };
 
+  async function paintAll(){
+    const { data } = await sb.from('custom_permissions').select('profile_id, permission_key, expires_at');
+    const by = new Map();
+    (data || []).forEach(g => { if (!by.has(g.profile_id)) by.set(g.profile_id, []); by.get(g.profile_id).push(g); });
+    const list = [...by.entries()].map(([id, gs]) => ({ id, gs, p: state.profilesInScope.find(x => x.id === id) })).filter(x => x.p).sort((a, b) => a.p.full_name.localeCompare(b.p.full_name));
+    allBox.innerHTML = `<h3 style="margin-bottom:8px;">Everyone with extra access (${list.length})</h3>` + (list.length
+      ? `<div class="ft-wrap" style="max-height:none;overflow:auto"><table><thead><tr><th>Person</th><th>Extra access</th><th></th></tr></thead><tbody>${list.map(x => `<tr><td>${escapeHtml(x.p.full_name)}<div class="mono">${ROLE_LABEL[x.p.role]||x.p.role}${x.p.employee_id ? ' · ' + escapeHtml(x.p.employee_id) : ''}</div></td>
+        <td>${x.gs.map(g => `<span class="badge ${g.expires_at ? 'pending' : 'active'}" style="margin:2px 4px 2px 0;display:inline-block" title="${g.expires_at ? 'Switches off after ' + permShowDate(g.expires_at) : 'No end date'}">${escapeHtml(permLabel(g.permission_key))}${g.expires_at ? ' · until ' + permShowDate(g.expires_at) : ''}</span>`).join('')}</td>
+        <td><button class="btn small outline" data-edit-perm="${x.id}" type="button">Edit</button></td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="hint">Nobody has been given extra access yet.</p>');
+    allBox.querySelectorAll('[data-edit-perm]').forEach(b => b.onclick = () => { selectPermUser(b.dataset.editPerm); selectedBox.scrollIntoView({ behavior:'smooth', block:'start' }); });
+  }
+
   async function selectPermUser(profileId){
-    const p = staff.find(x=>x.id===profileId);
-    resultsBox.style.display = 'none';
-    searchInput.value = p.full_name;
-    const { data: grants } = await sb.from('custom_permissions').select('permission_key').eq('profile_id', profileId);
-    const originalGranted = new Set((grants||[]).map(g=>g.permission_key));
+    const p = state.profilesInScope.find(x => x.id === profileId); if (!p) return;
+    resultsBox.style.display = 'none'; searchInput.value = p.full_name;
+    const { data: grants } = await sb.from('custom_permissions').select('permission_key, expires_at').eq('profile_id', profileId);
+    const orig = new Map((grants || []).filter(g => !g.expires_at || new Date(g.expires_at) > new Date()).map(g => [g.permission_key, permLocalDate(g.expires_at)]));
+    const today = new Date().toLocaleDateString('sv-SE');
+    const secs = permSections();
     selectedBox.style.display = 'block';
-    selectedBox.innerHTML = `
-      <h3 style="margin-bottom:2px;">${escapeHtml(p.full_name)}</h3>
-      <div class="mono" style="margin-bottom:14px;">${ROLE_LABEL[p.role]}${p.employee_id?' · '+escapeHtml(p.employee_id):''}</div>
-      ${GRANTABLE_PERMISSIONS.map(([key,label]) => `
-        <label style="display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line); font-weight:400;">
-          <input type="checkbox" data-perm-toggle="${key}" ${originalGranted.has(key)?'checked':''}> ${escapeHtml(label)}
-        </label>`).join('')}
-      <button class="btn-primary" id="perm-save-btn" style="margin-top:16px; width:auto; padding:10px 24px;">Save Settings</button>
-      <span id="perm-save-status" class="mono" style="margin-left:10px;"></span>
-    `;
+    selectedBox.innerHTML = `<h3 style="margin-bottom:2px;">${escapeHtml(p.full_name)}</h3>
+      <div class="mono" style="margin-bottom:12px;">${ROLE_LABEL[p.role]||p.role}${p.employee_id ? ' · ' + escapeHtml(p.employee_id) : ''}</div>
+      ${secs.map(([title, list], si) => `<details class="perm-sec" ${si === 0 || list.some(([k]) => orig.has(k)) ? 'open' : ''} style="border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:0 12px;">
+        <summary style="cursor:pointer;padding:10px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><strong>${title}</strong><span class="mono" data-cnt="${si}"></span><span style="flex:1"></span>
+          <button type="button" class="btn small outline" data-sec-all="${si}">Select all</button><button type="button" class="btn small outline" data-sec-none="${si}">Clear</button></summary>
+        ${list.map(([key, label]) => `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line);flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:10px;font-weight:400;flex:1;min-width:200px;"><input type="checkbox" data-perm="${escapeHtml(key)}" data-sec="${si}" ${orig.has(key) ? 'checked' : ''}> ${escapeHtml(label)}</label>
+          <span data-until="${escapeHtml(key)}" style="${orig.has(key) ? '' : 'display:none;'}font-size:12px;color:var(--muted);">Until (optional) <input type="date" data-exp="${escapeHtml(key)}" min="${today}" value="${orig.get(key) || ''}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px;"></span>
+        </div>`).join('')}
+      </details>`).join('')}
+      <button class="btn-primary" id="perm-save-btn" type="button" style="margin-top:8px;width:auto;padding:10px 24px;">Save Settings</button>
+      <span id="perm-save-status" class="mono" style="margin-left:10px;"></span>`;
+    const cbs = () => [...selectedBox.querySelectorAll('[data-perm]')];
+    const count = () => secs.forEach((_, si) => { const el = selectedBox.querySelector(`[data-cnt="${si}"]`); const all = cbs().filter(c => c.dataset.sec == si); el.textContent = `${all.filter(c => c.checked).length} of ${all.length} on`; });
+    const showUntil = (cb) => { const w = selectedBox.querySelector(`[data-until="${CSS.escape(cb.dataset.perm)}"]`); if (w) w.style.display = cb.checked ? '' : 'none'; };
+    cbs().forEach(cb => cb.onchange = () => { showUntil(cb); count(); });
+    selectedBox.querySelectorAll('[data-sec-all]').forEach(b => b.onclick = (e) => { e.preventDefault(); cbs().filter(c => c.dataset.sec == b.dataset.secAll).forEach(c => { c.checked = true; showUntil(c); }); count(); });
+    selectedBox.querySelectorAll('[data-sec-none]').forEach(b => b.onclick = (e) => { e.preventDefault(); cbs().filter(c => c.dataset.sec == b.dataset.secNone).forEach(c => { c.checked = false; showUntil(c); }); count(); });
+    count();
     document.getElementById('perm-save-btn').onclick = async () => {
-      const statusEl = document.getElementById('perm-save-status');
-      statusEl.textContent = 'Saving…';
-      const checkedNow = new Set(Array.from(selectedBox.querySelectorAll('[data-perm-toggle]:checked')).map(cb=>cb.dataset.permToggle));
-      const toAdd = [...checkedNow].filter(k => !originalGranted.has(k));
-      const toRemove = [...originalGranted].filter(k => !checkedNow.has(k));
-      if (toAdd.length){
-        await sb.from('custom_permissions').insert(toAdd.map(key => ({ profile_id: profileId, permission_key: key, granted_by: state.user.id })));
+      const st = document.getElementById('perm-save-status'); st.textContent = 'Saving…';
+      const now = new Map();
+      cbs().filter(c => c.checked).forEach(c => { now.set(c.dataset.perm, selectedBox.querySelector(`[data-exp="${CSS.escape(c.dataset.perm)}"]`).value || ''); });
+      for (const [k, d] of now) if (d && d < today){ st.textContent = ''; toast(`The end date for "${permLabel(k)}" is in the past`); return; }
+      const removed = [...orig.keys()].filter(k => !now.has(k));
+      const added = [...now.keys()].filter(k => !orig.has(k));
+      const changed = [...now.keys()].filter(k => orig.has(k) && orig.get(k) !== now.get(k));
+      const reinsert = [...added, ...changed];
+      let err = null;
+      if (removed.length || changed.length){
+        const r = await sb.from('custom_permissions').delete().eq('profile_id', profileId).in('permission_key', [...removed, ...changed]);
+        if (r.error) err = r.error;
       }
-      for (const key of toRemove){
-        await sb.from('custom_permissions').delete().eq('profile_id', profileId).eq('permission_key', key);
+      if (!err && reinsert.length){
+        const r = await sb.from('custom_permissions').insert(reinsert.map(k => ({ profile_id: profileId, permission_key: k, granted_by: state.user.id, expires_at: now.get(k) ? new Date(now.get(k) + 'T23:59:59').toISOString() : null })));
+        if (r.error) err = r.error;
       }
-      toAdd.forEach(k=>originalGranted.add(k));
-      toRemove.forEach(k=>originalGranted.delete(k));
-      statusEl.textContent = 'Saved ✓';
-      toast('Permissions updated');
-      setTimeout(()=>{ if (statusEl) statusEl.textContent=''; }, 2000);
+      if (err){ st.textContent = ''; toast('Could not save: ' + err.message + (/expires_at/.test(err.message) ? ' — please run migration_39.sql in Supabase.' : '')); return; }
+      st.textContent = 'Saved ✓'; toast('Access updated');
+      if (profileId === state.user.id){ await loadReferenceData(true); }
+      selectPermUser(profileId); paintAll();
     };
   }
+  paintAll();
 }
 
 function formatBytes(n){
@@ -5196,15 +5316,16 @@ async function renderTools(){
     document.getElementById('bulk-tool-issuance-btn').onclick = openBulkToolIssuanceModal;
     if (canBulkUpdate) document.getElementById('bulk-tool-update-btn').onclick = openBulkToolUpdateModal;
   }
-  const { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id), tool_types(name)').order('next_due_date');
+  let { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id, status), tool_types(name)').order('next_due_date');
   if (issuancesErr){ main.innerHTML = emptyState('Could not load tool issuances: ' + issuancesErr.message); return; }
-  if (!issuances || !issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
+  issuances = (issuances || []).filter(i => !i.profiles || i.profiles.status === 'active');   // disabled / removed people are not shown
+  if (!issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
 
   const { data: acks } = await sb.from('tool_issuance_acks').select('*');
   const ackMap = new Map((acks||[]).map(a => [a.tool_issuance_id, a]));
 
   const today = new Date();
-  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
+  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Serial No.</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
     ${list.map(i => {
       const due = new Date(i.next_due_date);
       const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
@@ -5225,6 +5346,7 @@ async function renderTools(){
         <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
         <td class="mono">${escapeHtml(i.profiles?.employee_id||'—')}</td>
         <td>${escapeHtml(i.tool_types?.name||'—')}</td>
+        <td class="mono">${escapeHtml(i.serial_number||'—')}</td>
         <td class="mono">${i.issued_date}</td>
         <td class="mono">${i.next_due_date||'—'}</td>
         <td><span class="${badge}">${label}</span></td>
@@ -5237,12 +5359,12 @@ async function renderTools(){
     }).join('')}
   </tbody></table>`;
 
-  main.innerHTML = `<div class="form-row" style="max-width:320px;"><input type="text" id="tool-issuance-search" placeholder="Search by rider name or Employee ID…"></div><div id="tool-issuance-list">${renderRows(issuances)}</div>`;
+  main.innerHTML = `<div class="form-row" style="max-width:320px;"><input type="text" id="tool-issuance-search" placeholder="Search by rider name, Employee ID or serial number…"></div><div id="tool-issuance-list">${renderRows(issuances)}</div>`;
 
   const applyFilters = () => {
     const q = document.getElementById('tool-issuance-search').value.trim().toLowerCase();
     const filtered = !q ? issuances : issuances.filter(i =>
-      (i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q)
+      (i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q) || (i.serial_number||'').toLowerCase().includes(q)
     );
     document.getElementById('tool-issuance-list').innerHTML = renderRows(filtered);
     bindAckButtons();
@@ -5331,12 +5453,12 @@ function openToolTypeModal(row){
 function openBulkToolIssuanceModal(){
   openModal(`
     <h2>Bulk issue tool</h2>
-    <p class="hint">Paste one <strong>Employee ID</strong> per line — all get the same tool. To backdate historical records (useful when first setting up the portal), you can optionally add a comma + date after the Employee ID to override the default date for that row: <code>EMP1001, 2025-03-15</code>.</p>
+    <p class="hint">Paste one <strong>Employee ID</strong> per line — all get the same tool. To backdate historical records (useful when first setting up the portal), you can optionally add a comma + date after the Employee ID to override the default date for that row: <code>EMP1001, 2025-03-15</code>. A serial number (e.g. barcode device number) can follow as a third value: <code>EMP1001, 2025-03-15, SN-10045</code> — leave the date empty to use the default: <code>EMP1001, , SN-10045</code>.</p>
     <form id="bulk-tool-form">
       <div class="form-row"><label>Tool</label><select id="bti-tool" required></select></div>
       <div class="form-row"><label>Default issued date</label><input type="date" id="bti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
       <div class="form-row"><label>Employee IDs</label><textarea id="bti-ids" rows="8" placeholder="EMP1001
-EMP1002, 2025-03-15
+EMP1002, 2025-03-15, SN-10046
 EMP1003"></textarea></div>
       <button class="btn-primary" type="submit">Issue to all</button>
     </form>
@@ -5359,12 +5481,13 @@ EMP1003"></textarea></div>
     for (const line of lines){
       const parts = line.split(/\t|,/).map(p=>p.trim());
       const empId = parts[0];
-      const issuedDate = parts[1] || defaultDate;
+      const issuedDate = parts[1] || defaultDate, serial = (parts[2] || '').trim() || null;
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
+      if (rider.status !== 'active'){ rows.push({ empId, ok:false, msg:'This person is disabled — not issued' }); continue; }
       const { error } = await sb.from('tool_issuances').insert({
         rider_id: rider.id, region_id: rider.region_id, tool_type_id: toolTypeId,
-        issued_date: issuedDate, recorded_by: state.user.id
+        issued_date: issuedDate, recorded_by: state.user.id, serial_number: serial
       });
       rows.push({ empId, ok: !error, msg: error ? error.message : `Issued to ${rider.full_name} (${issuedDate})` });
     }
@@ -5444,6 +5567,7 @@ function openEditToolIssuanceModal(issuance){
     <h2>Edit tool issuance</h2>
     <p class="mono" style="margin-bottom:12px;">${escapeHtml(issuance.profiles?.full_name||'—')} — ${escapeHtml(issuance.tool_types?.name||'—')}</p>
     <form id="ei-form">
+      <div class="form-row"><label>Serial number (optional)</label><input type="text" id="ei-serial" value="${escapeHtml(issuance.serial_number||'')}" placeholder="e.g. barcode device number"></div>
       <div class="form-row"><label>Issued date</label><input type="date" id="ei-issued" value="${issuance.issued_date}" required></div>
       <div class="form-row"><label>Next due date (leave blank for no fixed schedule)</label><input type="date" id="ei-due" value="${issuance.next_due_date||''}"></div>
       <button class="btn-primary" type="submit">Save changes</button>
@@ -5453,6 +5577,7 @@ function openEditToolIssuanceModal(issuance){
     e.preventDefault();
     const { error } = await sb.from('tool_issuances').update({
       issued_date: document.getElementById('ei-issued').value,
+      serial_number: document.getElementById('ei-serial').value.trim() || null,
       next_due_date: document.getElementById('ei-due').value || null
     }).eq('id', issuance.id);
     if (error){ toast('Could not save: ' + error.message); return; }
@@ -5462,7 +5587,7 @@ function openEditToolIssuanceModal(issuance){
 
 async function openNewToolIssuanceModal(){
   await loadScopedProfiles();
-  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''}</option>`).join('');
+  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''}</option>`).join('');
   const { data: toolTypes } = await sb.from('tool_types').select('*').eq('active', true).order('name');
   const toolOptions = (toolTypes||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
@@ -5470,6 +5595,7 @@ async function openNewToolIssuanceModal(){
     <form id="tool-issuance-form">
       <div class="form-row"><label>Rider</label><select id="ti-rider" required>${riderOptions}</select></div>
       <div class="form-row"><label>Tool</label><select id="ti-tool" required>${toolOptions}</select></div>
+      <div class="form-row"><label>Serial number (optional — e.g. barcode device number)</label><input type="text" id="ti-serial" placeholder="Serial / barcode number" autocomplete="off"></div>
       <div class="form-row"><label>Issued date</label><input type="date" id="ti-date" value="${new Date().toISOString().slice(0,10)}" required></div>
       <div id="ti-eligibility"></div>
       <label id="ti-override-wrap" style="display:none; margin-top:8px;">
@@ -5530,6 +5656,7 @@ async function openNewToolIssuanceModal(){
       rider_id: riderId, region_id: rider?.region_id,
       tool_type_id: toolSelect.value,
       issued_date: document.getElementById('ti-date').value,
+      serial_number: (document.getElementById('ti-serial').value || '').trim() || null,
       recorded_by: state.user.id
     });
     if (error){ toast('Could not save: ' + error.message); return; }
@@ -7336,11 +7463,11 @@ function ftCatSpecs(rows, ms, cat, tag) {
   return out;
 }
 async function ftRenderCat(box, rows, ms, cat, tag) {
-  const hs = isHS(cat), tots = ftByMonth(rows, ms), sum = ftSum(rows);
+  const hs = isHS(cat), tots = ftByMonth(rows, ms), sum = ftSum(rows), memC = ftMembersByMonth(rows, ms);
   const dl2 = (a, b) => (!b) ? '' : `<span style="color:${a >= b ? '#c0532f' : '#2e7d4f'};font-size:10.5px"> ${a >= b ? '▲' : '▼'}${Math.abs((a - b) / b * 100).toFixed(1)}%</span>`;
-  const tbl = `<details class="ft-mt"><summary>Month-by-month numbers</summary><div class="ft-wrap" style="max-height:280px"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Litres</th>${hs ? '<th class="n">Visits</th>' : ''}<th class="n">KM</th>${hs ? '<th class="n">Litres / visit</th>' : ''}<th class="n">Amount (Rs)</th></tr></thead><tbody>${
-    ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td>` : ''}<td class="n">${ftFmt(t.km)}${p ? dl2(t.km, p.km) : ''}</td>${hs ? `<td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td></tr>`; }).join('')
-  }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.liters)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td>` : ''}<td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(sum.amount)}</td></tr></tbody></table></div></details>`;
+  const tbl = `<details class="ft-mt"><summary>Month-by-month numbers</summary><div class="ft-wrap" style="max-height:280px"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Litres</th>${hs ? '<th class="n">Visits</th>' : ''}<th class="n">KM</th>${hs ? '<th class="n">Litres / visit</th>' : ''}<th class="n">Amount (Rs)</th><th class="n">Team members</th></tr></thead><tbody>${
+    ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td>` : ''}<td class="n">${ftFmt(t.km)}${p ? dl2(t.km, p.km) : ''}</td>${hs ? `<td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td><td class="n">${ftFmt(memC[i])}</td></tr>`; }).join('')
+  }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.liters)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td>` : ''}<td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(sum.amount)}</td><td class="n">${ftFmt(new Set(rows.map(r => r.rk)).size)}</td></tr></tbody></table></div></details>`;
   box.innerHTML = `<div class="ft-cg"></div>${tbl}`;
   await ftRenderCharts(box.querySelector('.ft-cg'), ftCatSpecs(rows, ms, cat, tag));
 }
@@ -7420,7 +7547,7 @@ async function renderFuelTrends(view) {
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
   main.classList.add('ft-full');
-  if (!isSuperAdmin() || !FT_PAGES[view]) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
+  if (!ftCanView(view) || !FT_PAGES[view]) { main.innerHTML = emptyState('You do not have access to this page.'); return; }
   main.innerHTML = `<div class="ft-root"><p class="fv-sub" style="margin:0 0 8px">${escapeHtml(FT_PAGES[view][0])}</p><div id="ft-body"><div class="mono">Loading…</div></div></div>`;
   try { await FT_PAGES[view][1](document.getElementById('ft-body')); }
   catch (e) {
@@ -7467,6 +7594,7 @@ async function ftPageTrend(host) {
   host.querySelector('#ft-clear').onclick = () => { Object.keys(D).forEach(k => { D[k] = []; FT.f[k] = []; }); drops.forEach(x => x.refresh()); paintDirty(); draw(true); };
   host.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { FT.tab = b.dataset.t; host.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b)); drawBody(); });
   let rows = [], ms = [], seq = 0;
+  const scopeTxt = () => [...scope.querySelectorAll('.ft-chip')].map(c => c.textContent).join(' · ');
   function draw(animate) {
     drops.forEach(d => d.refresh()); togTxt(); paintDirty();
     rows = ftFilter(all, null); ms = FT.f.month.length ? allMs.filter(m => FT.f.month.includes(m)) : allMs;
@@ -7475,7 +7603,8 @@ async function ftPageTrend(host) {
     parts.push(f.month.length ? `${f.month.length} month${f.month.length > 1 ? 's' : ''}` : `${ftMonthLabel(allMs[0])} – ${ftMonthLabel(allMs[allMs.length - 1])}`);
     FT.any = Object.values(FT.f).some(v => v.length);
     if (!FT.any) { scope.innerHTML = '<span class="fv-note">Nothing selected yet — choose a category, region, lead … above and press <b>Apply</b> to see its numbers. The overview below covers everything.</span>'; kp.innerHTML = ''; drawBody(); return; }
-    scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')}`;
+    scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')} <button type="button" class="fv-btn ghost" id="ft-emp" style="height:26px;padding:0 10px;margin-left:6px">👥 Team member details</button>`;
+    scope.querySelector('#ft-emp').onclick = () => ftEmpPopup(rows, ms, '', scopeTxt());
     const tot = ftSum(rows), hs = rows.some(r => isHS(r.category) && r.visits > 0), hsT = ftSum(rows.filter(r => isHS(r.category)));
     const rate = [...ms].reverse().find(m => FT.set && FT.set.rates.has(m));
     const tiles = [[tot.amount, 'Amount (Rs)', ftCompact], [tot.liters, 'Litres', ftCompact], [tot.km, 'KM', ftCompact]];
@@ -7522,9 +7651,11 @@ async function ftPageTrend(host) {
   function drawQuick(box, withBoxes) {
     const have = ms.filter(m => rows.some(r => r.m === m));
     if (!FT.qm || !have.includes(FT.qm)) FT.qm = have[have.length - 1];
-    box.innerHTML = `<div class="ft-qh"><h4>Month snapshot</h4><div class="fv-fg" id="ft-qm" style="min-width:150px"></div></div><div class="ft-kpis" id="ft-qk" style="margin:8px 0 0"></div><div id="ft-dn"></div>`;
+    box.innerHTML = `<div class="ft-qh"><h4>Month snapshot</h4><div class="fv-fg" id="ft-qm" style="min-width:150px"></div><button type="button" class="fv-btn ghost" id="ft-qemp" style="height:32px"></button></div><div class="ft-kpis" id="ft-qk" style="margin:8px 0 0"></div><div id="ft-dn"></div>`;
     const paint = () => {
       const k = box.querySelector('#ft-qk');
+      const eb = box.querySelector('#ft-qemp'), nm = new Set(rows.filter(r => r.m === FT.qm).map(r => r.rk)).size;
+      eb.textContent = `👥 ${ftFmt(nm)} team member${nm === 1 ? '' : 's'} — details`; eb.onclick = () => ftEmpPopup(rows, ms, FT.qm, scopeTxt());
       if (withBoxes) {
         const i = allMs.indexOf(FT.qm), prev = i > 0 ? allMs[i - 1] : null, cur = ftSum(rows.filter(r => r.m === FT.qm)), pv = prev ? ftSum(rows.filter(r => r.m === prev)) : null;
         const hs = rows.some(r => r.m === FT.qm && isHS(r.category) && r.visits > 0), hc = ftSum(rows.filter(r => r.m === FT.qm && isHS(r.category)));
@@ -7567,13 +7698,15 @@ async function ftPageTrend(host) {
       let t = o.by.get(r.m); if (!t) o.by.set(r.m, t = { liters: 0, amount: 0, km: 0, visits: 0 });
       [t, o.t].forEach(x => { x.liters += r.approved_liters; x.amount += r.amount; x.km += r.km; x.visits += r.visits; }); });
     if (!FT.m || !['amount', 'liters', 'km', 'visits', 'lpv'].includes(FT.m)) FT.m = 'amount';
-    const groups = [...gm.values()].sort((a, b) => (ftVal(b.t, FT.m) || 0) - (ftVal(a.t, FT.m) || 0)), d = ftDec(FT.m), tot = ftSum(rows), monthTot = ftByMonth(rows, ms), shown = groups.slice(0, 400);
+    const groups = [...gm.values()].sort((a, b) => (ftVal(b.t, FT.m) || 0) - (ftVal(a.t, FT.m) || 0)), d = ftDec(FT.m), tot = ftSum(rows), monthTot = ftByMonth(rows, ms), shown = groups.slice(0, 400), mem = ftMembersByMonth(rows, ms), memAll = new Set(rows.map(r => r.rk)).size;
     res.innerHTML = `<div class="ft-tb"><div class="fv-fg" id="ft-tg" style="min-width:180px"></div><div class="fv-fg" id="ft-tm" style="min-width:160px"></div><span style="flex:1"></span>
         <button class="fv-btn" data-dl="csv" type="button">Download CSV</button>${fhIsNativeApp() ? '' : '<button class="fv-btn ghost" data-dl="xlsx" type="button">Download Excel</button>'}</div>
       <div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(gname)}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Visits</th></tr></thead><tbody>
       ${shown.map(g => `<tr><td>${escapeHtml(g.k)}</td>${ms.map(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; return `<td class="n">${v == null ? '–' : ftFmt(v, d)}</td>`; }).join('')}<td class="n">${ftFmt(g.t.liters, 1)}</td><td class="n">${ftFmt(g.t.amount)}</td><td class="n">${ftFmt(g.t.km)}</td><td class="n">${g.t.visits ? ftFmt(g.t.visits) : '–'}</td></tr>`).join('')}
-      <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.visits ? ftFmt(tot.visits) : '–'}</td></tr></tbody></table></div>
+      <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.visits ? ftFmt(tot.visits) : '–'}</td></tr>
+      <tr class="tot"><td>Team members <span class="fv-note">(click a number for details)</span></td>${mem.map((n, i) => `<td class="n"><a href="#" data-emp="${ms[i]}" style="color:#1c2b6e;font-weight:700">${ftFmt(n)}</a></td>`).join('')}<td class="n"><a href="#" data-emp="" style="color:#1c2b6e;font-weight:700">${ftFmt(memAll)}</a></td><td class="n"></td><td class="n"></td><td class="n"></td></tr></tbody></table></div>
       ${groups.length > shown.length ? `<p class="fv-note">Showing the first ${shown.length} of ${groups.length}. The download contains all of them.</p>` : ''}`;
+    res.querySelectorAll('[data-emp]').forEach(a => a.onclick = (e) => { e.preventDefault(); ftEmpPopup(rows, ms, a.dataset.emp, scopeTxt()); });
     ftDrop(res.querySelector('#ft-tg'), { label: 'Rows by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; drawBody(); }, none: 'Region' });
     ftDrop(res.querySelector('#ft-tm'), { label: 'Cells show', options: () => FT_METRICS, get: () => FT.m, set: (v) => { FT.m = v || 'amount'; drawBody(); }, none: 'Amount (Rs)' });
     const dl = () => groups.map(g => { const o = { [gname]: g.k }; ms.forEach(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; o[ftMonthLabel(m)] = v == null ? '' : Math.round(v * 100) / 100; });
@@ -7584,6 +7717,76 @@ async function ftPageTrend(host) {
     if (x) x.onclick = async () => { const r = dl(); if (!r.length) { toast('Nothing to download'); return; } try { await ensureXLSX(); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r), 'Fuel'); XLSX.writeFile(wb, fname + '.xlsx'); } catch (e) { toast(e.message); } };
   }
   draw();
+}
+
+// ---------------- Team-member details popup (and a printable new-tab view) ----------------
+function ftMembersByMonth(rows, ms) {
+  const m = new Map(ms.map(x => [x, new Set()]));
+  rows.forEach(r => { const s = m.get(r.m); if (s) s.add(r.rk); });
+  return ms.map(x => m.get(x).size);
+}
+function ftEmpAgg(rows) {
+  const m = new Map();
+  rows.forEach(r => {
+    let o = m.get(r.rk);
+    if (!o) m.set(r.rk, o = { rk: r.rk, id: r.employee_id || '', name: r.rider_name || '(unknown)', lead: new Set(), region: new Set(), location: new Set(), city: new Set(), cat: new Set(), mon: new Set(), liters: 0, amount: 0, km: 0, visits: 0 });
+    if (r.lead_name) o.lead.add(r.lead_name); if (r.region_name) o.region.add(r.region_name); if (r.location) o.location.add(r.location); if (r.city) o.city.add(r.city);
+    o.cat.add(r.category || 'Uncategorised'); o.mon.add(r.m);
+    o.liters += r.approved_liters; o.amount += r.amount; o.km += r.km; o.visits += r.visits;
+  });
+  return [...m.values()];
+}
+function ftEmpPopup(rows, ms, month, scopeText) {
+  const have = ms.filter(m => rows.some(r => r.m === m));
+  let cur = month && have.includes(month) ? month : '', q = '', list = [];
+  openModal(`<h2 style="margin-bottom:2px">Team member details</h2><p class="fv-note" id="ft-ep-sc" style="margin:0 0 8px"></p>
+    <div class="ft-ep-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <select id="ft-ep-m" style="height:34px;border:1px solid #dfe3ee;border-radius:8px;padding:0 8px;font:inherit"><option value="">All selected months</option>${have.slice().reverse().map(m => `<option value="${m}" ${m === cur ? 'selected' : ''}>${ftMonthLabel(m)}</option>`).join('')}</select>
+      <input type="search" id="ft-ep-q" placeholder="Search name, ID, region, lead, location…" style="height:34px;border:1px solid #dfe3ee;border-radius:8px;padding:0 10px;font:inherit;flex:1;min-width:180px">
+      <button class="fv-btn ghost" id="ft-ep-csv" type="button">Download CSV</button>${fhIsNativeApp() ? '' : '<button class="fv-btn ghost" id="ft-ep-tab" type="button">Open in new tab ↗</button>'}</div>
+    <div class="ft-wrap" style="max-height:52vh;overflow:auto" id="ft-ep-body"></div><div id="ft-ep-det" style="margin-top:10px"></div>`);
+  const modal = document.querySelector('#active-modal .modal'); if (modal) { modal.style.maxWidth = 'min(1180px,96vw)'; modal.style.width = '96vw'; }
+  const hsAny = rows.some(r => isHS(r.category) && r.visits > 0);
+  const join = (s) => { const a = [...s]; return a.length > 2 ? a.slice(0, 2).join(', ') + ` +${a.length - 2}` : a.join(', '); };
+  const heads = ['ID', 'Name', 'Category', 'Region', 'Lead', 'Location', 'City', 'Months', 'Litres', 'KM', 'Amount (Rs)'].concat(hsAny ? ['Visits'] : []);
+  const cells = (o) => [o.id, o.name, join(o.cat), join(o.region), join(o.lead), join(o.location), join(o.city), o.mon.size, ftFmt(o.liters, 1), ftFmt(o.km), ftFmt(o.amount)].concat(hsAny ? [o.visits ? ftFmt(o.visits) : '–'] : []);
+  const numCol = (i) => i >= 7;
+  const paint = () => {
+    const rr = cur ? rows.filter(r => r.m === cur) : rows;
+    let a = ftEmpAgg(rr);
+    if (q) { const t = q.toLowerCase(); a = a.filter(o => [o.name, o.id, ...o.lead, ...o.region, ...o.location, ...o.city, ...o.cat].join(' ').toLowerCase().includes(t)); }
+    list = a.sort((x, y) => y.amount - x.amount);
+    const tot = ftSum(list.length ? rr.filter(r => list.some(o => o.rk === r.rk)) : []), shown = list.slice(0, 600);
+    document.getElementById('ft-ep-sc').textContent = `${scopeText || ''}${scopeText ? ' · ' : ''}${cur ? ftMonthLabel(cur) : have.length + ' month' + (have.length === 1 ? '' : 's')} · ${list.length} team member${list.length === 1 ? '' : 's'} — click a row for the month-by-month detail`;
+    document.getElementById('ft-ep-body').innerHTML = list.length
+      ? `<table class="fv-table"><thead><tr>${heads.map((h, i) => `<th class="${numCol(i) ? 'n' : ''}">${h}</th>`).join('')}</tr></thead><tbody>${shown.map((o, i) => `<tr data-i="${i}" style="cursor:pointer">${cells(o).map((c, j) => `<td class="${numCol(j) ? 'n' : ''}">${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('')}
+        <tr class="tot"><td colspan="1">Total</td><td>${list.length}</td><td></td><td></td><td></td><td></td><td></td><td class="n"></td><td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${ftFmt(tot.amount)}</td>${hsAny ? `<td class="n">${tot.visits ? ftFmt(tot.visits) : '–'}</td>` : ''}</tr></tbody></table>${list.length > shown.length ? `<p class="fv-note">Showing the first ${shown.length} — search to narrow, or download for all.</p>` : ''}`
+      : '<div class="empty-state"><p>No team members match.</p></div>';
+    document.getElementById('ft-ep-det').innerHTML = '';
+    document.querySelectorAll('#ft-ep-body tbody tr[data-i]').forEach(tr => tr.onclick = () => {
+      const o = shown[+tr.dataset.i], mine = rows.filter(r => r.rk === o.rk).sort((x, y) => x.m.localeCompare(y.m) || (x.category || '').localeCompare(y.category || ''));
+      const d = document.getElementById('ft-ep-det');
+      d.innerHTML = `<div class="ft-sec"><h4>${escapeHtml(o.name)} <span class="fv-note">${escapeHtml(o.id)}</span></h4><div class="ft-wrap" style="max-height:30vh;overflow:auto"><table class="fv-table"><thead><tr><th>Month</th><th>Category</th><th>Region</th><th>Location</th><th class="n">Litres</th><th class="n">KM</th><th class="n">Amount (Rs)</th><th class="n">Visits</th></tr></thead><tbody>${mine.map(r => `<tr${cur && r.m !== cur ? ' style="opacity:.55"' : ''}><td>${ftMonthLabel(r.m)}</td><td>${escapeHtml(r.category || '')}</td><td>${escapeHtml(r.region_name || '')}</td><td>${escapeHtml(r.location || '')}</td><td class="n">${ftFmt(r.approved_liters, 1)}</td><td class="n">${ftFmt(r.km)}</td><td class="n">${ftFmt(r.amount)}</td><td class="n">${r.visits ? ftFmt(r.visits) : '–'}</td></tr>`).join('')}</tbody></table></div></div>`;
+      d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+  document.getElementById('ft-ep-m').onchange = (e) => { cur = e.target.value; paint(); };
+  document.getElementById('ft-ep-q').oninput = (e) => { q = e.target.value.trim(); paint(); };
+  const csvRows = () => list.map(o => { const r = {}; heads.forEach((h, i) => { r[h] = i >= 8 ? Math.round([o.liters, o.km, o.amount, o.visits][i - 8] * 100) / 100 : cells(o)[i]; }); r['Months'] = o.mon.size; return r; });
+  document.getElementById('ft-ep-csv').onclick = () => { const r = csvRows(); if (!r.length) { toast('Nothing to download'); return; } downloadCSV('team-members' + (cur ? '-' + cur : '') + '.csv', toCSV(r)); };
+  const tab = document.getElementById('ft-ep-tab');
+  if (tab) tab.onclick = () => {
+    const w = window.open('', '_blank');
+    if (!w) { toast('The new tab was blocked — allow pop-ups, or use Download CSV.'); return; }
+    const title = 'Team members — ' + (cur ? ftMonthLabel(cur) : 'all selected months');
+    w.document.write(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:13px system-ui,sans-serif;margin:16px;color:#1c2b6e}h2{margin:0 0 4px}p{color:#6b7390;margin:0 0 10px}input{height:32px;padding:0 10px;border:1px solid #dfe3ee;border-radius:8px;margin-bottom:10px;width:min(360px,100%)}table{border-collapse:collapse;width:100%}th,td{padding:6px 9px;border-bottom:1px solid #eef0f6;text-align:left;white-space:nowrap}th{background:#f3f5fb;cursor:pointer;position:sticky;top:0}td.n,th.n{text-align:right}div{overflow:auto}</style>
+      <h2>${escapeHtml(title)}</h2><p>${escapeHtml(scopeText || '')} · ${list.length} team members · click a heading to sort</p><input type="search" id="q" placeholder="Search…"><div><table id="t"><thead><tr>${heads.map((h, i) => `<th class="${numCol(i) ? 'n' : ''}">${h}</th>`).join('')}</tr></thead><tbody>${list.map(o => `<tr>${cells(o).map((c, j) => `<td class="${numCol(j) ? 'n' : ''}">${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <script>var t=document.getElementById('t'),b=t.tBodies[0],rs=[].slice.call(b.rows),d={};function v(x){var s=x.textContent.replace(/,/g,'');return s!==''&&!isNaN(s)?parseFloat(s):x.textContent.toLowerCase()}
+      [].forEach.call(t.tHead.rows[0].cells,function(h,i){h.onclick=function(){d[i]=!d[i];rs.sort(function(a,c){var x=v(a.cells[i]),y=v(c.cells[i]);var r=(typeof x=='number'&&typeof y=='number')?x-y:String(x).localeCompare(String(y),undefined,{numeric:true});return d[i]?r:-r});rs.forEach(function(r){b.appendChild(r)})}});
+      document.getElementById('q').oninput=function(){var q=this.value.toLowerCase();rs.forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)<0?'none':''})}<\/script>`);
+    w.document.close();
+  };
+  paint();
 }
 
 // ---------------- Rs/KM per month + litres limit per category ----------------
@@ -8035,7 +8238,7 @@ async function renderRoster(){
   await renderRosterMain();
   if (fhCanOjt()) fhAddOjtButton();
 }
-const fhCanOjt = () => isAdmin() || hasPermission('roster_manage');
+const fhCanOjt = () => isAdmin() || hasPermission('roster_manage') || hasPermission('roster_ojt');
 function fhAddOjtButton(){
   const bar = document.getElementById('topbar-actions');
   if (!bar || document.getElementById('ojt-open-btn')) return;
@@ -8403,7 +8606,7 @@ async function renderRosterMain(){
 
 async function openRosterModal(entry, prefill){
   await loadScopedProfiles();
-  const riders = state.profilesInScope.filter(p=>p.role==='rider');
+  const riders = state.profilesInScope.filter(p=>p.role==='rider' && (p.status==='active' || p.id===entry?.rider_id));
   const riderOptions = riders.map(p=>`<option value="${p.id}" ${entry?.rider_id===p.id?'selected':''}>${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id||'—')})</option>`).join('');
   const regionOptions = state.regions.map(r=>`<option value="${r.id}" ${entry?.region_id===r.id?'selected':''}>${escapeHtml(r.name)}</option>`).join('');
   const { data: shifts } = await sb.from('shift_types').select('*').eq('active', true).order('name');
