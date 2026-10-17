@@ -7264,13 +7264,14 @@ async function ftRenderCharts(host, specs) {
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
   host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
-  const plots = host.querySelectorAll('.ft-plot'), anim = !ftReduced();
+  const plots = host.querySelectorAll('.ft-plot'), anim0 = !ftReduced();
   specs.forEach((s, i) => {
     const d = plots[i], narrow = d.clientWidth < 460;
     const cfg = { responsive: true, displaylogo: false, displayModeBar: true, scrollZoom: false,
       modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
       modeBarButtonsToAdd: [{ name: 'png', title: 'Download as PNG', icon: Plotly.Icons.camera, click: (gd) => ftSavePng(gd, s.id, s.title) }] };
-    const lay = ftLayout(typeof s.layout === 'function' ? s.layout(narrow) : s.layout, narrow);
+    const lay = ftLayout(typeof s.layout === 'function' ? s.layout(narrow) : s.layout, narrow), anim = anim0 && !s.traces.some(t => t.type === 'pie');
+    if (s.traces.some(t => t.type === 'pie')) { delete lay.xaxis; delete lay.yaxis; if (narrow) lay.legend = Object.assign({}, lay.legend, { orientation: 'h', x: 0, y: -0.05, yanchor: 'top' }); }
     const start = anim ? s.traces.map(t => { const k = ftZeroK(t), c = Object.assign({}, t); if (Array.isArray(t[k])) c[k] = t[k].map(v => v == null ? null : 0); return c; }) : s.traces;
     Plotly.react(d, start, lay, cfg).then(() => {
       if (!anim) return;
@@ -7295,75 +7296,74 @@ function ftLine(ms, vals, name, color, d) {
 const ftLimShape = (lim, yref) => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref, y0: lim, y1: lim, line: { color: '#c0532f', width: 2, dash: 'dash' } });
 const ftLimNote = (lim, yref) => ({ xref: 'paper', x: 1, xanchor: 'right', yref, y: lim, yanchor: 'bottom', text: `Limit ${ftFmt(lim)} L`, showarrow: false, font: { color: '#c0532f', size: 11 } });
 function ftCsvMonths(ms, tots, cols) { return ms.map((m, i) => { const o = { Month: ftMonthLabel(m) }; cols.forEach(c => { const v = ftVal(tots[i], c); o[ftMetricName(c)] = v == null ? '' : Math.round(v * 100) / 100; }); return o; }); }
-const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3' };
+const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3', km: '#2a8fa8' };
 
-// one category: a combined chart (one panel per measure, same months underneath) + one chart per measure
+// ---- one chart with several "lanes" (each measure has its own band, numbers on every point) ----
+function ftLaneSpec(ms, defs, id, title, csv) {
+  const L = ms.map(ftMonthLabel), traces = [], shapes = [], ann = [], list = defs.filter(d => d.vals.some(v => v != null)), n = list.length || 1, h = 1 / n;
+  list.forEach((df, i) => {
+    const b1 = 1 - i * h, b0 = b1 - h, f0 = b0 + 0.12 * h, f1 = b1 - 0.34 * h, nn = df.vals.filter(v => v != null), lo = Math.min(...nn), hi = Math.max(...nn), d = df.d || 0;
+    const y = df.vals.map(v => v == null ? null : (hi === lo ? (f0 + f1) / 2 : f0 + (v - lo) / (hi - lo) * (f1 - f0)));
+    traces.push({ type: 'scatter', mode: 'lines+markers+text', x: L, y, customdata: df.vals, name: df.label, text: df.vals.map(v => v == null ? '' : ftFmt(v, d)), textposition: 'top center', cliponaxis: false, textfont: { size: ms.length > 10 ? 9 : 11, color: df.color },
+      marker: { color: df.color, size: 8, line: { color: '#fff', width: 1.5 } }, line: { color: df.color, width: 3, shape: 'spline', smoothing: 0.5 }, connectgaps: false, hovertemplate: `<b>%{customdata:,.${d}f}</b><extra>${df.label}</extra>` });
+    ann.push({ xref: 'paper', yref: 'paper', x: 0, y: b1, xanchor: 'left', yanchor: 'top', text: `<b>${df.label}</b>`, showarrow: false, font: { size: 12, color: df.color } });
+    if (i) shapes.push({ type: 'line', xref: 'paper', yref: 'paper', x0: 0, x1: 1, y0: b1, y1: b1, line: { color: '#e6e9f4', width: 1 } });
+  });
+  return { id, title, sub: `${n} measures, same months`, wide: true, h: 118 * n + 56, traces, csv,
+    layout: (narrow) => ({ margin: { l: 14, r: 14, t: 6, b: 36 }, hovermode: 'x unified', showlegend: false, shapes, annotations: ann, yaxis: { range: [0, 1], visible: false, fixedrange: true },
+      xaxis: { type: 'category', gridcolor: '#f0f2f9', automargin: true, tickfont: { size: narrow ? 9 : 11 } } }) };
+}
+// one category: ONE combined chart (Litres, Visits, KM as lanes) + a separate chart for each
 function ftCatSpecs(rows, ms, cat, tag) {
   const hs = isHS(cat), tots = ftByMonth(rows, ms), nat = ftNationwide(), lim = nat ? ftLimit(cat) : null;
-  const A = tots.map(t => Math.round(t.amount)), Lt = tots.map(t => Math.round(t.liters * 10) / 10), V = tots.map(t => t.visits), P = tots.map(t => t.visits ? Math.round(t.liters / t.visits * 100) / 100 : null);
+  const A = tots.map(t => Math.round(t.amount)), Lt = tots.map(t => Math.round(t.liters * 10) / 10), K = tots.map(t => Math.round(t.km)), V = tots.map(t => t.visits), P = tots.map(t => t.visits ? Math.round(t.liters / t.visits * 100) / 100 : null);
   const lcols = lim ? Lt.map(v => v > lim ? '#c0532f' : '#2e7d4f') : null;
-  const panels = [{ k: 'amount', t: 'Amount (Rs)', v: A, d: 0 }, { k: 'liters', t: lim ? `Litres — red bars are above the ${ftFmt(lim)} L limit` : 'Litres', v: Lt, d: 0 }];
-  if (hs) panels.push({ k: 'visits', t: 'Visits', v: V, d: 0 }, { k: 'lpv', t: 'Litres per visit', v: P, d: 2 });
-  const n = panels.length, gap = 0.1, h = (1 - gap * (n - 1)) / n, csvCols = hs ? ['amount', 'liters', 'km', 'visits', 'lpv'] : ['amount', 'liters', 'km'];
-  const traces = panels.map((p, i) => { const t = p.k === 'lpv' ? ftLine(ms, p.v, p.t, FT_C.lpv, 2) : ftBar(ms, p.v, ftMetricName(p.k), FT_C[p.k], 0, p.k === 'liters' && lcols ? lcols : null); t.yaxis = i ? 'y' + (i + 1) : 'y'; t.showlegend = false; return t; });
-  const comb = {
-    id: `${tag}-combined`, title: `${cat} — all together`, sub: `${n} panels, same months`, wide: true, h: 190 * n + 70, traces,
-    layout: (narrow) => {
-      const L = { margin: { l: 56, r: 14, t: 24, b: 40 }, hovermode: 'closest', showlegend: false, shapes: [], annotations: [], xaxis: { type: 'category', anchor: n > 1 ? 'y' + n : 'y', gridcolor: '#eef0f7', automargin: true, tickfont: { size: narrow ? 9 : 11 } } };
-      panels.forEach((p, i) => { const top = 1 - i * (h + gap), name = i ? 'yaxis' + (i + 1) : 'yaxis', yref = i ? 'y' + (i + 1) : 'y';
-        L[name] = { domain: [top - h, top], range: ftRng(p.v, p.k === 'liters' ? lim : 0), gridcolor: '#eef0f7', zeroline: false, separatethousands: true, tickfont: { size: 10 }, automargin: true };
-        L.annotations.push({ xref: 'paper', yref: 'paper', x: 0, y: top, xanchor: 'left', yanchor: 'bottom', text: `<b>${p.t}</b>`, showarrow: false, font: { size: 12, color: '#1c2b6e' } });
-        if (p.k === 'liters' && lim) { L.shapes.push(ftLimShape(lim, yref)); L.annotations.push(ftLimNote(lim, yref)); } });
-      return L;
-    }, csv: ftCsvMonths(ms, tots, csvCols)
-  };
+  const lanes = [{ k: 'liters', label: 'Litres', vals: Lt, color: FT_C.liters }];
+  if (hs) lanes.push({ k: 'visits', label: 'Visits', vals: V, color: FT_C.visits });
+  lanes.push({ k: 'km', label: hs ? 'KM' : 'KM (mileage)', vals: K, color: FT_C.km });
+  const comb = ftLaneSpec(ms, lanes, `${tag}-combined`, `${cat} — ${lanes.map(l => l.label.split(' ')[0]).join(', ')} together`, ftCsvMonths(ms, tots, hs ? ['liters', 'visits', 'km', 'amount'] : ['liters', 'km', 'amount']));
   const one = (k, title, vals, d, extra) => {
     const t = k === 'lpv' ? ftLine(ms, vals, title, FT_C[k], d) : ftBar(ms, vals, title, FT_C[k], d, extra && extra.colors);
-    return { id: `${tag}-${k}`, title: `${cat} — ${title}`, sub: '', h: 270, traces: [t], note: extra && extra.note, noteColor: extra && extra.noteColor,
+    return { id: `${tag}-${k}`, title: `${cat} — ${title}`, sub: '', h: 270, traces: [t],
       layout: { showlegend: false, hovermode: 'closest', yaxis: { range: ftRng(vals, extra && extra.lim), gridcolor: '#eef0f7', zeroline: false, separatethousands: true, automargin: true, tickfont: { size: 10 } },
         shapes: extra && extra.lim ? [ftLimShape(extra.lim, 'y')] : [], annotations: extra && extra.lim ? [ftLimNote(extra.lim, 'y')] : [] }, csv: ftCsvMonths(ms, tots, [k]) };
   };
-  const out = [comb, one('amount', 'Amount (Rs)', A, 0), one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
-  if (hs) out.push(one('visits', 'Visits', V, 0), one('lpv', 'Litres per visit', P, 2));
-  out.by = { amount: out[1], liters: out[2], visits: out[3], lpv: out[4] };
+  const out = [comb, one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
+  if (hs) out.push(one('visits', 'Visits', V, 0));
+  out.push(one('km', hs ? 'KM' : 'KM (mileage)', K, 0));
+  if (hs) out.push(one('lpv', 'Litres per visit', P, 2));
+  out.push(one('amount', 'Amount (Rs)', A, 0));
   return out;
 }
-
-// ---- executive view of one category: tiles (trend + month-on-month) -> tap a tile to see its chart; "All charts" shows them together ----
-function ftSpark(vals, color) {
-  const v = vals.map((x, i) => [i, x]).filter(p => p[1] != null);
-  if (v.length < 2) return '';
-  const mx = Math.max(...v.map(p => p[1])), mn = Math.min(...v.map(p => p[1])), n = vals.length - 1 || 1, W = 100, H = 28;
-  const X = (i) => 2 + (W - 4) * i / n, Y = (y) => mx === mn ? H / 2 : H - 3 - (H - 6) * (y - mn) / (mx - mn);
-  const d = v.map((p, k) => `${k ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(' '), l = v[v.length - 1];
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ft-sp"><path d="${d}" pathLength="1" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${X(l[0]).toFixed(1)}" cy="${Y(l[1]).toFixed(1)}" r="2.6" fill="${color}"/></svg>`;
-}
 async function ftRenderCat(box, rows, ms, cat, tag) {
-  const hs = isHS(cat), tots = ftByMonth(rows, ms), specs = ftCatSpecs(rows, ms, cat, tag);
-  const have = tots.map((t, i) => (t.amount || t.liters || t.visits || t.km) ? i : -1).filter(i => i >= 0), li = have.length ? have[have.length - 1] : -1, pi = have.length > 1 ? have[have.length - 2] : -1;
-  const keys = hs ? ['amount', 'liters', 'visits', 'lpv'] : ['amount', 'liters'], sum = ftSum(rows);
-  const tile = (k) => {
-    const vals = tots.map(t => { const v = ftVal(t, k); return v == null ? null : v; }), d = ftDec(k), cur = li >= 0 ? vals[li] : null, prv = pi >= 0 ? vals[pi] : null;
-    const tot = k === 'lpv' ? (sum.visits ? sum.liters / sum.visits : 0) : ftVal(sum, k), avg = k === 'lpv' ? tot : tot / (have.length || 1);
-    const dl = (cur != null && prv) ? `<span class="ft-dp" style="color:${cur >= prv ? '#c0532f' : '#2e7d4f'}">${cur >= prv ? '▲' : '▼'} ${Math.abs((cur - prv) / prv * 100).toFixed(1)}%</span>` : '';
-    return `<button type="button" class="ft-tile" data-k="${k}" style="--c:${FT_C[k]}"><div class="tl">${ftMetricName(k)}</div><div class="tv">${cur == null ? '–' : ftFmt(cur, d)} ${dl}</div><div class="ts">${li >= 0 ? ftMonthLabel(ms[li]) : ''}${k === 'lpv' ? '' : ` · total ${ftCompact(tot)}`} · avg ${k === 'lpv' ? ftFmt(avg, 2) : ftCompact(avg)}</div>${ftSpark(vals, FT_C[k])}</button>`;
-  };
+  const hs = isHS(cat), tots = ftByMonth(rows, ms), sum = ftSum(rows);
   const dl2 = (a, b) => (!b) ? '' : `<span style="color:${a >= b ? '#c0532f' : '#2e7d4f'};font-size:10.5px"> ${a >= b ? '▲' : '▼'}${Math.abs((a - b) / b * 100).toFixed(1)}%</span>`;
-  const tbl = `<details class="ft-mt"><summary>Month-by-month numbers</summary><div class="ft-wrap" style="max-height:280px"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Amount (Rs)</th><th class="n">Litres</th><th class="n">KM</th>${hs ? '<th class="n">Visits</th><th class="n">Litres / visit</th>' : ''}</tr></thead><tbody>${
-    ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td><td class="n">${ftFmt(t.km)}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td><td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}</tr>`; }).join('')
-  }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.amount)}</td><td class="n">${ftFmt(sum.liters)}</td><td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td><td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}</tr></tbody></table></div></details>`;
-  box.innerHTML = `<div class="ft-sc">${keys.map(tile).join('')}</div><div class="ft-vt"><span class="fv-note">Tap a box to see its chart</span><button type="button" class="ft-all" data-all>All charts together</button></div><div class="ft-cv"></div>${tbl}`;
-  const cv = box.querySelector('.ft-cv'), allBtn = box.querySelector('[data-all]');
-  let sel = box._sel || 'amount', all = !!box._all;
-  const show = async () => {
-    box.querySelectorAll('.ft-tile').forEach(t => t.classList.toggle('on', !all && t.dataset.k === sel));
-    allBtn.classList.toggle('on', all); ftPop(cv);
-    if (all) { const sp = keys.map(k => { const c = Object.assign({}, specs.by[k]); c.h = 230; c.wide = false; return c; }); await ftRenderCharts(cv, sp); }
-    else { const c = Object.assign({}, specs.by[sel]); c.h = 310; c.wide = true; await ftRenderCharts(cv, [c]); }
-  };
-  box.querySelectorAll('.ft-tile').forEach(t => t.onclick = () => { sel = t.dataset.k; all = false; box._sel = sel; box._all = false; show(); });
-  allBtn.onclick = () => { all = !all; box._all = all; show(); };
-  await show();
+  const tbl = `<details class="ft-mt"><summary>Month-by-month numbers</summary><div class="ft-wrap" style="max-height:280px"><table class="fv-table"><thead><tr><th>Month</th><th class="n">Litres</th>${hs ? '<th class="n">Visits</th>' : ''}<th class="n">KM</th>${hs ? '<th class="n">Litres / visit</th>' : ''}<th class="n">Amount (Rs)</th></tr></thead><tbody>${
+    ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td>` : ''}<td class="n">${ftFmt(t.km)}${p ? dl2(t.km, p.km) : ''}</td>${hs ? `<td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td></tr>`; }).join('')
+  }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.liters)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td>` : ''}<td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(sum.amount)}</td></tr></tbody></table></div></details>`;
+  box.innerHTML = `<div class="ft-cg"></div>${tbl}`;
+  await ftRenderCharts(box.querySelector('.ft-cg'), ftCatSpecs(rows, ms, cat, tag));
+}
+// donut: share of the total, numbers in the legend
+function ftDonutSpec(id, title, items, unit) {
+  const list = items.filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]), top = list.slice(0, 12), rest = list.slice(12), total = list.reduce((a, x) => a + x[1], 0);
+  if (rest.length) top.push([`Others (${rest.length})`, rest.reduce((a, x) => a + x[1], 0)]);
+  return { id, title, sub: `total ${ftFmt(total)}${unit ? ' ' + unit : ''}`, h: 300, csv: list.map(x => ({ Name: x[0], Value: Math.round(x[1] * 100) / 100, 'Share %': total ? Math.round(x[1] / total * 1000) / 10 : 0 })),
+    traces: [{ type: 'pie', labels: top.map(x => `${x[0]}: ${ftFmt(x[1])}`), values: top.map(x => x[1]), hole: 0.58, sort: false, direction: 'clockwise', text: top.map(x => total && x[1] / total >= 0.04 ? Math.round(x[1] / total * 100) + '%' : ''), textinfo: 'text', textfont: { size: 11, color: '#fff' },
+      marker: { colors: top.map((_, i) => FT_COLORS[i % FT_COLORS.length]), line: { color: '#fff', width: 2 } }, hovertemplate: '%{label}<br><b>%{percent}</b><extra></extra>', domain: { x: [0, 0.58], y: [0, 1] } }],
+    layout: (narrow) => ({ hovermode: 'closest', showlegend: true, margin: { l: 8, r: 8, t: 8, b: 8 }, legend: { orientation: 'v', x: 0.62, y: 0.5, yanchor: 'middle', font: { size: 10 } },
+      annotations: [{ xref: 'paper', yref: 'paper', x: 0.29, y: 0.5, showarrow: false, text: `<b>${ftCompact(total)}</b>`, font: { size: 16, color: '#1c2b6e' } }] }) };
+}
+// shares for one month: category (amount, litres) and the first other split that has 2+ parts
+function ftSnapshotSpecs(rows, m) {
+  const rs = rows.filter(r => r.m === m), agg = (key, f) => { const mm = new Map(); rs.forEach(r => { const k = key(r); mm.set(k, (mm.get(k) || 0) + f(r)); }); return [...mm]; };
+  const dims = [['cat', 'category', (r) => r.category || 'Uncategorised'], ['region', 'region', (r) => r.region_name || '(none)'], ['lead', 'lead', (r) => r.lead_name || '(none)'], ['location', 'location', (r) => r.location || '(none)']].filter(d => new Set(rs.map(d[2])).size > 1);
+  const out = [], lab = ftMonthLabel(m);
+  dims.slice(0, 2).forEach((d, i) => {
+    out.push(ftDonutSpec(`share-${d[0]}-amount`, `Amount by ${d[1]} — ${lab}`, agg(d[2], r => r.amount), 'Rs'));
+    if (i === 0) out.push(ftDonutSpec(`share-${d[0]}-litres`, `Litres by ${d[1]} — ${lab}`, agg(d[2], r => r.approved_liters), 'L'));
+  });
+  return out.slice(0, 3);
 }
 // several categories: stacked by category, with the total written on top
 function ftOverallSpecs(rows, ms, cats) {
@@ -7384,20 +7384,34 @@ function ftOverallSpecs(rows, ms, cats) {
   if (cats.some(isHS)) out.push(mk('visits', true));
   return out;
 }
-// ranking: who / which region used how much (total of the chosen months), numbers on every bar
-function ftRankSpecs(rows, ms, g) {
-  const gname = FT_GROUPS.find(x => x[0] === g)[1], gm = new Map();
-  rows.forEach(r => { const k = ftKey(r, g); let o = gm.get(k); if (!o) gm.set(k, o = { k, t: { liters: 0, amount: 0, km: 0, visits: 0 } }); o.t.liters += r.approved_liters; o.t.amount += r.amount; o.t.km += r.km; o.t.visits += r.visits; });
-  const groups = [...gm.values()], hasV = groups.some(o => o.t.visits > 0), nm = (s) => s.length > 28 ? s.slice(0, 27) + '…' : s;
-  const mk = (m) => {
-    const gl = groups.filter(o => ftVal(o.t, m) != null && (m !== 'visits' || o.t.visits > 0)).sort((a, b) => ftVal(b.t, m) - ftVal(a.t, m)), top = gl.slice(0, 15), d = ftDec(m);
-    return { id: `rank-${g}-${m}`, title: `${ftMetricName(m)} — ${gname}`, sub: `top ${top.length} of ${gl.length}`, h: Math.max(240, top.length * 30 + 60),
-      traces: [{ type: 'bar', orientation: 'h', y: top.map(o => nm(o.k)).reverse(), x: top.map(o => Math.round(ftVal(o.t, m) * 100) / 100).reverse(), text: top.map(o => ftFmt(ftVal(o.t, m), d)).reverse(), textposition: 'outside', cliponaxis: false, textfont: { size: 11, color: '#2b3350' },
-        customdata: top.map(o => o.k).reverse(), marker: { color: FT_C[m] }, hovertemplate: `%{customdata}<br><b>%{x:,.${d}f}</b><extra></extra>` }],
-      layout: (narrow) => ({ hovermode: 'closest', showlegend: false, margin: { l: narrow ? 100 : 150, r: 64, t: 12, b: 28 }, xaxis: { range: ftRng(top.map(o => ftVal(o.t, m))), gridcolor: '#eef0f7', separatethousands: true }, yaxis: { type: 'category', automargin: true, tickfont: { size: 10 } } }),
-      csv: gl.map(o => ({ [gname]: o.k, Litres: Math.round(o.t.liters * 100) / 100, 'Amount (Rs)': Math.round(o.t.amount), KM: Math.round(o.t.km), Visits: o.t.visits })) };
-  };
-  return [mk('amount'), mk('liters')].concat(hasV ? [mk('visits'), mk('lpv')] : []);
+// ranking / donut / lines for any chosen items (add, remove, select all)
+function ftGroupAgg(rows, g) {
+  const gm = new Map();
+  rows.forEach(r => { const k = ftKey(r, g); let o = gm.get(k); if (!o) gm.set(k, o = { k, by: new Map(), t: { liters: 0, amount: 0, km: 0, visits: 0 } });
+    let t = o.by.get(r.m); if (!t) o.by.set(r.m, t = { liters: 0, amount: 0, km: 0, visits: 0 });
+    [t, o.t].forEach(x => { x.liters += r.approved_liters; x.amount += r.amount; x.km += r.km; x.visits += r.visits; }); });
+  return [...gm.values()].sort((a, b) => b.t.amount - a.t.amount);
+}
+function ftCompareSpecs(groups, ms, g, sel, view, measure) {
+  const gname = FT_GROUPS.find(x => x[0] === g)[1], chosen = groups.filter(o => sel.has(o.k)), hasV = chosen.some(o => o.t.visits > 0);
+  const measures = measure === 'all' ? ['amount', 'liters', 'km'].concat(hasV ? ['visits'] : []) : [measure], single = measures.length === 1;
+  const nm = (s) => s.length > 30 ? s.slice(0, 29) + '…' : s, L = ms.map(ftMonthLabel);
+  return measures.map(m => {
+    const d = ftDec(m), name = ftMetricName(m), list = chosen.filter(o => (ftVal(o.t, m) || 0) > 0).sort((a, b) => ftVal(b.t, m) - ftVal(a.t, m));
+    const csv = list.map(o => ({ [gname]: o.k, [name]: Math.round(ftVal(o.t, m) * 100) / 100 }));
+    if (view === 'donut') { const sp = ftDonutSpec(`cmp-${g}-${m}-share`, `${name} — share by ${gname}`, list.map(o => [o.k, ftVal(o.t, m)]), ''); sp.wide = single; return sp; }
+    if (view === 'lines') {
+      const top = list.slice(0, 12), few = top.length <= 3;
+      return { id: `cmp-${g}-${m}-lines`, title: `${name} by month — ${gname}`, sub: list.length > 12 ? `top 12 of ${list.length}` : '', wide: true, h: 360, csv: list.map(o => { const r = { [gname]: o.k }; ms.forEach(x => { r[ftMonthLabel(x)] = o.by.has(x) ? Math.round(ftVal(o.by.get(x), m) * 100) / 100 : ''; }); return r; }),
+        traces: top.map((o, i) => { const y = ms.map(x => o.by.has(x) ? Math.round(ftVal(o.by.get(x), m) * 100) / 100 : null), c = FT_COLORS[i % FT_COLORS.length];
+          return { type: 'scatter', mode: few ? 'lines+markers+text' : 'lines+markers', x: L, y, name: nm(o.k), text: y.map(v => v == null ? '' : ftFmt(v, d)), textposition: 'top center', cliponaxis: false, textfont: { size: 10, color: c }, connectgaps: false, marker: { color: c, size: 7 }, line: { color: c, width: 2.6, shape: 'spline', smoothing: 0.4 }, hovertemplate: `<b>%{y:,.${d}f}</b><extra>%{fullData.name}</extra>` }; }),
+        layout: { hovermode: 'x unified', margin: { l: 56, r: 14, t: 26, b: 56 }, yaxis: { gridcolor: '#eef0f7', zeroline: false, separatethousands: true, rangemode: 'tozero', automargin: true, tickfont: { size: 10 } } } };
+    }
+    return { id: `cmp-${g}-${m}-bars`, title: `${name} — ${gname}`, sub: `${list.length} shown`, wide: single, h: Math.min(3600, Math.max(240, list.length * 26 + 60)), csv,
+      traces: [{ type: 'bar', orientation: 'h', y: list.map(o => nm(o.k)).reverse(), x: list.map(o => Math.round(ftVal(o.t, m) * 100) / 100).reverse(), text: list.map(o => ftFmt(ftVal(o.t, m), d)).reverse(), textposition: 'outside', cliponaxis: false, textfont: { size: 11, color: '#2b3350' },
+        customdata: list.map(o => o.k).reverse(), marker: { color: FT_C[m] || '#1E2A6E' }, hovertemplate: `%{customdata}<br><b>%{x:,.${d}f}</b><extra></extra>` }],
+      layout: (narrow) => ({ hovermode: 'closest', showlegend: false, margin: { l: narrow ? 100 : 160, r: 70, t: 12, b: 28 }, xaxis: { range: ftRng(list.map(o => ftVal(o.t, m))), gridcolor: '#eef0f7', separatethousands: true }, yaxis: { type: 'category', automargin: true, tickfont: { size: 10 } } }) };
+  });
 }
 
 // ---------------- pages ----------------
@@ -7459,6 +7473,8 @@ async function ftPageTrend(host) {
     const f = FT.f, parts = [f.cat.length ? f.cat.join(', ') : 'All categories', f.region.length ? f.region.join(', ') : 'All regions'];
     ['lead', 'location', 'city', 'rider'].forEach(k => { if (f[k].length) parts.push(f[k].length > 2 ? `${f[k].length} ${FT_GROUPS.find(x => x[0] === k)[1]}` : f[k].join(', ')); });
     parts.push(f.month.length ? `${f.month.length} month${f.month.length > 1 ? 's' : ''}` : `${ftMonthLabel(allMs[0])} – ${ftMonthLabel(allMs[allMs.length - 1])}`);
+    FT.any = Object.values(FT.f).some(v => v.length);
+    if (!FT.any) { scope.innerHTML = '<span class="fv-note">Nothing selected yet — choose a category, region, lead … above and press <b>Apply</b> to see its numbers. The overview below covers everything.</span>'; kp.innerHTML = ''; drawBody(); return; }
     scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')}`;
     const tot = ftSum(rows), hs = rows.some(r => isHS(r.category) && r.visits > 0), hsT = ftSum(rows.filter(r => isHS(r.category)));
     const rate = [...ms].reverse().find(m => FT.set && FT.set.rates.has(m));
@@ -7486,7 +7502,7 @@ async function ftPageTrend(host) {
     const cm = new Map(); rows.forEach(r => { const k = r.category || 'Uncategorised'; let o = cm.get(k); if (!o) cm.set(k, o = []); o.push(r); });
     const cats = [...cm.entries()].sort((a, b) => ftSum(b[1]).amount - ftSum(a[1]).amount);
     res.innerHTML = `<div class="ft-sec" id="ft-q"></div><div id="ft-over"></div><div id="ft-cs"></div>`;
-    drawQuick(res.querySelector('#ft-q'));
+    drawQuick(res.querySelector('#ft-q'), FT.any);
     const over = res.querySelector('#ft-over'), cs = res.querySelector('#ft-cs');
     if (cats.length > 1) await ftRenderCharts(over, ftOverallSpecs(rows, ms, cats.map(c => c[0])));
     const banner = (c) => { const m = [...ms].reverse().find(x => all.some(r => r.m === x && (r.category || 'Uncategorised') === c)); if (!m) return '';
@@ -7502,30 +7518,47 @@ async function ftPageTrend(host) {
     const fill = async (det) => { const box = det.querySelector('.ft-body'); if (box.dataset.done) return; box.dataset.done = '1'; const [c, rs] = cats[+det.dataset.ci]; await ftRenderCat(box, rs, ms, c, 'c' + det.dataset.ci); };
     cs.querySelectorAll('details.ft-det').forEach(det => { det.addEventListener('toggle', () => { if (det.open) fill(det); }); if (det.open) fill(det); });
   }
-  // ----- quick review of one month -----
-  function drawQuick(box) {
+  // ----- one month: numbers (when something is selected) + shares as donuts -----
+  function drawQuick(box, withBoxes) {
     const have = ms.filter(m => rows.some(r => r.m === m));
     if (!FT.qm || !have.includes(FT.qm)) FT.qm = have[have.length - 1];
-    box.innerHTML = `<div class="ft-qh"><h4>Quick month review</h4><div class="fv-fg" id="ft-qm" style="min-width:150px"></div></div><div class="ft-kpis" id="ft-qk" style="margin:8px 0 0"></div>`;
+    box.innerHTML = `<div class="ft-qh"><h4>Month snapshot</h4><div class="fv-fg" id="ft-qm" style="min-width:150px"></div></div><div class="ft-kpis" id="ft-qk" style="margin:8px 0 0"></div><div id="ft-dn"></div>`;
     const paint = () => {
-      const i = allMs.indexOf(FT.qm), prev = i > 0 ? allMs[i - 1] : null, cur = ftSum(rows.filter(r => r.m === FT.qm)), pv = prev ? ftSum(rows.filter(r => r.m === prev)) : null;
-      const hs = rows.some(r => r.m === FT.qm && isHS(r.category) && r.visits > 0), hc = ftSum(rows.filter(r => r.m === FT.qm && isHS(r.category)));
-      const dl = (a, b) => (!pv || !b) ? '' : `<span class="ft-d" style="color:${a >= b ? '#c0532f' : '#2e7d4f'}">${a >= b ? '▲' : '▼'} ${Math.abs((a - b) / b * 100).toFixed(1)}% vs ${ftMonthLabel(prev).slice(0, 3)}</span>`;
-      const t = [['Amount (Rs)', cur.amount, pv && pv.amount, 0], ['Litres', cur.liters, pv && pv.liters, 0], ['KM', cur.km, pv && pv.km, 0]];
-      const k = box.querySelector('#ft-qk'), rate = FT.set && FT.set.rates.get(FT.qm);
-      k.innerHTML = t.map(([l, v, p, d]) => `<div class="ft-kpi"><div class="n">${ftFmt(v, d)}</div><div class="l">${l}</div>${dl(v, p)}</div>`).join('') +
-        (hs ? `<div class="ft-kpi"><div class="n">${ftFmt(hc.visits)}</div><div class="l">Home Sampling visits</div></div><div class="ft-kpi"><div class="n">${hc.visits ? ftFmt(hc.liters / hc.visits, 2) : '–'}</div><div class="l">Litres per visit</div></div>` : '') +
-        (rate ? `<div class="ft-kpi"><div class="n">${ftFmt(rate, 2)}</div><div class="l">Rs/KM</div></div>` : '');
-      ftPop(k);
+      const k = box.querySelector('#ft-qk');
+      if (withBoxes) {
+        const i = allMs.indexOf(FT.qm), prev = i > 0 ? allMs[i - 1] : null, cur = ftSum(rows.filter(r => r.m === FT.qm)), pv = prev ? ftSum(rows.filter(r => r.m === prev)) : null;
+        const hs = rows.some(r => r.m === FT.qm && isHS(r.category) && r.visits > 0), hc = ftSum(rows.filter(r => r.m === FT.qm && isHS(r.category)));
+        const dl = (a, b) => (!pv || !b) ? '' : `<span class="ft-d" style="color:${a >= b ? '#c0532f' : '#2e7d4f'}">${a >= b ? '▲' : '▼'} ${Math.abs((a - b) / b * 100).toFixed(1)}% vs ${ftMonthLabel(prev).slice(0, 3)}</span>`;
+        const t = [['Litres', cur.liters, pv && pv.liters], ['KM', cur.km, pv && pv.km], ['Amount (Rs)', cur.amount, pv && pv.amount]], rate = FT.set && FT.set.rates.get(FT.qm);
+        k.innerHTML = t.map(([l, v, p]) => `<div class="ft-kpi"><div class="n">${ftFmt(v)}</div><div class="l">${l}</div>${dl(v, p)}</div>`).join('') +
+          (hs ? `<div class="ft-kpi"><div class="n">${ftFmt(hc.visits)}</div><div class="l">Home Sampling visits</div></div><div class="ft-kpi"><div class="n">${hc.visits ? ftFmt(hc.liters / hc.visits, 2) : '–'}</div><div class="l">Litres per visit</div></div>` : '') +
+          (rate ? `<div class="ft-kpi"><div class="n">${ftFmt(rate, 2)}</div><div class="l">Rs/KM</div></div>` : '');
+        ftPop(k);
+      } else k.innerHTML = '';
+      const dn = box.querySelector('#ft-dn'), sp = ftSnapshotSpecs(rows, FT.qm);
+      if (sp.length) ftRenderCharts(dn, sp); else { dn.classList.remove('ft-charts'); dn.innerHTML = '<div class="fv-note" style="margin-top:6px">Shares appear when the selection has several categories, regions or leads.</div>'; }
     };
     ftDrop(box.querySelector('#ft-qm'), { label: 'Month', options: () => have.slice().reverse().map(m => [m, ftMonthLabel(m)]), get: () => FT.qm, set: (v) => { FT.qm = v || FT.qm; paint(); }, none: ftMonthLabel(FT.qm) });
     paint();
   }
-  // ----- Compare: ranking -----
+  // ----- Compare: pick items, choose bars / donut / lines -----
   async function drawCompare(my) {
-    res.innerHTML = `<div class="ft-tb"><div class="fv-fg" id="ft-vg" style="min-width:220px"></div><span class="fv-note" style="flex:1;min-width:200px">Ranking of the ${escapeHtml(FT_GROUPS.find(x => x[0] === FT.g)[1])} — total of the selected months, biggest first. Apply the filters above first (for example one category).</span></div><div id="ft-rk"></div>`;
-    ftDrop(res.querySelector('#ft-vg'), { label: 'Compare by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; drawBody(); }, none: 'Region' });
-    await ftRenderCharts(res.querySelector('#ft-rk'), ftRankSpecs(rows, ms, FT.g));
+    const groups = ftGroupAgg(rows, FT.g), sig = FT.g + '|' + JSON.stringify(FT.f);
+    const C = FT.cmp = (FT.cmp && FT.cmp.sig === sig) ? FT.cmp : { sig, sel: groups.slice(0, 15).map(o => o.k), view: (FT.cmp && FT.cmp.view) || 'bar', measure: (FT.cmp && FT.cmp.measure) || 'all' };
+    res.innerHTML = `<div class="ft-bar" style="margin-bottom:8px"><div class="fv-fg" data-c="g"></div><div class="fv-fg" data-c="items"></div><div class="fv-fg" data-c="view"></div><div class="fv-fg" data-c="measure"></div></div>
+      <div class="fv-note" style="margin:0 0 8px" id="ft-cmpn"></div><div id="ft-rk"></div>`;
+    const out = res.querySelector('#ft-rk'), note = res.querySelector('#ft-cmpn');
+    const gname = () => FT_GROUPS.find(x => x[0] === FT.g)[1];
+    const paint = async () => {
+      note.textContent = `${C.sel.length} of ${groups.length} ${gname()} selected — use "Items" to add or remove any, or Select all / Clear.`;
+      if (!C.sel.length) { out.classList.remove('ft-charts'); out.innerHTML = '<div class="empty-state"><p>Nothing chosen — open "Items" and pick some, or press Select all.</p></div>'; return; }
+      await ftRenderCharts(out, ftCompareSpecs(groups, ms, FT.g, new Set(C.sel), C.view, C.measure));
+    };
+    ftDrop(res.querySelector('[data-c="g"]'), { label: 'Compare by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; FT.cmp = null; drawBody(); }, none: 'Region' });
+    ftDrop(res.querySelector('[data-c="items"]'), { label: `Items (${groups.length})`, multi: true, options: () => groups.map(o => [o.k, `${o.k} — ${ftCompact(o.t.amount)}`]), get: () => C.sel, set: (v) => { C.sel = v; paint(); }, none: 'None chosen' });
+    ftDrop(res.querySelector('[data-c="view"]'), { label: 'Show as', options: () => [['bar', 'Bars (ranking)'], ['donut', 'Donut (share)'], ['lines', 'Lines (by month)']], get: () => C.view, set: (v) => { C.view = v || 'bar'; paint(); }, none: 'Bars (ranking)' });
+    ftDrop(res.querySelector('[data-c="measure"]'), { label: 'Measure', options: () => [['all', 'All measures'], ['amount', 'Amount (Rs)'], ['liters', 'Litres'], ['km', 'KM'], ['visits', 'Visits']], get: () => C.measure, set: (v) => { C.measure = v || 'all'; paint(); }, none: 'All measures' });
+    await paint();
   }
   // ----- Table & download -----
   function drawTable() {
