@@ -4648,7 +4648,7 @@ const GRANTABLE_PERMISSIONS = [
   ['circular_categories_manage', 'Manage Circular Categories'],
   ['circular_push_kb', 'Push a Circular to Knowledge Base'],
   ['warnings_issue_to_coordinator', 'Area Incharge: issue warnings to Coordinators'],
-  ['export_active_employees', 'Download active-employee list (e.g. for salary processing)'],
+  ['export_active_employees', 'Download active-employee list (e.g. for internal use only)'],
   ['tool_bulk_update', 'Bulk-update Tool records'],
   ['roster_bulk_add', 'Roster — Bulk Add'],
   ['roster_bulk_update', 'Roster — Bulk Update'],
