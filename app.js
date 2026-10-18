@@ -735,6 +735,7 @@ async function fhSetupNativeApp(){
       if (AppP && AppP.addListener){
         AppP.addListener('appStateChange', (st) => { if (st && st.isActive) fhTouchActivity(true); });
         AppP.addListener('backButton', () => {
+          if (typeof ftCloseBig === 'function' && ftCloseBig()) return;
           if (document.body.classList.contains('fh-drawer-open')){ fhCloseDrawer(); return; }
           const modal = document.getElementById('active-modal');
           if (modal){ if (typeof requestCloseModal === 'function') requestCloseModal(); else closeModal(); return; }
@@ -7252,6 +7253,18 @@ function ftEnsureStyle() {
 .ft-ch button,.ft-tb button{border:1px solid #dfe3ee;background:#fff;border-radius:7px;padding:3px 8px;font:inherit;font-size:11px;color:#46506e;cursor:pointer}
 .ft-ch button:hover,.ft-tb button:hover{background:#f1f3fb}
 .ft-plot{width:100%}
+.ft-ch button.ft-tg{border-color:#c9cff0;color:#1c2b6e;font-weight:600;white-space:nowrap}.ft-ch button.ft-tg.on{background:#1E2A6E;color:#fff;border-color:#1E2A6E}
+.ft-big{position:fixed;inset:0;z-index:10060;background:rgba(18,24,60,.55);display:flex;align-items:center;justify-content:center;padding:14px;animation:fhFade .18s backwards}
+.ft-bp{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);width:min(1400px,100%);height:min(920px,100%);display:flex;flex-direction:column;padding:10px 14px 12px;animation:ftPop .22s cubic-bezier(.2,.8,.2,1) backwards;min-width:0}
+.ft-bh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}.ft-bh h4{margin:0;flex:1;min-width:140px;font-size:15px;color:#1c2b6e}
+.ft-bt{display:flex;gap:6px;flex-wrap:wrap}
+.ft-bt button,.ft-x{border:1px solid #dfe3ee;background:#fff;border-radius:8px;min-width:40px;height:36px;padding:0 12px;font:inherit;font-size:13px;font-weight:600;color:#1c2b6e;cursor:pointer}
+.ft-bt button:hover,.ft-x:hover{background:#eef0f9}.ft-bt button.on{background:#1E2A6E;color:#fff;border-color:#1E2A6E}
+.ft-bn{font-size:11.5px;color:#7a819c;margin-bottom:6px}
+.ft-bplot{flex:1;min-height:0;width:100%;touch-action:none}
+body.ft-nosc{overflow:hidden}
+@keyframes ftPop{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+@media(max-width:640px){.ft-big{padding:0}.ft-bp{width:100%;height:100%;border-radius:0;padding:8px 10px}.ft-bt button{padding:0 9px;font-size:12px}}
 .ft-tb{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 8px}
 .ft-det{background:#fff;border:1px solid rgba(30,42,110,.07);border-radius:12px;margin-bottom:10px;overflow:hidden}
 .ft-det>summary{cursor:pointer;padding:10px 12px;font-weight:700;color:#1c2b6e;display:flex;gap:10px;align-items:center;flex-wrap:wrap;list-style:none}
@@ -7445,20 +7458,34 @@ function ftLayout(extra, narrow) {
     dragmode: ftTouch() ? false : 'zoom'
   }, extra || {});
 }
+// Snapshot: draws a clean copy of the graph (with a title) off-screen, so the graph on the page is never touched.
+function ftShowImage(url, name) {
+  const o = document.createElement('div'); o.className = 'ft-big'; o.style.zIndex = 10070;
+  o.innerHTML = `<div class="ft-bp" style="height:auto;max-height:100%;overflow:auto"><div class="ft-bh"><h4>${escapeHtml(name)}</h4><button type="button" class="ft-x" aria-label="Close">✕</button></div><div class="ft-bn">Press and hold the picture, then choose Save / Download image.</div><img src="${url}" alt="" style="width:100%;height:auto;border-radius:8px"></div>`;
+  document.body.appendChild(o);
+  const close = () => o.remove(); o.querySelector('.ft-x').onclick = close; o.addEventListener('click', (e) => { if (e.target === o) close(); });
+}
 async function ftSavePng(gd, name, title) {
+  let tmp = null;
   try {
-    const w = Math.max(900, gd.clientWidth * 1.6), h = Math.max(520, gd.clientHeight * 1.6);
-    await Plotly.relayout(gd, { 'title.text': title, 'title.font.size': 15, 'margin.t': 50 });
-    const url = await Plotly.toImage(gd, { format: 'png', width: w, height: h, scale: 2 });
-    await Plotly.relayout(gd, { 'title.text': '', 'margin.t': 26 });
+    await ftEnsurePlotly();
+    const w = Math.max(1000, Math.round((gd.clientWidth || 600) * 1.6)), h = Math.max(560, Math.round((gd.clientHeight || 340) * 1.6));
+    tmp = document.createElement('div'); tmp.style.cssText = `position:fixed;left:-99999px;top:0;width:${w}px;height:${h}px;`; document.body.appendChild(tmp);
+    const lay = JSON.parse(JSON.stringify(gd.layout || {}));
+    lay.width = w; lay.height = h; lay.autosize = false; lay.paper_bgcolor = '#ffffff';
+    lay.title = { text: '<b>' + title + '</b>', x: 0.02, xanchor: 'left', font: { size: 18, color: '#1c2b6e' } };
+    lay.margin = Object.assign({ l: 50, r: 14, b: 34 }, lay.margin || {}, { t: 64 });
+    await Plotly.newPlot(tmp, JSON.parse(JSON.stringify(gd.data || [])), lay, { staticPlot: true, displayModeBar: false, responsive: false });
+    const url = await Plotly.toImage(tmp, { format: 'png', width: w, height: h, scale: 2 });
     const blob = await (await fetch(url)).blob(), file = new File([blob], name + '.png', { type: 'image/png' });
     if (fhIsNativeApp()) {
-      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
-      toast('Saving images is not supported on this phone — use the CSV button.'); return;
+      try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
+      ftShowImage(url, title); return;
     }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1500);
   } catch (e) { if (e && e.name === 'AbortError') return; console.error(e); toast('Could not create the image'); }
+  finally { if (tmp) { try { Plotly.purge(tmp); } catch (_) {} tmp.remove(); } }
 }
 // charts re-fit while the menu slides or the window changes size
 const FT_RZ = new Set();
@@ -7473,22 +7500,74 @@ function ftWatch(d) {
   window.__ftRO.observe(d);
 }
 const ftZeroK = (t) => t.orientation === 'h' ? 'x' : 'y';
-// specs: [{ id, title, sub, traces, layout, csv, h, wide }]. Bars/lines grow in with a short animation (skipped when the phone asks for reduced motion).
+// layout for one graph (shared by the small card and the large pop-up)
+function ftPrep(s, narrow, w) {
+  const isPie = s.traces.some(t => t.type === 'pie');
+  const lay = ftLayout(typeof s.layout === 'function' ? s.layout(narrow, w) : s.layout, narrow);
+  if (isPie) { delete lay.xaxis; delete lay.yaxis; }
+  return { lay, isPie };
+}
+// pie: the slice under the finger / mouse slides out
+function ftPieHover(d) {
+  let cur = -1; const n = (d.data[0].values || []).length;
+  const set = (i) => { if (i === cur) return; cur = i; try { Plotly.restyle(d, { pull: [Array.from({ length: n }, (_, k) => k === i ? 0.1 : 0)] }, [0]); } catch (_) {} };
+  d.on('plotly_hover', (e) => { const p = e && e.points && e.points[0]; if (p && p.pointNumber != null) set(p.pointNumber); });
+  d.on('plotly_unhover', () => set(-1));
+}
+const ftIcBig = { width: 24, height: 24, path: 'M3 3h7v2H5v5H3V3zm11 0h7v7h-2V5h-5V3zM3 14h2v5h5v2H3v-7zm16 0h2v7h-7v-2h5v-5z' };
+// Large pop-up: Zoom, Move, +, -, Reset, Snapshot and CSV all work here (mouse, finger, pinch).
+function ftCloseBig() { const o = document.getElementById('ft-big'); if (!o) return false; try { Plotly.purge(o.querySelector('.ft-bplot')); } catch (_) {} o.remove(); document.body.classList.remove('ft-nosc'); if (window.__ftBigKey) { document.removeEventListener('keydown', window.__ftBigKey); window.__ftBigKey = null; } return true; }
+async function ftBigView(s, tool) {
+  try { await ftEnsurePlotly(); } catch (e) { toast('Could not load the chart library'); return; }
+  ftCloseBig();
+  const isPie = s.traces.some(t => t.type === 'pie'), o = document.createElement('div'); o.id = 'ft-big'; o.className = 'ft-big';
+  const tb = isPie ? '' : `<button type="button" data-bt="zoom" title="Drag a box over the part you want to enlarge">Zoom</button><button type="button" data-bt="pan" title="Drag the graph sideways / up / down">Move</button><button type="button" data-bt="in" title="Zoom in">+</button><button type="button" data-bt="out" title="Zoom out">−</button><button type="button" data-bt="reset" title="Back to the full graph">Reset</button>`;
+  o.innerHTML = `<div class="ft-bp" role="dialog" aria-label="${escapeHtml(s.title)}"><div class="ft-bh"><h4>${escapeHtml(s.title)}</h4><span class="ft-bt">${tb}<button type="button" data-bt="png" title="Save a picture of this view">Snapshot</button><button type="button" data-bt="csv" title="Download the numbers">CSV</button></span><button type="button" class="ft-x" aria-label="Close">✕</button></div>${isPie ? '' : '<div class="ft-bn">Zoom: drag a box over the area.  Move: drag to slide.  On a phone: slide with one finger, pinch with two.</div>'}<div class="ft-bplot"></div></div>`;
+  document.body.appendChild(o); document.body.classList.add('ft-nosc');
+  const d = o.querySelector('.ft-bplot'), w = d.clientWidth || 600, narrow = w < 460, pr = ftPrep(s, narrow, w), lay = pr.lay;
+  if (!isPie) lay.dragmode = (tool === 'pan' || (tool !== 'zoom' && ftTouch())) ? 'pan' : 'zoom';
+  const tr = isPie ? s.traces.map(t => Object.assign({}, t, { textfont: Object.assign({}, t.textfont, { size: 14 }) })) : s.traces;
+  const cfg = { responsive: true, displaylogo: false, displayModeBar: false, scrollZoom: true, doubleClick: 'reset', showAxisDragHandles: true };
+  const init = {}, axes = () => ['xaxis', 'yaxis'].filter(a => d._fullLayout && d._fullLayout[a] && !d._fullLayout[a].fixedrange);
+  const zoomBy = (f) => { const u = {}; axes().forEach(a => { const r = d._fullLayout[a].range, c = (r[0] + r[1]) / 2, h = (r[1] - r[0]) / 2 / f; u[a + '.range'] = [c - h, c + h]; }); if (Object.keys(u).length) Plotly.relayout(d, u); };
+  const mark = (m) => o.querySelectorAll('[data-bt=zoom],[data-bt=pan]').forEach(b => b.classList.toggle('on', b.dataset.bt === m));
+  await Plotly.react(d, tr, lay, cfg);
+  if (isPie) ftPieHover(d); else { axes().forEach(a => { init[a] = d._fullLayout[a].range.slice(); }); mark(lay.dragmode); }
+  ftWatch(d);
+  o.querySelector('[data-bt=png]').onclick = () => ftSavePng(d, s.id, s.title);
+  o.querySelector('[data-bt=csv]').onclick = () => { if (!s.csv || !s.csv.length) { toast('Nothing to download'); return; } downloadCSV(s.id + '.csv', toCSV(s.csv)); };
+  if (!isPie) {
+    o.querySelector('[data-bt=zoom]').onclick = () => { Plotly.relayout(d, { dragmode: 'zoom' }); mark('zoom'); };
+    o.querySelector('[data-bt=pan]').onclick = () => { Plotly.relayout(d, { dragmode: 'pan' }); mark('pan'); };
+    o.querySelector('[data-bt=in]').onclick = () => zoomBy(1.6);
+    o.querySelector('[data-bt=out]').onclick = () => zoomBy(1 / 1.6);
+    o.querySelector('[data-bt=reset]').onclick = () => { const u = {}; Object.keys(init).forEach(a => { u[a + '.range'] = init[a]; }); Plotly.relayout(d, u); };
+    if (tool === 'in') zoomBy(1.6); else if (tool === 'out') zoomBy(1 / 1.6);
+  }
+  o.querySelector('.ft-x').onclick = ftCloseBig;
+  o.addEventListener('click', (e) => { if (e.target === o) ftCloseBig(); });
+  window.__ftBigKey = (e) => { if (e.key === 'Escape') ftCloseBig(); }; document.addEventListener('keydown', window.__ftBigKey);
+}
+// specs: [{ id, title, sub, traces, layout, csv, h, wide, fit, toggle }]. Bars/lines grow in with a short animation (skipped when the phone asks for reduced motion).
 async function ftRenderCharts(host, specs) {
   await ftEnsurePlotly();
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
-  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
+  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small>${s.toggle ? `<button type="button" class="ft-tg ${s.toggle.on ? 'on' : ''}" data-tg="${i}" title="${escapeHtml(s.toggle.title || '')}">${escapeHtml(s.toggle.label)}</button>` : ''}<button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
   const plots = host.querySelectorAll('.ft-plot'), anim0 = !ftReduced();
   specs.forEach((s, i) => {
-    const d = plots[i], narrow = d.clientWidth < 460;
-    const cfg = { responsive: true, displaylogo: false, displayModeBar: true, scrollZoom: false,
-      modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
-      modeBarButtonsToAdd: [{ name: 'png', title: 'Download as PNG', icon: Plotly.Icons.camera, click: (gd) => ftSavePng(gd, s.id, s.title) }] };
-    const lay = ftLayout(typeof s.layout === 'function' ? s.layout(narrow) : s.layout, narrow), anim = anim0 && !s.traces.some(t => t.type === 'pie');
-    if (s.traces.some(t => t.type === 'pie')) { delete lay.xaxis; delete lay.yaxis; if (narrow) lay.legend = Object.assign({}, lay.legend, { orientation: 'h', x: 0, y: -0.05, yanchor: 'top' }); }
+    const d = plots[i];
+    if (s.fit) d.style.height = s.fit(d.clientWidth || 340).h + 'px';
+    const w = d.clientWidth || 340, narrow = w < 460, pr = ftPrep(s, narrow, w), lay = pr.lay, isPie = pr.isPie;
+    const bt = (name, title, icon, fn) => ({ name, title, icon, click: fn });
+    const open = (tool) => () => ftBigView(s, tool), snap = bt('snap', 'Snapshot (PNG picture)', Plotly.Icons.camera, (gd) => ftSavePng(gd, s.id, s.title));
+    const btns = isPie ? [bt('big', 'Open large', ftIcBig, open('view')), snap]
+      : [bt('big', 'Open large', ftIcBig, open('view')), bt('zoom', 'Zoom — opens large', Plotly.Icons.zoombox, open('zoom')), bt('pan', 'Move — opens large', Plotly.Icons.pan, open('pan')), bt('zin', 'Zoom in — opens large', Plotly.Icons.zoom_plus, open('in')), bt('zout', 'Zoom out — opens large', Plotly.Icons.zoom_minus, open('out')), bt('home', 'Reset — opens large', Plotly.Icons.home, open('reset')), snap];
+    const cfg = { responsive: true, displaylogo: false, displayModeBar: true, scrollZoom: false, modeBarButtons: [btns] };
+    const anim = anim0 && !isPie;
     const start = anim ? s.traces.map(t => { const k = ftZeroK(t), c = Object.assign({}, t); if (Array.isArray(t[k])) c[k] = t[k].map(v => v == null ? null : 0); return c; }) : s.traces;
     Plotly.react(d, start, lay, cfg).then(() => {
+      if (isPie) ftPieHover(d);
       if (!anim) return;
       return Plotly.animate(d, { data: s.traces.map(t => ({ [ftZeroK(t)]: t[ftZeroK(t)] })), traces: s.traces.map((_, k) => k) }, { transition: { duration: 650, easing: 'cubic-out' }, frame: { duration: 650, redraw: false } });
     }).catch(() => { try { Plotly.react(d, s.traces, lay, cfg); } catch (e) {} });
@@ -7498,6 +7577,7 @@ async function ftRenderCharts(host, specs) {
     host.querySelector(`[data-hide="${i}"]`).onclick = () => { const c = card.classList.toggle('collapsed'); if (c) FT.hid.add(s.title); else { FT.hid.delete(s.title); setTimeout(() => { ftResize(d); }, 40); } };
     host.querySelector(`[data-png="${i}"]`).onclick = () => ftSavePng(d, s.id, s.title);
     host.querySelector(`[data-csv="${i}"]`).onclick = () => { if (!s.csv || !s.csv.length) { toast('Nothing to download'); return; } downloadCSV(s.id + '.csv', toCSV(s.csv)); };
+    const tg = host.querySelector(`[data-tg="${i}"]`); if (tg && s.toggle && s.toggle.fn) tg.onclick = () => s.toggle.fn();
   });
 }
 // ---- chart building blocks: every bar and point shows its number ----
@@ -7514,7 +7594,7 @@ function ftLine(ms, vals, name, color, d) {
 const ftLimShape = (lim, yref) => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref, y0: lim, y1: lim, line: { color: '#c0532f', width: 2, dash: 'dash' } });
 const ftLimNote = (lim, yref) => ({ xref: 'paper', x: 1, xanchor: 'right', yref, y: lim, yanchor: 'bottom', text: `Limit ${ftFmt(lim)} L`, showarrow: false, font: { color: '#c0532f', size: 11 } });
 function ftCsvMonths(ms, tots, cols) { return ms.map((m, i) => { const o = { Month: ftMonthLabel(m) }; cols.forEach(c => { const v = ftVal(tots[i], c); o[ftMetricName(c)] = v == null ? '' : Math.round(v * 100) / 100; }); return o; }); }
-const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3', km: '#2a8fa8' };
+const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3', km: '#2a8fa8', mem: '#b5483a' };
 
 // ---- one chart with several "lanes" (each measure has its own band, numbers on every point) ----
 function ftLaneSpec(ms, defs, id, title, csv) {
@@ -7540,7 +7620,11 @@ function ftCatSpecs(rows, ms, cat, tag) {
   const lanes = [{ k: 'liters', label: 'Litres', vals: Lt, color: FT_C.liters }];
   if (hs) lanes.push({ k: 'visits', label: 'Visits', vals: V, color: FT_C.visits });
   lanes.push({ k: 'km', label: hs ? 'KM' : 'KM (mileage)', vals: K, color: FT_C.km });
-  const comb = ftLaneSpec(ms, lanes, `${tag}-combined`, `${cat} — ${lanes.map(l => l.label.split(' ')[0]).join(', ')} together`, ftCsvMonths(ms, tots, hs ? ['liters', 'visits', 'km', 'amount'] : ['liters', 'km', 'amount']));
+  const combTitle = `${cat} — ${lanes.map(l => l.label.split(' ')[0]).join(', ')} together`, withM = !!(FT.memOn && FT.memOn[tag]), memC = ftMembersByMonth(rows, ms);
+  if (withM) lanes.push({ k: 'members', label: 'Team members', vals: memC, color: FT_C.mem });
+  const csvC = ftCsvMonths(ms, tots, hs ? ['liters', 'visits', 'km', 'amount'] : ['liters', 'km', 'amount']); if (withM) csvC.forEach((r, i) => { r['Team members'] = memC[i]; });
+  const comb = ftLaneSpec(ms, lanes, `${tag}-combined`, combTitle, csvC);
+  comb.toggle = { on: withM, label: withM ? '− Team members' : '+ Team members', title: withM ? 'Remove the Team members line from this graph' : 'Add the Team members count to this graph' };
   const one = (k, title, vals, d, extra) => {
     const t = k === 'lpv' ? ftLine(ms, vals, title, FT_C[k], d) : ftBar(ms, vals, title, FT_C[k], d, extra && extra.colors);
     return { id: `${tag}-${k}`, title: `${cat} — ${title}`, sub: '', h: 270, traces: [t],
@@ -7561,17 +7645,27 @@ async function ftRenderCat(box, rows, ms, cat, tag) {
     ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td>` : ''}<td class="n">${ftFmt(t.km)}${p ? dl2(t.km, p.km) : ''}</td>${hs ? `<td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td><td class="n">${ftFmt(memC[i])}</td></tr>`; }).join('')
   }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.liters)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td>` : ''}<td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(sum.amount)}</td><td class="n">${ftFmt(new Set(rows.map(r => r.rk)).size)}</td></tr></tbody></table></div></details>`;
   box.innerHTML = `<div class="ft-cg"></div>${tbl}`;
-  await ftRenderCharts(box.querySelector('.ft-cg'), ftCatSpecs(rows, ms, cat, tag));
+  const drawCg = async () => { const sp = ftCatSpecs(rows, ms, cat, tag); sp[0].toggle.fn = async () => { FT.memOn = FT.memOn || {}; FT.memOn[tag] = !FT.memOn[tag]; await drawCg(); }; await ftRenderCharts(box.querySelector('.ft-cg'), sp); };
+  await drawCg();
 }
-// donut: share of the total, numbers in the legend
+// donut: share of the total. Number in the middle, % on the slices, legend underneath; the slice under the pointer slides out.
+function ftLegRows(labs, w) {
+  const avail = Math.max(160, w - 24); let rows = 1, cur = 0;
+  labs.forEach(l => { const iw = l.length * 6 + 34; if (cur && cur + iw > avail) { rows++; cur = 0; } cur += iw; });
+  return rows;
+}
 function ftDonutSpec(id, title, items, unit) {
   const list = items.filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]), top = list.slice(0, 12), rest = list.slice(12), total = list.reduce((a, x) => a + x[1], 0);
   if (rest.length) top.push([`Others (${rest.length})`, rest.reduce((a, x) => a + x[1], 0)]);
-  return { id, title, sub: `total ${ftFmt(total)}${unit ? ' ' + unit : ''}`, h: 300, csv: list.map(x => ({ Name: x[0], Value: Math.round(x[1] * 100) / 100, 'Share %': total ? Math.round(x[1] / total * 1000) / 10 : 0 })),
-    traces: [{ type: 'pie', labels: top.map(x => `${x[0]}: ${ftFmt(x[1])}`), values: top.map(x => x[1]), hole: 0.58, sort: false, direction: 'clockwise', text: top.map(x => total && x[1] / total >= 0.04 ? Math.round(x[1] / total * 100) + '%' : ''), textinfo: 'text', textfont: { size: 11, color: '#fff' },
-      marker: { colors: top.map((_, i) => FT_COLORS[i % FT_COLORS.length]), line: { color: '#fff', width: 2 } }, hovertemplate: '%{label}<br><b>%{percent}</b><extra></extra>', domain: { x: [0, 0.58], y: [0, 1] } }],
-    layout: (narrow) => ({ hovermode: 'closest', showlegend: true, margin: { l: 8, r: 8, t: 8, b: 8 }, legend: { orientation: 'v', x: 0.62, y: 0.5, yanchor: 'middle', font: { size: 10 } },
-      annotations: [{ xref: 'paper', yref: 'paper', x: 0.29, y: 0.5, showarrow: false, text: `<b>${ftCompact(total)}</b>`, font: { size: 16, color: '#1c2b6e' } }] }) };
+  const labs = top.map(x => `${x[0]}: ${ftFmt(x[1])}`);
+  const fit = (w) => { const rows = ftLegRows(labs, w); return { h: Math.round(Math.min(Math.max(w - 40, 180), 290)) + 14 + rows * 18, mb: rows * 18 + 6 }; };
+  return { id, title, sub: `total ${ftFmt(total)}${unit ? ' ' + unit : ''}`, h: 340, fit, csv: list.map(x => ({ Name: x[0], Value: Math.round(x[1] * 100) / 100, 'Share %': total ? Math.round(x[1] / total * 1000) / 10 : 0 })),
+    traces: [{ type: 'pie', labels: labs, values: top.map(x => x[1]), customdata: top.map(x => x[0]), hovertext: top.map(x => `${ftFmt(x[1])}${unit ? ' ' + unit : ''}`), hole: 0.62, sort: false, direction: 'clockwise',
+      text: top.map(x => total && x[1] / total >= 0.05 ? Math.round(x[1] / total * 100) + '%' : ''), textinfo: 'text', textposition: 'inside', insidetextorientation: 'horizontal', textfont: { size: 11, color: '#fff' },
+      pull: top.map(() => 0), marker: { colors: top.map((_, i) => FT_COLORS[i % FT_COLORS.length]), line: { color: '#fff', width: 2 } },
+      hovertemplate: '<b>%{customdata}</b><br>%{hovertext}<br>%{percent}<extra></extra>', domain: { x: [0.04, 0.96], y: [0, 1] },
+      title: { text: `<b>${ftCompact(total)}</b>${unit ? '<br>' + unit : ''}`, position: 'middle center', font: { size: 17, color: '#1c2b6e' } } }],
+    layout: (narrow, w) => ({ hovermode: 'closest', showlegend: true, margin: { l: 6, r: 6, t: 8, b: fit(w || 340).mb }, legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 0, yanchor: 'top', font: { size: 10.5 } } }) };
 }
 // shares for one month: category (amount, litres) and the first other split that has 2+ parts
 function ftSnapshotSpecs(rows, m) {
