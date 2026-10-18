@@ -159,7 +159,7 @@ function fhProgress(on){
 }
 function fhInstallFx(){
   if (document.getElementById('fh-fx')) return;
-  try { fhInstallSort(); } catch (e) { console.warn(e); }
+  try { fhInstallSort(); fhInstallSelectSearch(); fhInstallPolish(); } catch (e) { console.warn(e); }
   const st = document.createElement('style');
   st.id = 'fh-fx';
   st.textContent = `
@@ -317,6 +317,64 @@ function fhWatchAccount(){
   };
   setInterval(check, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
+
+
+// Any long list (riders, people …) in a pop-up form gets a search box above it — type a name or Employee ID.
+function fhInstallSelectSearch(){
+  if (window.__fhSS) return; window.__fhSS = 1;
+  const enhance = (sel) => {
+    if (sel.__ss || sel.multiple || sel.hasAttribute('data-nosearch') || sel.options.length < 12) return;
+    sel.__ss = 1;
+    const all = [...sel.options].map(o => ({ v: o.value, t: o.textContent, d: o.disabled }));
+    const inp = document.createElement('input');
+    inp.type = 'search'; inp.placeholder = '🔍 Type a name or Employee ID to search…'; inp.setAttribute('aria-label', 'Search the list');
+    inp.style.cssText = 'width:100%;box-sizing:border-box;margin-bottom:6px;padding:8px 10px;border:1px solid var(--line,#dfe3ee);border-radius:8px;font:inherit;font-size:13px';
+    sel.parentNode.insertBefore(inp, sel);
+    inp.oninput = () => {
+      const q = inp.value.trim().toLowerCase(), cur = sel.value;
+      const keep = all.filter(o => !q || o.v === '' || o.t.toLowerCase().includes(q));
+      sel.innerHTML = keep.map(o => `<option value="${escapeHtml(o.v)}" ${o.d ? 'disabled' : ''}>${escapeHtml(o.t)}</option>`).join('');
+      const hit = keep.find(o => o.v !== '' && o.t.toLowerCase().includes(q));
+      const want = (cur && keep.some(o => o.v === cur) && (!q || all.find(o => o.v === cur).t.toLowerCase().includes(q))) ? cur : (q && hit ? hit.v : (keep[0] ? keep[0].v : ''));
+      sel.value = want;
+      if (want !== cur) sel.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+  };
+  let tk = 0;
+  const scan = () => { tk = 0; document.querySelectorAll('#active-modal select').forEach(enhance); };
+  new MutationObserver(() => { if (!tk) tk = setTimeout(scan, 80); }).observe(document.body, { childList: true, subtree: true });
+}
+
+// ---- layout polish: header, full-width pages, pop-ups above the menu, phone drawer slide ----
+function fhInstallPolish(){
+  if (document.getElementById('fh-polish')) return;
+  const st = document.createElement('style'); st.id = 'fh-polish';
+  st.textContent = `
+.top-ribbon{justify-content:flex-start!important;gap:10px}
+.top-ribbon-brand{flex:0 1 auto!important;margin-right:auto;min-width:0}
+.top-ribbon-actions{margin-left:auto!important;flex:0 0 auto}
+@media (min-width:901px){
+  #fh-menu-btn{margin-right:0!important}
+  .top-ribbon-brand{padding-left:14px;margin-left:2px;border-left:1px solid rgba(255,255,255,.22)}
+  .ribbon-subtitle{opacity:.85}
+}
+.main-content,#main-content{max-width:none!important;width:100%;box-sizing:border-box}
+#main-content>.card{max-width:none!important}
+.modal-overlay{z-index:10050!important}
+#main-content .hint,.card .hint{line-height:1.5}
+.card,.stat-card .stat-label,.badge,.mono{overflow-wrap:anywhere}
+.stat-card{min-width:0}
+table td,table th{overflow-wrap:anywhere}
+@media (max-width:900px){
+  .sidebar{display:block!important;visibility:visible!important;position:fixed!important;top:var(--fh-top,56px);bottom:0;left:0!important;width:min(84vw,310px)!important;transform:translateX(-106%)!important;transition:transform .38s cubic-bezier(.22,1,.36,1),box-shadow .38s!important;z-index:10000;overflow-y:auto;will-change:transform}
+  body.fh-drawer-open .sidebar{transform:none!important;box-shadow:10px 0 34px rgba(10,15,45,.4)}
+  #fh-backdrop{display:block!important;position:fixed;left:0;right:0;bottom:0;top:var(--fh-top,56px);background:rgba(10,15,45,.5);opacity:0;pointer-events:none;transition:opacity .36s ease;z-index:9999}
+  body.fh-drawer-open #fh-backdrop{opacity:1;pointer-events:auto}
+  .top-ribbon-brand .ribbon-subtitle{display:none!important}
+}
+@media (prefers-reduced-motion:reduce){.sidebar,#fh-backdrop{transition:none!important}}`;
+  document.head.appendChild(st);
 }
 
 function fhInstallSidebar(){
@@ -801,7 +859,7 @@ async function showLatestUnackedCircularPopup(){
   const { data: circulars } = await sb.from('circulars').select('*').is('deleted_at', null).order('created_at', {ascending:false}).limit(1);
   if (!circulars || !circulars.length) return;
   const c = circulars[0];
-  if (c.created_by === state.user.id) return;
+  if (c.created_by === state.user.id || isSuperAdmin()) return;
   const { data: ack } = await sb.from('circular_acks').select('id').eq('circular_id', c.id).eq('user_id', state.user.id).maybeSingle();
   if (ack) return;
   // Once acknowledged it never shows again (handled above); until then,
@@ -1478,7 +1536,7 @@ async function renderDashboard(){
   const uid = state.user.id;
 
   const [openReq, myTasks, circularsRes, expiring, pendingApprovals, notices, banner] = await Promise.all([
-    sb.from('requests').select('id', {count:'exact', head:true}).in('status', ['open','in_progress']),
+    sb.from('requests').select('id', {count:'exact', head:true}).is('deleted_at', null).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
     sb.from('circulars').select('id').is('deleted_at', null),
     sb.from('expiry_items').select('id, group_id, expiry_date'),
@@ -1490,7 +1548,7 @@ async function renderDashboard(){
   const bannerVisible = banner.data?.image_url && (!banner.data.expires_at || new Date(banner.data.expires_at) > new Date());
 
   let unacked = 0;
-  if (circularsRes.data && circularsRes.data.length){
+  if (!isSuperAdmin() && circularsRes.data && circularsRes.data.length){   // the Super Admin is not required to acknowledge circulars
     const ids = circularsRes.data.map(c=>c.id);
     const { data: myAcks } = await sb.from('circular_acks').select('circular_id').eq('user_id', uid);
     const ackedSet = new Set((myAcks||[]).map(a=>a.circular_id));
@@ -1558,7 +1616,7 @@ async function renderCirculars(){
   }
 
   main.innerHTML = circulars.map(c => {
-    const isCreator = c.created_by === state.user.id;
+    const isCreator = c.created_by === state.user.id || isSuperAdmin();
     const acked = ackedSet.has(c.id);
     return `
       <div class="card" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" data-open-circular="${c.id}">
@@ -1580,7 +1638,7 @@ async function renderCirculars(){
 }
 
 function openCircularPopup(c, acked){
-  const isCreator = c.created_by === state.user.id;
+  const isCreator = c.created_by === state.user.id || isSuperAdmin();
   openModal(`
     <h2>${escapeHtml(c.title)}</h2>
     <div class="mono" style="margin-bottom:10px;">By ${escapeHtml(c.profiles?.full_name||'Staff')} · ${formatDateTime(c.created_at)}</div>
@@ -1709,7 +1767,7 @@ async function openEditCircularModal(c){
 
 async function showCircularTracker(circularId, circular, el){
   el.innerHTML = '<div class="mono">Loading…</div>';
-  let q = sb.from('profiles').select('id, full_name, role, designation_id').eq('status','active').neq('id', circular.created_by);
+  let q = sb.from('profiles').select('id, full_name, role, designation_id').eq('status','active').neq('role','super_admin').neq('id', circular.created_by);
   const regionIds = circular.target_region_ids || (circular.target_region_id ? [circular.target_region_id] : []);
   const roles = circular.target_roles || (circular.target_role ? [circular.target_role] : []);
   if (regionIds.length) q = q.in('region_id', regionIds);
@@ -1739,7 +1797,7 @@ async function showCircularTracker(circularId, circular, el){
 }
 
 async function countAudience(targetRegionId, targetRole, excludeId, targetRegionIds, targetRoles){
-  let q = sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','active');
+  let q = sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','active').neq('role','super_admin');
   const regionIds = targetRegionIds || (targetRegionId ? [targetRegionId] : []);
   const roles = targetRoles || (targetRole ? [targetRole] : []);
   if (regionIds.length) q = q.in('region_id', regionIds);
@@ -2130,6 +2188,11 @@ async function renderRequests(){
     </div>
   `).join('');
 
+  main.insertAdjacentHTML('afterbegin', `<div class="form-row" id="req-find" style="display:flex;gap:8px;flex-wrap:wrap;max-width:none"><input type="search" id="req-q" placeholder="Search by rider / handler name, Employee ID, category or text…" style="flex:1;min-width:200px"><select id="req-st"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select></div>`);
+  const reqCards = [...main.querySelectorAll(':scope > .card')];
+  const reqFilter = () => { const q = document.getElementById('req-q').value.trim().toLowerCase(), st = document.getElementById('req-st').value;
+    reqCards.forEach(c => { const ok = (!q || c.textContent.toLowerCase().includes(q)) && (!st || (c.querySelector('.badge')?.textContent.trim().toLowerCase().replace(' ', '_') === st)); c.style.display = ok ? '' : 'none'; }); };
+  document.getElementById('req-q').oninput = reqFilter; document.getElementById('req-st').onchange = reqFilter;
   main.querySelectorAll('[data-delete-request]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('Delete this request? It can be restored from Settings → Trash within 48 hours.')) return;
@@ -2547,7 +2610,7 @@ async function openNewExpiryModal(){
     const wrap = document.getElementById('e-rider-wrap');
     if (checkedRegions.length === 1){
       wrap.style.display = 'block';
-      const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active' && p.region_id===checkedRegions[0]);
+      const riders = state.profilesInScope.filter(p=>p.role==='rider' && fhLive(p) && p.region_id===checkedRegions[0]);
       document.getElementById('e-rider').innerHTML = '<option value="">— Not tied to a specific rider —</option>' +
         riders.map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' ('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
     } else {
@@ -2732,8 +2795,8 @@ async function renderTeam(){
   const disabledCount = nonPending.filter(p=>p.status==='disabled').length;
   if (isSuperAdmin()){
     const recent = (k) => [...act.values()].filter(a => a[k] && Date.now() - new Date(a[k]).getTime() < 15 * 60 * 1000).length;
-    html += `<div class="card" style="padding:12px 16px;"><strong>Online in the last 15 minutes:</strong> ${recent('last_web_at')} on the website · ${recent('last_app_at')} in the Android app
-      <span class="hint"> — last-active times for everyone are in the Team directory below (Super Admin only).</span></div>`;
+    html += `<div class="card" style="padding:12px 16px;"><div style="display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;line-height:1.5;"><span><strong>Online in the last 15 minutes:</strong> ${recent('last_web_at')} on the website · ${recent('last_app_at')} in the Android app</span>
+      <span class="hint" style="margin:0;padding:0;background:none;display:inline;font-size:12.5px;">Last-active times for everyone are in the Team directory below (Super Admin only).</span></div></div>`;
   }
   html += `<div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
@@ -2898,7 +2961,7 @@ async function toggleMemberStatus(profileId){
   if (p.role === 'rider'){
     if (newStatus === 'disabled'){
       const { error: rosterErr, data: rosterUpdated } = await sb.from('roster_entries').update({
-        status: 'removed', removal_reason: 'Login Disabled',
+        status: 'removed', removal_reason: 'Other',
         removal_note: 'Automatically set when this account was disabled from Team.'
       }).eq('rider_id', profileId).neq('status', 'removed').select();
       if (rosterErr){
@@ -3072,9 +3135,24 @@ async function openApproveModal(profileId){
   };
 }
 
+// People who are on the Roster only as resigned / terminated / transferred are treated as gone everywhere.
+const FH_OFF = { t: 0, ids: new Set() };
+async function fhLoadOffRiders(force){
+  if (!force && Date.now() - FH_OFF.t < 60000) return FH_OFF.ids;
+  try {
+    const rows = await fvFetchAll(() => sb.from('roster_entries').select('rider_id, status').order('id'));
+    const working = new Set(), removed = new Set();
+    (rows || []).forEach(r => { (r.status === 'removed' ? removed : working).add(r.rider_id); });
+    FH_OFF.ids = new Set([...removed].filter(id => !working.has(id)));
+    FH_OFF.t = Date.now();
+  } catch (e) { FH_OFF.ids = new Set(); }
+  return FH_OFF.ids;
+}
+const fhLive = (p) => !!p && p.status === 'active' && !FH_OFF.ids.has(p.id);
 async function loadScopedProfiles(includeAll){
   const { data } = await sb.from('profiles').select('*').order('full_name');
   state.profilesInScope = data || [];
+  await fhLoadOffRiders();
   // Attach each staff member's multi-region list for display purposes
   const staffIds = state.profilesInScope.filter(p=>p.role!=='rider').map(p=>p.id);
   if (staffIds.length){
@@ -3680,7 +3758,7 @@ async function renderWarnings(){
 async function openEditWarningModal(w){
   await loadScopedProfiles();
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}" ${t.id===w.warning_type_id?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
-  const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role) && (p.status==='active' || p.id===w.rider_id));
+  const targets = state.profilesInScope.filter(p=>['rider','coordinator'].includes(p.role) && (fhLive(p) || p.id===w.rider_id));
   const targetOptions = targets.map(p=>`<option value="${p.id}" ${p.id===w.rider_id?'selected':''}>${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''} (${escapeHtml(designationLabel(p))})</option>`).join('');
   openModal(`
     <h2>Edit warning</h2>
@@ -3724,7 +3802,7 @@ async function openNewWarningModal(){
   const canTargetCoordinators = isAdmin() || ['regional_poc','inventory_coordinator'].includes(state.profile.role)
     || (state.profile.role === 'team_lead' && hasPermission('warnings_issue_to_coordinator'));
   const targetRoles = canTargetCoordinators ? ['rider','coordinator'] : ['rider'];
-  const riders = state.profilesInScope.filter(p=>targetRoles.includes(p.role) && p.status==='active');
+  const riders = state.profilesInScope.filter(p=>targetRoles.includes(p.role) && fhLive(p));
   const options = riders.map(p=>`<option value="${p.id}" data-empid="${escapeHtml(p.employee_id||'—')}" data-region="${escapeHtml(state.regions.find(r=>r.id===p.region_id)?.name||'—')}">${escapeHtml(p.full_name)} ${p.employee_id?'('+escapeHtml(p.employee_id)+')':''}</option>`).join('');
   const typeOptions = state.warningTypes.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
@@ -3962,7 +4040,7 @@ async function renderCompliance(){
 
   // Staff/Admin view: who has/hasn't submitted, with a month picker and CSV export
   await loadScopedProfiles();
-  const riders = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active');
+  const riders = state.profilesInScope.filter(p=>p.role==='rider' && fhLive(p));
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
 
@@ -5318,7 +5396,8 @@ async function renderTools(){
   }
   let { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id, status), tool_types(name)').order('next_due_date');
   if (issuancesErr){ main.innerHTML = emptyState('Could not load tool issuances: ' + issuancesErr.message); return; }
-  issuances = (issuances || []).filter(i => !i.profiles || i.profiles.status === 'active');   // disabled / removed people are not shown
+  await fhLoadOffRiders();
+  issuances = (issuances || []).filter(i => (!i.profiles || i.profiles.status === 'active') && !FH_OFF.ids.has(i.rider_id));   // disabled / removed people are not shown
   if (!issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
 
   const { data: acks } = await sb.from('tool_issuance_acks').select('*');
@@ -5484,7 +5563,7 @@ EMP1003"></textarea></div>
       const issuedDate = parts[1] || defaultDate, serial = (parts[2] || '').trim() || null;
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
-      if (rider.status !== 'active'){ rows.push({ empId, ok:false, msg:'This person is disabled — not issued' }); continue; }
+      if (!fhLive(rider)){ rows.push({ empId, ok:false, msg:'This person is disabled / removed — not issued' }); continue; }
       const { error } = await sb.from('tool_issuances').insert({
         rider_id: rider.id, region_id: rider.region_id, tool_type_id: toolTypeId,
         issued_date: issuedDate, recorded_by: state.user.id, serial_number: serial
@@ -5587,7 +5666,7 @@ function openEditToolIssuanceModal(issuance){
 
 async function openNewToolIssuanceModal(){
   await loadScopedProfiles();
-  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider' && p.status==='active').map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''}</option>`).join('');
+  const riderOptions = state.profilesInScope.filter(p=>p.role==='rider' && fhLive(p)).map(p=>`<option value="${p.id}">${escapeHtml(p.full_name)}${p.employee_id?' — '+escapeHtml(p.employee_id):''}</option>`).join('');
   const { data: toolTypes } = await sb.from('tool_types').select('*').eq('active', true).order('name');
   const toolOptions = (toolTypes||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
   openModal(`
@@ -7165,6 +7244,11 @@ function ftEnsureStyle() {
 .ft-card.wide{grid-column:1/-1}
 .ft-card h4{margin:0;font-size:12.5px;color:#1c2b6e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ft-ch{display:flex;align-items:center;gap:6px;margin-bottom:2px}.ft-ch small{color:#8b92ad;font-size:10.5px}
+.ft-hb{border:0;background:transparent;color:#1c2b6e;font-size:15px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:6px;transition:transform .2s}.ft-hb:hover{background:#eef0f9}
+.ft-card.collapsed .ft-plot,.ft-card.collapsed .ft-cn{display:none}.ft-card.collapsed .ft-hb{transform:rotate(-90deg)}
+.ft-tt{border:1px solid #dfe3ee;background:#fff;color:#1c2b6e;border-radius:8px;height:28px;padding:0 10px;font:inherit;font-size:11.5px;cursor:pointer;margin-left:6px;align-self:center}.ft-tt:hover{background:#eef0f9}
+.ft-own #ft-bar,.ft-own #ft-scope,.ft-own #ft-kpis,.ft-own #ft-tog{display:none!important}
+.ft-tabs{align-items:center}
 .ft-ch button,.ft-tb button{border:1px solid #dfe3ee;background:#fff;border-radius:7px;padding:3px 8px;font:inherit;font-size:11px;color:#46506e;cursor:pointer}
 .ft-ch button:hover,.ft-tb button:hover{background:#f1f3fb}
 .ft-plot{width:100%}
@@ -7325,23 +7409,26 @@ function ftMonthsRange(all) {
 // limits (max litres per month per category) and Rs/KM per month
 async function ftLoadSettings(force) {
   if (FT.set && !force) return FT.set;
-  const set = { limits: new Map(), rates: new Map(), ok: true };
+  const set = { limits: new Map(), lim2: new Map(), rates: new Map(), ok: true };
   try {
-    const [a, b] = await Promise.all([sb.from('fuel_limits').select('category,max_liters'), sb.from('fuel_rates').select('month,rs_per_km')]);
+    const [a0, b] = await Promise.all([sb.from('fuel_limits').select('category,max_liters,max_amount,max_km,max_lpv'), sb.from('fuel_rates').select('month,rs_per_km')]);
+    let a = a0; if (a0.error) a = await sb.from('fuel_limits').select('category,max_liters');   // before migration_40
     if (a.error || b.error) throw (a.error || b.error);
-    (a.data || []).forEach(x => set.limits.set(String(x.category).toLowerCase(), +x.max_liters));
+    (a.data || []).forEach(x => { const k = String(x.category).toLowerCase(); if (+x.max_liters > 0) set.limits.set(k, +x.max_liters); set.lim2.set(k, { liters: +x.max_liters || null, amount: +x.max_amount || null, km: +x.max_km || null, lpv: +x.max_lpv || null }); });
     (b.data || []).forEach(x => set.rates.set(String(x.month).slice(0, 7), +x.rs_per_km));
   } catch (e) { set.ok = false; set.err = e.message || String(e); }
   FT.set = set; return set;
 }
 const ftLimit = (c) => (FT.set && FT.set.limits.get(String(c || '').toLowerCase())) || null;
+const ftLim = (c, k) => { const o = FT.set && FT.set.lim2 && FT.set.lim2.get(String(c || '').toLowerCase()); return (o && o[k]) || null; };
 const ftNationwide = () => !['lead', 'region', 'location', 'city', 'rider'].some(k => FT.f[k].length);
 // ▲ / ▼ text against the limit
-function ftStatus(l, lim) {
+function ftStatus(l, lim, u) {
+  u = u || 'L'; const dd = u === 'L/visit' ? 2 : 0;
   if (!lim) return { t: 'No limit set', c: '#8b92ad', up: null };
   const d = l - lim, p = Math.abs(d) / lim * 100;
-  if (d > 0) return { t: `▲ ${ftFmt(d)} L over the limit (+${p.toFixed(1)}%)`, c: '#c0532f', up: true, d };
-  if (d < 0) return { t: `▼ ${ftFmt(-d)} L under the limit (−${p.toFixed(1)}%)`, c: '#2e7d4f', up: false, d };
+  if (d > 0) return { t: `▲ ${ftFmt(d, dd)} ${u} over the limit (+${p.toFixed(1)}%)`, c: '#c0532f', up: true, d };
+  if (d < 0) return { t: `▼ ${ftFmt(-d, dd)} ${u} under the limit (−${p.toFixed(1)}%)`, c: '#2e7d4f', up: false, d };
   return { t: 'Exactly at the limit', c: '#d9962b', up: null, d };
 }
 
@@ -7375,12 +7462,13 @@ async function ftSavePng(gd, name, title) {
 }
 // charts re-fit while the menu slides or the window changes size
 const FT_RZ = new Set();
+function ftResize(d) { try { if (d && d.clientWidth > 0 && window.Plotly) { const r = Plotly.Plots.resize(d); if (r && r.catch) r.catch(() => {}); } } catch (_) {} }
 function ftWatch(d) {
   if (!window.ResizeObserver) return;
   if (!window.__ftRO) window.__ftRO = new ResizeObserver((es) => {
     es.forEach(e => FT_RZ.add(e.target));
     if (window.__ftRz) return;
-    window.__ftRz = requestAnimationFrame(() => { window.__ftRz = 0; FT_RZ.forEach(x => { if (x.isConnected && x.data && window.Plotly) { try { Plotly.Plots.resize(x); } catch (_) {} } }); FT_RZ.clear(); });
+    window.__ftRz = requestAnimationFrame(() => { window.__ftRz = 0; FT_RZ.forEach(x => { if (x.isConnected && x.data && window.Plotly) { ftResize(x); } }); FT_RZ.clear(); });
   });
   window.__ftRO.observe(d);
 }
@@ -7389,7 +7477,7 @@ const ftZeroK = (t) => t.orientation === 'h' ? 'x' : 'y';
 async function ftRenderCharts(host, specs) {
   await ftEnsurePlotly();
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
-  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
+  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small><button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
   const plots = host.querySelectorAll('.ft-plot'), anim0 = !ftReduced();
   specs.forEach((s, i) => {
@@ -7405,6 +7493,9 @@ async function ftRenderCharts(host, specs) {
       return Plotly.animate(d, { data: s.traces.map(t => ({ [ftZeroK(t)]: t[ftZeroK(t)] })), traces: s.traces.map((_, k) => k) }, { transition: { duration: 650, easing: 'cubic-out' }, frame: { duration: 650, redraw: false } });
     }).catch(() => { try { Plotly.react(d, s.traces, lay, cfg); } catch (e) {} });
     ftWatch(d);
+    const card = d.closest('.ft-card'); FT.hid = FT.hid || new Set();
+    if (FT.hid.has(s.title)) card.classList.add('collapsed');
+    host.querySelector(`[data-hide="${i}"]`).onclick = () => { const c = card.classList.toggle('collapsed'); if (c) FT.hid.add(s.title); else { FT.hid.delete(s.title); setTimeout(() => { ftResize(d); }, 40); } };
     host.querySelector(`[data-png="${i}"]`).onclick = () => ftSavePng(d, s.id, s.title);
     host.querySelector(`[data-csv="${i}"]`).onclick = () => { if (!s.csv || !s.csv.length) { toast('Nothing to download'); return; } downloadCSV(s.id + '.csv', toCSV(s.csv)); };
   });
@@ -7445,6 +7536,7 @@ function ftCatSpecs(rows, ms, cat, tag) {
   const hs = isHS(cat), tots = ftByMonth(rows, ms), nat = ftNationwide(), lim = nat ? ftLimit(cat) : null;
   const A = tots.map(t => Math.round(t.amount)), Lt = tots.map(t => Math.round(t.liters * 10) / 10), K = tots.map(t => Math.round(t.km)), V = tots.map(t => t.visits), P = tots.map(t => t.visits ? Math.round(t.liters / t.visits * 100) / 100 : null);
   const lcols = lim ? Lt.map(v => v > lim ? '#c0532f' : '#2e7d4f') : null;
+  const limA = nat ? ftLim(cat, 'amount') : null, limK = nat ? ftLim(cat, 'km') : null, limP = (nat && hs) ? ftLim(cat, 'lpv') : null;
   const lanes = [{ k: 'liters', label: 'Litres', vals: Lt, color: FT_C.liters }];
   if (hs) lanes.push({ k: 'visits', label: 'Visits', vals: V, color: FT_C.visits });
   lanes.push({ k: 'km', label: hs ? 'KM' : 'KM (mileage)', vals: K, color: FT_C.km });
@@ -7457,9 +7549,9 @@ function ftCatSpecs(rows, ms, cat, tag) {
   };
   const out = [comb, one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
   if (hs) out.push(one('visits', 'Visits', V, 0));
-  out.push(one('km', hs ? 'KM' : 'KM (mileage)', K, 0));
-  if (hs) out.push(one('lpv', 'Litres per visit', P, 2));
-  out.push(one('amount', 'Amount (Rs)', A, 0));
+  out.push(one('km', hs ? 'KM' : 'KM (mileage)', K, 0, { colors: limK ? K.map(v => v > limK ? '#c0532f' : '#2e7d4f') : null, lim: limK }));
+  if (hs) out.push(one('lpv', 'Litres per visit', P, 2, { lim: limP }));
+  out.push(one('amount', 'Amount (Rs)', A, 0, { colors: limA ? A.map(v => v > limA ? '#c0532f' : '#2e7d4f') : null, lim: limA }));
   return out;
 }
 async function ftRenderCat(box, rows, ms, cat, tag) {
@@ -7580,9 +7672,12 @@ async function ftPageTrend(host) {
     <div class="ft-bar" id="ft-bar">${FILT.map(([k]) => `<div class="fv-fg" data-d="${k}"></div>`).join('')}
       <div class="fv-fg ft-act"><label id="ft-dirty">&nbsp;</label><div class="ft-btns"><button class="fv-btn" id="ft-apply" type="button">Apply</button><button class="fv-btn ghost" id="ft-clear" type="button">Clear</button></div></div></div>
     <div id="ft-scope" class="ft-scope"></div><div class="ft-kpis" id="ft-kpis"></div>
-    <div class="ft-tabs" id="ft-tabs">${[['summary', 'Summary'], ['compare', 'Compare'], ['rates', 'Rs/KM & limits'], ['table', 'Table & download']].map(([k, l]) => `<button type="button" data-t="${k}" class="${FT.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="ft-tabs" id="ft-tabs">${[['summary', 'Summary'], ['compare', 'Compare'], ['pies', 'Month pies'], ['rates', 'Limits & Rs/KM'], ['table', 'Table & download']].map(([k, l]) => `<button type="button" data-t="${k}" class="${FT.tab === k ? 'on' : ''}">${l}</button>`).join('')}<span style="flex:1"></span><button type="button" class="ft-tt" id="ft-hall">Hide all graphs</button><button type="button" class="ft-tt" id="ft-sall">Show all</button></div>
     <div id="ft-res"></div>`;
   const drops = [];
+  const collapseAll = (flag) => { res.querySelectorAll('.ft-card').forEach(c => { c.classList.toggle('collapsed', flag); const t = c.querySelector('.ft-ch h4'); if (t) { FT.hid = FT.hid || new Set(); flag ? FT.hid.add(t.title) : FT.hid.delete(t.title); } if (!flag) { const pl = c.querySelector('.ft-plot'); setTimeout(() => { ftResize(pl); }, 40); } }); res.querySelectorAll('details.ft-det,details.ft-mt').forEach(d => { d.open = !flag && d.classList.contains('ft-mt') ? d.open : (flag ? false : d.open); }); };
+  host.querySelector('#ft-hall').onclick = () => collapseAll(true);
+  host.querySelector('#ft-sall').onclick = () => { FT.hid = new Set(); collapseAll(false); res.querySelectorAll('details.ft-mt,details.ft-det').forEach(d => { d.open = true; }); };
   const dirty = () => JSON.stringify(D) !== JSON.stringify(FT.f);
   const paintDirty = () => { const d = dirty(); host.querySelector('#ft-apply').classList.toggle('dirty', d); host.querySelector('#ft-dirty').textContent = d ? 'Press Apply to update ↓' : ' '; };
   FILT.forEach(([k, l]) => drops.push(ftDrop(host.querySelector(`[data-d="${k}"]`), { label: l, multi: true, options: () => optsFor(k), get: () => D[k], set: (v) => { D[k] = v; drops.forEach(x => x.refresh()); paintDirty(); } })));
@@ -7603,7 +7698,8 @@ async function ftPageTrend(host) {
     parts.push(f.month.length ? `${f.month.length} month${f.month.length > 1 ? 's' : ''}` : `${ftMonthLabel(allMs[0])} – ${ftMonthLabel(allMs[allMs.length - 1])}`);
     FT.any = Object.values(FT.f).some(v => v.length);
     if (!FT.any) { scope.innerHTML = '<span class="fv-note">Nothing selected yet — choose a category, region, lead … above and press <b>Apply</b> to see its numbers. The overview below covers everything.</span>'; kp.innerHTML = ''; drawBody(); return; }
-    scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')} <button type="button" class="fv-btn ghost" id="ft-emp" style="height:26px;padding:0 10px;margin-left:6px">👥 Team member details</button>`;
+    scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')} <button type="button" class="fv-btn ghost" id="ft-emp" style="height:26px;padding:0 10px;margin-left:6px">👥 Team member details</button><button type="button" class="fv-btn ghost" id="ft-kt" style="height:26px;padding:0 10px;margin-left:6px">${FT.kpiHide ? 'Show summary' : 'Hide summary'}</button>`;
+    scope.querySelector('#ft-kt').onclick = (e) => { FT.kpiHide = !FT.kpiHide; kp.style.display = FT.kpiHide ? 'none' : ''; e.target.textContent = FT.kpiHide ? 'Show summary' : 'Hide summary'; };
     scope.querySelector('#ft-emp').onclick = () => ftEmpPopup(rows, ms, '', scopeTxt());
     const tot = ftSum(rows), hs = rows.some(r => isHS(r.category) && r.visits > 0), hsT = ftSum(rows.filter(r => isHS(r.category)));
     const rate = [...ms].reverse().find(m => FT.set && FT.set.rates.has(m));
@@ -7611,17 +7707,20 @@ async function ftPageTrend(host) {
     if (hs) tiles.push([hsT.visits, 'Home Sampling visits', ftCompact], [hsT.visits ? hsT.liters / hsT.visits : 0, 'Litres per visit', (v) => ftFmt(v, 2)]);
     tiles.push([new Set(rows.map(r => r.rk)).size, 'Team members', (v) => ftFmt(v)]);
     if (rate) tiles.push([FT.set.rates.get(rate), `Rs/KM (${ftMonthLabel(rate)})`, (v) => ftFmt(v, 2)]);
+    kp.style.display = FT.kpiHide ? 'none' : '';
     kp.innerHTML = tiles.map(([v, l]) => `<div class="ft-kpi"><div class="n">0</div><div class="l">${l}</div></div>`).join('');
     kp.querySelectorAll('.ft-kpi').forEach((el, i) => { const [v, , fm] = tiles[i]; el.title = fm === ftCompact ? ftFmt(v, 1) : ''; ftCount(el.querySelector('.n'), v, fm); });
     drawBody();
   }
   async function drawBody() {
     const my = ++seq; ftPop(res);
+    host.classList.toggle('ft-own', ['compare', 'pies', 'rates'].includes(FT.tab));
     try {
-      if (!rows.length) { res.classList.remove('ft-charts'); res.innerHTML = '<div class="empty-state"><p>No data for these filters.</p></div>'; return; }
+      if (!rows.length && ['summary', 'table'].includes(FT.tab)) { res.classList.remove('ft-charts'); res.innerHTML = '<div class="empty-state"><p>No data for these filters.</p></div>'; return; }
       res.classList.remove('ft-charts');
       if (FT.tab === 'summary') await drawSummary(my);
       else if (FT.tab === 'compare') await drawCompare(my);
+      else if (FT.tab === 'pies') await drawPies(my);
       else if (FT.tab === 'rates') await ftRatesBox(res, all, allMs, () => { FT.set = null; ftLoadSettings().then(() => { draw(); }); });
       else drawTable();
     } catch (e) { console.error(e); res.classList.remove('ft-charts'); res.innerHTML = `<div class="empty-state"><p>${escapeHtml(e.message || e)}</p></div>`; }
@@ -7630,13 +7729,14 @@ async function ftPageTrend(host) {
   async function drawSummary(my) {
     const cm = new Map(); rows.forEach(r => { const k = r.category || 'Uncategorised'; let o = cm.get(k); if (!o) cm.set(k, o = []); o.push(r); });
     const cats = [...cm.entries()].sort((a, b) => ftSum(b[1]).amount - ftSum(a[1]).amount);
-    res.innerHTML = `<div class="ft-sec" id="ft-q"></div><div id="ft-over"></div><div id="ft-cs"></div>`;
-    drawQuick(res.querySelector('#ft-q'), FT.any);
+    res.innerHTML = `<div id="ft-over"></div><div id="ft-cs"></div>`;
     const over = res.querySelector('#ft-over'), cs = res.querySelector('#ft-cs');
     if (cats.length > 1) await ftRenderCharts(over, ftOverallSpecs(rows, ms, cats.map(c => c[0])));
     const banner = (c) => { const m = [...ms].reverse().find(x => all.some(r => r.m === x && (r.category || 'Uncategorised') === c)); if (!m) return '';
-      const l = ftSum(all.filter(r => r.m === m && (r.category || 'Uncategorised') === c)).liters, s = ftStatus(l, ftLimit(c));
-      return `<span class="ft-badge" style="color:${s.c};border-color:${s.c}">${ftMonthLabel(m)} nationwide: ${ftFmt(l)} L · ${s.t}</span>`; };
+      const sm = ftSum(all.filter(r => r.m === m && (r.category || 'Uncategorised') === c)), s = ftStatus(sm.liters, ftLimit(c));
+      const ex = [['amount', 'Amount', 'Rs', sm.amount, 0], ['km', 'KM', 'KM', sm.km, 0]].concat(isHS(c) ? [['lpv', 'L/visit', 'L/visit', sm.visits ? sm.liters / sm.visits : 0, 2]] : [])
+        .filter(([k]) => ftLim(c, k)).map(([k, lb, u, v, d]) => { const t = ftStatus(v, ftLim(c, k), u); return `<span class="ft-badge" style="color:${t.c};border-color:${t.c}">${lb}: ${ftFmt(v, d)} · ${t.t}</span>`; }).join(' ');
+      return `<span class="ft-badge" style="color:${s.c};border-color:${s.c}">${ftMonthLabel(m)} nationwide: ${ftFmt(sm.liters)} L · ${s.t}</span> ${ex}`; };
     const hdr = ([c, rs]) => { const t = ftSum(rs); return `<span>${escapeHtml(c)}</span> <small>Rs ${ftCompact(t.amount)} · ${ftFmt(t.liters)} L${isHS(c) ? ` · ${ftFmt(t.visits)} visits` : ''}</small> ${banner(c)}`; };
     if (cats.length === 1) {
       cs.innerHTML = `<div class="ft-ch2">${hdr(cats[0])}</div><div class="ft-body"></div>`;
@@ -7673,20 +7773,66 @@ async function ftPageTrend(host) {
     paint();
   }
   // ----- Compare: pick items, choose bars / donut / lines -----
+  // filters that belong to ONE tab only (Compare / Month pies) — they do not touch the main filters
+  function tabFilters(box, key, fields, onChange) {
+    FT.tf = FT.tf || {};
+    const T = FT.tf[key] = FT.tf[key] || { month: [], cat: [], region: [], lead: [], location: [], city: [], rider: [] };
+    box.innerHTML = fields.map(k => `<div class="fv-fg" data-tf="${k}"></div>`).join('') + `<div class="fv-fg ft-act"><label>&nbsp;</label><div class="ft-btns"><button class="fv-btn ghost" data-tfc type="button">Clear filters</button></div></div>`;
+    const lab = (k) => (FILT.find(x => x[0] === k) || [k, k])[1];
+    const optsT = (k) => { if (k === 'month') return allMs.slice().reverse().map(m => [m, ftMonthLabel(m)]); const set = new Set(); ftFilter(all, k, T).forEach(r => { const v = r[FT_FKEY[k]] || (k === 'cat' ? 'Uncategorised' : ''); if (v) set.add(v); }); return [...set].sort((a, b) => a.localeCompare(b)).map(v => [v, v]); };
+    const ds = fields.map(k => ftDrop(box.querySelector(`[data-tf="${k}"]`), { label: lab(k), multi: true, options: () => optsT(k), get: () => T[k], set: (v) => { T[k] = v; ds.forEach(d => d.refresh()); onChange(); } }));
+    box.querySelector('[data-tfc]').onclick = () => { Object.keys(T).forEach(k => { T[k] = []; }); ds.forEach(d => d.refresh()); onChange(); };
+    return T;
+  }
+  // ----- Month pies: one month, split into donuts (own filters) -----
+  async function drawPies(my) {
+    if (!FT.pm || !allMs.includes(FT.pm)) FT.pm = allMs[allMs.length - 1];
+    if (!FT.ps) FT.ps = 'cat';
+    res.innerHTML = `<div class="ft-bar" style="margin-bottom:8px"><div class="fv-fg" id="ft-pm"></div><div class="fv-fg" id="ft-ps"></div><span id="ft-pf" style="display:contents"></span></div><div class="ft-kpis" id="ft-pk"></div><div id="ft-pc"></div>`;
+    const pk = res.querySelector('#ft-pk'), pc = res.querySelector('#ft-pc');
+    const paint = async () => {
+      const T = FT.tf.pies, rowsM = ftFilter(all, null, T).filter(r => r.m === FT.pm), ml = ftMonthLabel(FT.pm);
+      if (!rowsM.length) { pk.innerHTML = ''; pc.classList.remove('ft-charts'); pc.innerHTML = `<div class="empty-state"><p>No data for ${ml} with these filters.</p></div>`; return; }
+      const tot = ftSum(rowsM), hsT = ftSum(rowsM.filter(r => isHS(r.category))), mem = new Set(rowsM.map(r => r.rk)).size;
+      const tiles = [[tot.liters, 'Litres', 1], [tot.km, 'KM / mileage', 0], [tot.amount, 'Amount (Rs)', 0], [mem, 'Team members', 0]];
+      if (hsT.visits) tiles.push([hsT.visits, 'Home Sampling visits', 0], [hsT.liters / hsT.visits, 'Litres per visit', 2]);
+      pk.innerHTML = tiles.map(([v, l, d]) => `<div class="ft-kpi"><div class="n">${ftFmt(v, d)}</div><div class="l">${l} · ${ml}</div></div>`).join('');
+      const gname = FT_GROUPS.find(x => x[0] === FT.ps)[1], gm = new Map();
+      rowsM.forEach(r => { const k = ftKey(r, FT.ps); let o = gm.get(k); if (!o) gm.set(k, o = { liters: 0, amount: 0, km: 0, visits: 0, mem: new Set() }); o.liters += r.approved_liters; o.amount += r.amount; o.km += r.km; o.visits += isHS(r.category) ? r.visits : 0; o.mem.add(r.rk); });
+      const items = (f) => [...gm.entries()].map(([k, o]) => [k, f(o)]);
+      const specs = [ftDonutSpec('p-km', `KM / mileage by ${gname} — ${ml}`, items(o => o.km), 'KM'), ftDonutSpec('p-amt', `Amount by ${gname} — ${ml}`, items(o => o.amount), 'Rs'), ftDonutSpec('p-lit', `Litres by ${gname} — ${ml}`, items(o => o.liters), 'L')];
+      if (FT.ps !== 'rider') specs.push(ftDonutSpec('p-mem', `Team members by ${gname} — ${ml}`, items(o => o.mem.size), 'members'));
+      if (hsT.visits) specs.push(ftDonutSpec('p-vis', `Home Sampling visits by ${gname} — ${ml}`, items(o => o.visits), 'visits'));
+      await ftRenderCharts(pc, specs);
+    };
+    ftDrop(res.querySelector('#ft-pm'), { label: 'Month', options: () => allMs.slice().reverse().map(m => [m, ftMonthLabel(m)]), get: () => FT.pm, set: (v) => { FT.pm = v || FT.pm; paint(); }, none: ftMonthLabel(FT.pm) });
+    ftDrop(res.querySelector('#ft-ps'), { label: 'Split by', options: () => FT_GROUPS, get: () => FT.ps, set: (v) => { FT.ps = v || 'cat'; paint(); }, none: 'Category' });
+    tabFilters(res.querySelector('#ft-pf'), 'pies', ['cat', 'region', 'lead', 'location', 'city', 'rider'], paint);
+    await paint();
+  }
+  // ----- Compare: own filters, pick items, choose bars / donut / lines -----
   async function drawCompare(my) {
-    const groups = ftGroupAgg(rows, FT.g), sig = FT.g + '|' + JSON.stringify(FT.f);
-    const C = FT.cmp = (FT.cmp && FT.cmp.sig === sig) ? FT.cmp : { sig, sel: groups.slice(0, 15).map(o => o.k), view: (FT.cmp && FT.cmp.view) || 'bar', measure: (FT.cmp && FT.cmp.measure) || 'all' };
-    res.innerHTML = `<div class="ft-bar" style="margin-bottom:8px"><div class="fv-fg" data-c="g"></div><div class="fv-fg" data-c="items"></div><div class="fv-fg" data-c="view"></div><div class="fv-fg" data-c="measure"></div></div>
+    res.innerHTML = `<div class="ft-bar" id="ft-cf" style="margin-bottom:6px"></div><div class="ft-bar" style="margin-bottom:8px"><div class="fv-fg" data-c="g"></div><div class="fv-fg" data-c="items"></div><div class="fv-fg" data-c="view"></div><div class="fv-fg" data-c="measure"></div></div>
       <div class="fv-note" style="margin:0 0 8px" id="ft-cmpn"></div><div id="ft-rk"></div>`;
     const out = res.querySelector('#ft-rk'), note = res.querySelector('#ft-cmpn');
+    let groups = [], cms = allMs, C = FT.cmp || { sig: '', sel: [], view: 'bar', measure: 'all' };
+    const refresh = () => {
+      const T = FT.tf.cmp, crows = ftFilter(all, null, T); cms = T.month.length ? allMs.filter(m => T.month.includes(m)) : allMs;
+      groups = ftGroupAgg(crows, FT.g);
+      const sig = FT.g + '|' + JSON.stringify(T);
+      if (C.sig !== sig) C = FT.cmp = { sig, sel: groups.slice(0, 15).map(o => o.k), view: C.view || 'bar', measure: C.measure || 'all' };
+    };
     const gname = () => FT_GROUPS.find(x => x[0] === FT.g)[1];
     const paint = async () => {
       note.textContent = `${C.sel.length} of ${groups.length} ${gname()} selected — use "Items" to add or remove any, or Select all / Clear.`;
       if (!C.sel.length) { out.classList.remove('ft-charts'); out.innerHTML = '<div class="empty-state"><p>Nothing chosen — open "Items" and pick some, or press Select all.</p></div>'; return; }
-      await ftRenderCharts(out, ftCompareSpecs(groups, ms, FT.g, new Set(C.sel), C.view, C.measure));
+      await ftRenderCharts(out, ftCompareSpecs(groups, cms, FT.g, new Set(C.sel), C.view, C.measure));
     };
+    let itemsDrop = null;
+    tabFilters(res.querySelector('#ft-cf'), 'cmp', ['month', 'cat', 'region', 'lead', 'location', 'city', 'rider'], () => { refresh(); if (itemsDrop) itemsDrop.refresh(); paint(); });
+    refresh();
     ftDrop(res.querySelector('[data-c="g"]'), { label: 'Compare by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; FT.cmp = null; drawBody(); }, none: 'Region' });
-    ftDrop(res.querySelector('[data-c="items"]'), { label: `Items (${groups.length})`, multi: true, options: () => groups.map(o => [o.k, `${o.k} — ${ftCompact(o.t.amount)}`]), get: () => C.sel, set: (v) => { C.sel = v; paint(); }, none: 'None chosen' });
+    itemsDrop = ftDrop(res.querySelector('[data-c="items"]'), { label: 'Items (add / remove)', multi: true, options: () => groups.map(o => [o.k, `${o.k} — ${ftCompact(o.t.amount)}`]), get: () => C.sel, set: (v) => { C.sel = v; paint(); }, none: 'None chosen' });
     ftDrop(res.querySelector('[data-c="view"]'), { label: 'Show as', options: () => [['bar', 'Bars (ranking)'], ['donut', 'Donut (share)'], ['lines', 'Lines (by month)']], get: () => C.view, set: (v) => { C.view = v || 'bar'; paint(); }, none: 'Bars (ranking)' });
     ftDrop(res.querySelector('[data-c="measure"]'), { label: 'Measure', options: () => [['all', 'All measures'], ['amount', 'Amount (Rs)'], ['liters', 'Litres'], ['km', 'KM'], ['visits', 'Visits']], get: () => C.measure, set: (v) => { C.measure = v || 'all'; paint(); }, none: 'All measures' });
     await paint();
@@ -7701,10 +7847,10 @@ async function ftPageTrend(host) {
     const groups = [...gm.values()].sort((a, b) => (ftVal(b.t, FT.m) || 0) - (ftVal(a.t, FT.m) || 0)), d = ftDec(FT.m), tot = ftSum(rows), monthTot = ftByMonth(rows, ms), shown = groups.slice(0, 400), mem = ftMembersByMonth(rows, ms), memAll = new Set(rows.map(r => r.rk)).size;
     res.innerHTML = `<div class="ft-tb"><div class="fv-fg" id="ft-tg" style="min-width:180px"></div><div class="fv-fg" id="ft-tm" style="min-width:160px"></div><span style="flex:1"></span>
         <button class="fv-btn" data-dl="csv" type="button">Download CSV</button>${fhIsNativeApp() ? '' : '<button class="fv-btn ghost" data-dl="xlsx" type="button">Download Excel</button>'}</div>
-      <div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(gname)}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Visits</th></tr></thead><tbody>
+      <details class="ft-mt" open><summary>Table — click to hide / show</summary><div class="ft-wrap"><table class="fv-table"><thead><tr><th>${escapeHtml(gname)}</th>${ms.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}<th class="n">Litres</th><th class="n">Amount</th><th class="n">KM</th><th class="n">Visits</th></tr></thead><tbody>
       ${shown.map(g => `<tr><td>${escapeHtml(g.k)}</td>${ms.map(m => { const v = g.by.has(m) ? ftVal(g.by.get(m), FT.m) : null; return `<td class="n">${v == null ? '–' : ftFmt(v, d)}</td>`; }).join('')}<td class="n">${ftFmt(g.t.liters, 1)}</td><td class="n">${ftFmt(g.t.amount)}</td><td class="n">${ftFmt(g.t.km)}</td><td class="n">${g.t.visits ? ftFmt(g.t.visits) : '–'}</td></tr>`).join('')}
       <tr class="tot"><td>Total</td>${monthTot.map(t => `<td class="n">${ftFmt(ftVal(t, FT.m) || 0, d)}</td>`).join('')}<td class="n">${ftFmt(tot.liters, 1)}</td><td class="n">${ftFmt(tot.amount)}</td><td class="n">${ftFmt(tot.km)}</td><td class="n">${tot.visits ? ftFmt(tot.visits) : '–'}</td></tr>
-      <tr class="tot"><td>Team members <span class="fv-note">(click a number for details)</span></td>${mem.map((n, i) => `<td class="n"><a href="#" data-emp="${ms[i]}" style="color:#1c2b6e;font-weight:700">${ftFmt(n)}</a></td>`).join('')}<td class="n"><a href="#" data-emp="" style="color:#1c2b6e;font-weight:700">${ftFmt(memAll)}</a></td><td class="n"></td><td class="n"></td><td class="n"></td></tr></tbody></table></div>
+      <tr class="tot"><td>Team members <span class="fv-note">(click a number for details)</span></td>${mem.map((n, i) => `<td class="n"><a href="#" data-emp="${ms[i]}" style="color:#1c2b6e;font-weight:700">${ftFmt(n)}</a></td>`).join('')}<td class="n"><a href="#" data-emp="" style="color:#1c2b6e;font-weight:700">${ftFmt(memAll)}</a></td><td class="n"></td><td class="n"></td><td class="n"></td></tr></tbody></table></div></details>
       ${groups.length > shown.length ? `<p class="fv-note">Showing the first ${shown.length} of ${groups.length}. The download contains all of them.</p>` : ''}`;
     res.querySelectorAll('[data-emp]').forEach(a => a.onclick = (e) => { e.preventDefault(); ftEmpPopup(rows, ms, a.dataset.emp, scopeTxt()); });
     ftDrop(res.querySelector('#ft-tg'), { label: 'Rows by', options: () => FT_GROUPS, get: () => FT.g, set: (v) => { FT.g = v || 'region'; drawBody(); }, none: 'Region' });
@@ -7795,24 +7941,24 @@ async function ftRatesBox(box, all, allMs, changed) {
   if (!set.ok) { box.innerHTML = `<div class="empty-state"><p>Could not load limits and rates: ${escapeHtml(set.err)}</p><p class="fv-note">Please run <strong>migration_38.sql</strong> in Supabase.</p></div>`; return; }
   const catSet = new Set(all.map(r => r.category || 'Uncategorised')); (FT.cats || []).forEach(c => catSet.add(c.name)); set.limits.forEach((v, k) => { if (![...catSet].some(c => c.toLowerCase() === k)) catSet.add(k); });
   const cats = [...catSet].sort((a, b) => a.localeCompare(b)), last12 = allMs.slice(-12);
-  const inp = 'style="height:30px;width:120px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;font:inherit;font-size:12px;box-sizing:border-box"';
+  const inp = 'style="height:30px;width:104px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;font:inherit;font-size:12px;box-sizing:border-box"';
   const cell = (c, m) => { const l = ftSum(all.filter(r => r.m === m && (r.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); if (!l && !lim) return '<td class="n">–</td>'; if (!lim) return `<td class="n">${ftFmt(l)}</td>`;
     const s = ftStatus(l, lim); return `<td class="n" style="color:${s.c};font-weight:600" title="${escapeHtml(s.t)}">${ftFmt(l)} ${s.up === true ? '▲' : s.up === false ? '▼' : '='}</td>`; };
   const rateMonths = [...new Set([...allMs, ...set.rates.keys()])].sort().reverse();
-  box.innerHTML = `<div class="ft-sec"><h4>Litres limit per month, by category</h4><p class="fv-note" style="margin:0 0 8px">Set the maximum litres allowed for a category in a month (nationwide). Months above the limit show <b style="color:#c0532f">▲ red</b>, below <b style="color:#2e7d4f">▼ green</b>. The limit also appears as a dashed line on the Summary charts.</p>
-      <div class="ft-wrap" style="max-height:none"><table class="fv-table"><thead><tr><th>Category</th><th>Max litres / month</th><th></th>${last12.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}</tr></thead><tbody>
-      ${cats.map((c, i) => `<tr><td>${escapeHtml(c)}</td><td><input ${inp} type="number" min="0" step="any" data-lim="${i}" value="${ftLimit(c) || ''}" placeholder="e.g. 11000"></td><td><button class="fv-btn" data-sl="${i}" type="button" style="height:28px">Save</button></td>${last12.map(m => cell(c, m)).join('')}</tr>`).join('')}</tbody></table></div>
+  box.innerHTML = `<div class="ft-sec"><h4>Limits per month, by category</h4><p class="fv-note" style="margin:0 0 8px">Set the maximum a category may reach in a month (nationwide): litres, amount, KM and — for Home Sampling — litres per visit. Leave a box empty for no limit. Months above the limit show <b style="color:#c0532f">▲ red</b>, below <b style="color:#2e7d4f">▼ green</b>. The limit also appears as a dashed line on the Summary charts.</p>
+      <div class="ft-wrap" style="max-height:none"><table class="fv-table"><thead><tr><th>Category</th><th>Max litres</th><th>Max amount (Rs)</th><th>Max KM</th><th>Max L / visit</th><th></th>${last12.map(m => `<th class="n">${ftMonthLabel(m)}</th>`).join('')}</tr></thead><tbody>
+      ${cats.map((c, i) => `<tr><td>${escapeHtml(c)}</td><td><input ${inp} type="number" min="0" step="any" data-lim="${i}" value="${ftLimit(c) || ''}" placeholder="e.g. 11000"></td><td><input ${inp} type="number" min="0" step="any" data-limA="${i}" value="${ftLim(c, 'amount') || ''}" placeholder="Rs"></td><td><input ${inp} type="number" min="0" step="any" data-limK="${i}" value="${ftLim(c, 'km') || ''}" placeholder="KM"></td><td><input ${inp} type="number" min="0" step="any" data-limP="${i}" value="${ftLim(c, 'lpv') || ''}" ${isHS(c) ? 'placeholder="L / visit"' : 'disabled placeholder="Home Sampling only"'}></td><td><button class="fv-btn" data-sl="${i}" type="button" style="height:28px">Save</button></td>${last12.map(m => cell(c, m)).join('')}</tr>`).join('')}</tbody></table></div>
       <p style="margin:8px 0 0"><button class="fv-btn ghost" id="ft-dl-lim" type="button">Download limits &amp; status (CSV)</button></p></div>
     <div class="ft-sec"><h4>Rs/KM by month</h4><p class="fv-note" style="margin:0 0 8px">Type the Rs/KM of any month (also months not uploaded yet) and press Save. Clear the box and Save to remove it.</p>
       <div class="ft-tb"><input id="ft-nm" type="month" ${inp}><input id="ft-nr" type="number" min="0" step="any" ${inp} placeholder="Rs/KM"><button class="fv-btn" id="ft-add" type="button" style="height:30px">Add / update</button><span style="flex:1"></span><button class="fv-btn ghost" id="ft-dl-rate" type="button">Download Rs/KM (CSV)</button></div>
       <div class="ft-wrap" style="max-height:340px"><table class="fv-table"><thead><tr><th>Month</th><th>Rs/KM</th><th></th></tr></thead><tbody>
       ${rateMonths.map(m => `<tr><td>${ftMonthLabel(m)}</td><td><input ${inp} type="number" min="0" step="any" data-rate="${m}" value="${set.rates.has(m) ? set.rates.get(m) : ''}" placeholder="–"></td><td><button class="fv-btn" data-sr="${m}" type="button" style="height:28px">Save</button></td></tr>`).join('')}</tbody></table></div></div>`;
-  const rpc = async (fn, args, msg) => { const { error } = await sb.rpc(fn, args); if (error) { toast('Could not save: ' + error.message); return false; } toast(msg); changed(); return true; };
-  box.querySelectorAll('[data-sl]').forEach(b => b.onclick = () => { const i = +b.dataset.sl, v = box.querySelector(`[data-lim="${i}"]`).value; rpc('fuel_set_limit', { p_cat: cats[i], p_max: v === '' ? null : +v }, 'Limit saved'); });
+  const rpc = async (fn, args, msg) => { const { error } = await sb.rpc(fn, args); if (error) { toast('Could not save: ' + error.message + (/fuel_set_limits/.test(error.message) ? ' — please run migration_40.sql in Supabase.' : '')); return false; } toast(msg); changed(); return true; };
+  box.querySelectorAll('[data-sl]').forEach(b => b.onclick = () => { const i = +b.dataset.sl, g = (k) => { const v = box.querySelector(`[data-${k}="${i}"]`).value; return v === '' ? null : +v; }; rpc('fuel_set_limits', { p_cat: cats[i], p_liters: g('lim'), p_amount: g('limA'), p_km: g('limK'), p_lpv: g('limP') }, 'Limits saved'); });
   box.querySelectorAll('[data-sr]').forEach(b => b.onclick = () => { const m = b.dataset.sr, v = box.querySelector(`[data-rate="${m}"]`).value; rpc('fuel_set_rate', { p_month: m + '-01', p_rate: v === '' ? null : +v }, 'Rs/KM saved'); });
   box.querySelector('#ft-add').onclick = () => { const m = box.querySelector('#ft-nm').value, v = box.querySelector('#ft-nr').value; if (!m || v === '') { toast('Choose a month and enter the Rs/KM'); return; } rpc('fuel_set_rate', { p_month: m + '-01', p_rate: +v }, 'Rs/KM saved'); };
   box.querySelector('#ft-dl-rate').onclick = () => { const r = [...set.rates].sort().map(([m, v]) => ({ Month: ftMonthLabel(m), 'Rs/KM': v })); if (!r.length) { toast('No Rs/KM saved yet'); return; } downloadCSV('fuel-rs-per-km.csv', toCSV(r)); };
-  box.querySelector('#ft-dl-lim').onclick = () => { const r = cats.map(c => { const o = { Category: c, 'Max litres per month': ftLimit(c) || '' }; last12.forEach(m => { const l = ftSum(all.filter(x => x.m === m && (x.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); o[ftMonthLabel(m) + ' litres'] = Math.round(l); o[ftMonthLabel(m) + ' status'] = lim && l ? (l > lim ? 'Over by ' + Math.round(l - lim) : l < lim ? 'Under by ' + Math.round(lim - l) : 'At limit') : ''; }); return o; }); downloadCSV('fuel-limits-status.csv', toCSV(r)); };
+  box.querySelector('#ft-dl-lim').onclick = () => { const r = cats.map(c => { const o = { Category: c, 'Max litres per month': ftLimit(c) || '', 'Max amount (Rs)': ftLim(c, 'amount') || '', 'Max KM': ftLim(c, 'km') || '', 'Max litres per visit': ftLim(c, 'lpv') || '' }; last12.forEach(m => { const l = ftSum(all.filter(x => x.m === m && (x.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); o[ftMonthLabel(m) + ' litres'] = Math.round(l); o[ftMonthLabel(m) + ' status'] = lim && l ? (l > lim ? 'Over by ' + Math.round(l - lim) : l < lim ? 'Under by ' + Math.round(lim - l) : 'At limit') : ''; }); return o; }); downloadCSV('fuel-limits-status.csv', toCSV(r)); };
 }
 
 // ---------------- Saved data: months, edit rows, tools ----------------
@@ -8589,7 +8735,7 @@ async function renderRosterMain(){
         if (direction === 'remove'){
           if (!confirm(`${entry.profiles?.full_name||'This rider'}'s login is disabled but Roster still shows them working. Mark their roster entry as removed to match?`)) return;
           const { error } = await sb.from('roster_entries').update({
-            status: 'removed', removal_reason: 'Login Disabled', removal_note: 'Synced manually — login was already disabled but roster had not been updated.'
+            status: 'removed', removal_reason: 'Other', removal_note: 'Synced manually — login was already disabled but roster had not been updated.'
           }).eq('id', entry.id);
           if (error){ toast('Could not sync: ' + error.message); return; }
         } else {
@@ -8606,8 +8752,8 @@ async function renderRosterMain(){
 
 async function openRosterModal(entry, prefill){
   await loadScopedProfiles();
-  const riders = state.profilesInScope.filter(p=>p.role==='rider' && (p.status==='active' || p.id===entry?.rider_id));
-  const riderOptions = riders.map(p=>`<option value="${p.id}" ${entry?.rider_id===p.id?'selected':''}>${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id||'—')})</option>`).join('');
+  const riders = state.profilesInScope.filter(p=>p.role==='rider' && (fhLive(p) || p.id===entry?.rider_id));
+  const riderOptions = (entry ? '' : '<option value="">— Select the rider (use the search box above to find) —</option>') + riders.map(p=>`<option value="${p.id}" ${entry?.rider_id===p.id?'selected':''}>${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id||'—')})</option>`).join('');
   const regionOptions = state.regions.map(r=>`<option value="${r.id}" ${entry?.region_id===r.id?'selected':''}>${escapeHtml(r.name)}</option>`).join('');
   const { data: shifts } = await sb.from('shift_types').select('*').eq('active', true).order('name');
   const shiftOptions = (shifts||[]).map(s=>`<option value="${s.id}" ${entry?.shift_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
@@ -8683,7 +8829,7 @@ async function openRosterModal(entry, prefill){
       }
       if (prefill.mobile) document.getElementById('ro-official').value = toLocalPhone(prefill.mobile) || prefill.mobile;
       const h = document.querySelector('#roster-form h2, #active-modal h2');
-      if (h) h.insertAdjacentHTML('afterend', `<p class="hint">Moving <strong>${escapeHtml(prefill.full_name)}</strong> from On Job Training. The rider needs an approved login (Team page) — pick it in the Rider list${match ? ' (matched automatically)' : ''}.</p>`);
+      if (h) h.insertAdjacentHTML('afterend', `<p class="hint">Moving <strong>${escapeHtml(prefill.full_name)}</strong> from On Job Training. ${match ? 'Their login was matched automatically.' : '<b style="color:#b3321b">No active login was found for this Employee ID / mobile.</b> Create and approve their login on the Team page first, then come back — or search the list below for the right person.'}</p>`);
     }
   }
 
@@ -8784,6 +8930,7 @@ async function renderRosterOjt(){
           <button class="btn small outline" data-ojt-edit="${r.id}">Edit</button>
           ${r.status === 'in_training' ? `<button class="btn small outline" data-ojt-drop="${r.id}">Dropped</button>` : ''}
           ${r.status === 'dropped' ? `<button class="btn small outline" data-ojt-back="${r.id}">Back to training</button>` : ''}
+          ${(r.status === 'moved' && isSuperAdmin()) ? `<button class="btn small outline" data-ojt-revert="${r.id}" title="Moved by mistake? Put this person back on On Job Training">Revert to OJT</button>` : ''}
           ${isSuperAdmin() ? `<button class="btn small danger" data-ojt-del="${r.id}">Delete</button>` : ''}
         </td></tr>`).join('')}</tbody></table></div>` : emptyState(all.length ? 'No trainees match these filters.' : 'No one is on job training yet. Click “+ Add Trainee”.');
     const byId = (id) => all.find(x => x.id === id);
@@ -8792,6 +8939,20 @@ async function renderRosterOjt(){
     const setStatus = async (id, status, msg) => { const { error: e } = await sb.from('roster_ojt').update({ status, updated_at: new Date().toISOString() }).eq('id', id); if (e){ toast('Could not save: ' + e.message); return; } toast(msg); renderRosterOjt(); };
     main.querySelectorAll('[data-ojt-drop]').forEach(b => b.onclick = () => { if (confirm('Mark this trainee as dropped / left?')) setStatus(b.dataset.ojtDrop, 'dropped', 'Marked as dropped'); });
     main.querySelectorAll('[data-ojt-back]').forEach(b => b.onclick = () => setStatus(b.dataset.ojtBack, 'in_training', 'Back in training'));
+    main.querySelectorAll('[data-ojt-revert]').forEach(b => b.onclick = async () => {
+      const r = byId(b.dataset.ojtRevert);
+      if (!confirm(`Put ${r.full_name} back on On Job Training?`)) return;
+      if (r.moved_rider_id){
+        const { data: ents } = await sb.from('roster_entries').select('id').eq('rider_id', r.moved_rider_id).neq('status', 'removed');
+        if (ents && ents.length && confirm(`Also delete the working roster entry created by this move (${ents.length} entr${ents.length > 1 ? 'ies' : 'y'})?\n\nOK = delete it, Cancel = keep it on the roster.`)){
+          const { error: e1 } = await sb.from('roster_entries').delete().in('id', ents.map(x => x.id));
+          if (e1){ toast('Could not remove the roster entry: ' + e1.message); return; }
+        }
+      }
+      const { error: e } = await sb.from('roster_ojt').update({ status: 'in_training', moved_rider_id: null, moved_at: null, updated_at: new Date().toISOString() }).eq('id', r.id);
+      if (e){ toast('Could not revert: ' + e.message); return; }
+      FH_OFF.t = 0; toast('Back on On Job Training'); renderRosterOjt();
+    });
     main.querySelectorAll('[data-ojt-del]').forEach(b => b.onclick = async () => {
       if (!confirm('Permanently delete this trainee record?')) return;
       const { error: e } = await sb.from('roster_ojt').delete().eq('id', b.dataset.ojtDel); if (e){ toast('Could not delete: ' + e.message); return; } toast('Deleted'); renderRosterOjt();
