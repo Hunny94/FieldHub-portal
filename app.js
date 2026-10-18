@@ -7510,7 +7510,7 @@ function ftPrep(s, narrow, w) {
 // pie: the slice under the finger / mouse slides out
 function ftPieHover(d) {
   let cur = -1; const n = (d.data[0].values || []).length;
-  const set = (i) => { if (i === cur) return; cur = i; try { Plotly.restyle(d, { pull: [Array.from({ length: n }, (_, k) => k === i ? 0.1 : 0)] }, [0]); } catch (_) {} };
+  const set = (i) => { if (i === cur) return; cur = i; try { const arr = Array.from({ length: n }, (_, k) => k === i ? 0.14 : 0); Plotly.restyle(d, { pull: [arr, arr] }, [0, 1]); } catch (_) {} };
   d.on('plotly_hover', (e) => { const p = e && e.points && e.points[0]; if (p && p.pointNumber != null) set(p.pointNumber); });
   d.on('plotly_unhover', () => set(-1));
 }
@@ -7648,23 +7648,28 @@ async function ftRenderCat(box, rows, ms, cat, tag) {
   const drawCg = async () => { const sp = ftCatSpecs(rows, ms, cat, tag); sp[0].toggle.fn = async () => { FT.memOn = FT.memOn || {}; FT.memOn[tag] = !FT.memOn[tag]; await drawCg(); }; await ftRenderCharts(box.querySelector('.ft-cg'), sp); };
   await drawCg();
 }
-// donut: share of the total. Number in the middle, % on the slices, legend underneath; the slice under the pointer slides out.
+// pie with a "thick" 3-D look: a darker copy sits just below the pie. The slice under the pointer slides out and a detail box shows its name, amount, share and rank.
 function ftLegRows(labs, w) {
   const avail = Math.max(160, w - 24); let rows = 1, cur = 0;
   labs.forEach(l => { const iw = l.length * 6 + 34; if (cur && cur + iw > avail) { rows++; cur = 0; } cur += iw; });
   return rows;
 }
+const ftDark = (hex, f) => '#' + [1, 3, 5].map(i => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('');
 function ftDonutSpec(id, title, items, unit) {
   const list = items.filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]), top = list.slice(0, 12), rest = list.slice(12), total = list.reduce((a, x) => a + x[1], 0);
   if (rest.length) top.push([`Others (${rest.length})`, rest.reduce((a, x) => a + x[1], 0)]);
-  const labs = top.map(x => `${x[0]}: ${ftFmt(x[1])}`);
-  const fit = (w) => { const rows = ftLegRows(labs, w); return { h: Math.round(Math.min(Math.max(w - 40, 180), 290)) + 14 + rows * 18, mb: rows * 18 + 6 }; };
+  const labs = top.map(x => `${x[0]}: ${ftFmt(x[1])}`), cols = top.map((_, i) => FT_COLORS[i % FT_COLORS.length]), N = top.length;
+  const fit = (w) => { const rows = ftLegRows(labs, w); return { h: Math.round(Math.min(Math.max(w - 50, 190), 300)) + 22 + rows * 18, mb: rows * 18 + 6 }; };
+  const dom = { x: [0.06, 0.94] };
+  const depth = { type: 'pie', labels: labs, values: top.map(x => x[1]), hole: 0, sort: false, direction: 'clockwise', textinfo: 'none', hoverinfo: 'skip', showlegend: false, pull: top.map(() => 0),
+    marker: { colors: cols.map(c => ftDark(c, 0.62)), line: { color: ftDark('#1E2A6E', 0.5), width: 1 } }, domain: Object.assign({ y: [0, 0.93] }, dom) };
+  const main = { type: 'pie', labels: labs, values: top.map(x => x[1]), customdata: top.map(x => x[0]), hovertext: top.map((x, i) => `${ftFmt(x[1])}${unit ? ' ' + unit : ''}<br>Rank ${i + 1} of ${N}`), hole: 0, sort: false, direction: 'clockwise',
+    text: top.map(x => total && x[1] / total >= 0.05 ? '<b>' + Math.round(x[1] / total * 100) + '%</b>' : ''), textinfo: 'text', textposition: 'inside', insidetextorientation: 'horizontal', textfont: { size: 13, color: '#fff' },
+    pull: top.map(() => 0), marker: { colors: cols, line: { color: '#fff', width: 2 } },
+    hovertemplate: `<b>%{customdata}</b><br>%{hovertext}<br><b>%{percent}</b> of total ${ftFmt(total)}<extra></extra>`,
+    hoverlabel: { bgcolor: '#ffffff', bordercolor: cols, font: { size: 13, color: '#1c2b6e' }, align: 'left', namelength: -1 }, domain: Object.assign({ y: [0.07, 1] }, dom) };
   return { id, title, sub: `total ${ftFmt(total)}${unit ? ' ' + unit : ''}`, h: 340, fit, csv: list.map(x => ({ Name: x[0], Value: Math.round(x[1] * 100) / 100, 'Share %': total ? Math.round(x[1] / total * 1000) / 10 : 0 })),
-    traces: [{ type: 'pie', labels: labs, values: top.map(x => x[1]), customdata: top.map(x => x[0]), hovertext: top.map(x => `${ftFmt(x[1])}${unit ? ' ' + unit : ''}`), hole: 0.62, sort: false, direction: 'clockwise',
-      text: top.map(x => total && x[1] / total >= 0.05 ? Math.round(x[1] / total * 100) + '%' : ''), textinfo: 'text', textposition: 'inside', insidetextorientation: 'horizontal', textfont: { size: 11, color: '#fff' },
-      pull: top.map(() => 0), marker: { colors: top.map((_, i) => FT_COLORS[i % FT_COLORS.length]), line: { color: '#fff', width: 2 } },
-      hovertemplate: '<b>%{customdata}</b><br>%{hovertext}<br>%{percent}<extra></extra>', domain: { x: [0.04, 0.96], y: [0, 1] },
-      title: { text: `<b>${ftCompact(total)}</b>${unit ? '<br>' + unit : ''}`, position: 'middle center', font: { size: 17, color: '#1c2b6e' } } }],
+    traces: [depth, main],
     layout: (narrow, w) => ({ hovermode: 'closest', showlegend: true, margin: { l: 6, r: 6, t: 8, b: fit(w || 340).mb }, legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 0, yanchor: 'top', font: { size: 10.5 } } }) };
 }
 // shares for one month: category (amount, litres) and the first other split that has 2+ parts
