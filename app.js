@@ -4029,7 +4029,7 @@ async function renderCompliance(){
     main.querySelectorAll('[data-submit-compliance]').forEach(btn => {
       btn.onclick = async () => {
         const { error } = await sb.from('compliance_submissions').insert({
-          rider_id: state.user.id, region_id: state.profile.region_id,
+          rider_id: state.user.id, region_id: (await sb.from('roster_entries').select('region_id').eq('rider_id', state.user.id).neq('status','removed').maybeSingle()).data?.region_id || state.profile.region_id,
           item_type_id: btn.dataset.submitCompliance, period
         });
         if (error){ toast('Could not submit: ' + error.message); return; }
@@ -4044,10 +4044,18 @@ async function renderCompliance(){
   const riders = state.profilesInScope.filter(p=>p.role==='rider' && fhLive(p));
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
+  // Region = where the Roster says the rider works now (so the two always agree). A month in which the
+  // sheet was already received keeps the region it was received under, so old records never change.
+  const { data: rosNow } = await sb.from('roster_entries').select('rider_id, region_id').neq('status', 'removed');
+  const rosReg = new Map((rosNow||[]).map(e => [e.rider_id, e.region_id]));
+  const subReg = new Map((subs||[]).filter(x => x.region_id).map(x => [x.rider_id, x.region_id]));
+  riders.forEach(r => { r.cmp_region = subReg.get(r.id) || rosReg.get(r.id) || r.region_id; });
+  if (!window.__cmpRT) { window.__cmpRT = true; let tm = null; const kick = () => { clearTimeout(tm); tm = setTimeout(() => { if (state.view === 'compliance' && !document.getElementById('active-modal')) renderCompliance(); }, 700); };
+    try { sb.channel('cmp-live').on('postgres_changes', { event: '*', schema: 'public', table: 'roster_entries' }, kick).on('postgres_changes', { event: '*', schema: 'public', table: 'compliance_submissions' }, kick).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, kick).subscribe(); } catch (_) {} }
   const canCorrect = isSuperAdmin() || hasPermission('manage_types');
   const F = window.__cmpF = window.__cmpF || { region: '', q: '', st: '' };
-  const rgName = (r) => state.regions.find(rg=>rg.id===r.region_id)?.name||'';
-  const regionIds = [...new Set(riders.map(r => r.region_id).filter(Boolean))];
+  const rgName = (r) => state.regions.find(rg=>rg.id===(r.cmp_region||r.region_id))?.name||'';
+  const regionIds = [...new Set(riders.map(r => r.cmp_region || r.region_id).filter(Boolean))];
   const regionOpts = regionIds.map(id => [id, state.regions.find(rg=>rg.id===id)?.name||'—']).sort((a,b)=>a[1].localeCompare(b[1]));
   const cur = currentPeriod(), months = []; for (let i = 0; i < 36; i++) months.push(shiftPeriod(cur, -i));
   if (!months.includes(period)) months.unshift(period);
@@ -4055,7 +4063,7 @@ async function renderCompliance(){
   const filtered = () => {
     const q = F.q.trim().toLowerCase();
     return riders.filter(r => {
-      if (F.region && r.region_id !== F.region) return false;
+      if (F.region && (r.cmp_region || r.region_id) !== F.region) return false;
       if (q && !((r.full_name||'').toLowerCase().includes(q) || String(r.employee_id||'').toLowerCase().includes(q))) return false;
       const pend = itemsN.filter(t => !subMap.has(r.id+'|'+t.id)).length;
       if (F.st === 'pending' && !pend) return false;
@@ -4105,7 +4113,7 @@ async function renderCompliance(){
         const [riderId, itemTypeId] = btn.dataset.markReceived.split('|');
         const rider = riders.find(r=>r.id===riderId);
         const { error } = await sb.from('compliance_submissions').insert({
-          rider_id: riderId, region_id: rider?.region_id, item_type_id: itemTypeId, period
+          rider_id: riderId, region_id: rider?.cmp_region || rider?.region_id, item_type_id: itemTypeId, period
         });
         if (error){ toast('Could not mark: ' + error.message); return; }
         toast('Marked as received'); renderCompliance();
