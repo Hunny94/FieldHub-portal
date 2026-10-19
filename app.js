@@ -672,18 +672,18 @@ function setupSessionTimeout(){
   if (fhIsNativeApp() || st.web_auto_signout_enabled === false){ _fhIdleMs = 0; _fhIdleReset = null; return; }
   const minutes = Math.min(Math.max(parseInt(st.session_timeout_minutes, 10) || 15, 1), 10080);
   _fhIdleMs = minutes * 60 * 1000;
-  const reset = () => {
-    if (!_fhIdleMs || !state.user) return;
-    if (sessionTimeoutTimer) clearTimeout(sessionTimeoutTimer);
-    sessionTimeoutTimer = setTimeout(() => {
-      toast(`You were signed out after ${minutes} minutes of inactivity.`);
-      doLogout();
-    }, _fhIdleMs);
-  };
+  const reset = () => { window.__fhLastAct = Date.now(); };
   _fhIdleReset = reset;
+  if (window.__fhIdleIv) clearInterval(window.__fhIdleIv);
+  window.__fhIdleIv = setInterval(() => {
+    if (!_fhIdleMs || !state.user) return;
+    if (Date.now() - (window.__fhLastAct || 0) >= _fhIdleMs){ clearInterval(window.__fhIdleIv); window.__fhIdleIv = null; toast(`You were signed out after ${minutes} minutes of inactivity.`); doLogout(); }
+  }, 15000);
   if (!_fhIdleBound){
     _fhIdleBound = true;
-    ['mousemove','keydown','click','scroll','touchstart'].forEach(evt => document.addEventListener(evt, () => { if (_fhIdleReset) _fhIdleReset(); }, { passive: true }));
+    // capture phase: scrolling inside a page panel does not bubble to the document, so listen on the way down
+    ['mousemove','mousedown','pointerdown','pointermove','keydown','click','scroll','wheel','touchstart','touchmove'].forEach(evt => document.addEventListener(evt, () => { if (_fhIdleReset) _fhIdleReset(); }, { passive: true, capture: true }));
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && _fhIdleReset && !(Date.now() - (window.__fhLastAct || 0) >= _fhIdleMs)) _fhIdleReset(); });
   }
   reset();
 }
@@ -1305,7 +1305,8 @@ function ftNavViews(){
 // Fuel Trends access: Super Admin, or a granted permission (Settings > Access Control)
 function ftCanView(view){ return isSuperAdmin() || (view === 'ft_trend' ? (hasPermission('ft_trend') || hasPermission('ft_upload')) : hasPermission('ft_upload')); }
 function getAllowedViews(){
-  const base = [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews()];
+  const viewerOnly = !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only');
+  const base = viewerOnly ? ['dashboard', ...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews()];
   const extra = [];
   // any page can be switched on for one person (Settings > Access Control)
   Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
@@ -2735,12 +2736,64 @@ function openEditExpiryModal(group){
 // TEAM (pending approvals + directory) — view for all staff,
 // but add/approve/disable/reset actions are Admin-only
 // ---------------------------------------------------------
+// Create a login for someone who only needs to VIEW a few pages (e.g. a boss who wants Fuel Trends).
+// Uses a separate throw-away connection so the Super Admin stays signed in.
+function openGeneralUserModal(){
+  const pageBox = (k, l) => `<label style="display:flex;gap:8px;align-items:center;margin:3px 0"><input type="checkbox" data-gk="${k}"> ${escapeHtml(l)}</label>`;
+  const others = Object.keys(NAV_LABEL).filter(v => !v.startsWith('ft_') && !v.startsWith('fv_') && v !== 'dashboard' && v !== 'releasenotes').map(v => pageBox('page:' + v, NAV_LABEL[v])).join('');
+  openModal(`<h2>Create general user</h2>
+    <p class="hint">For someone who only needs to see a few pages. They see only what you tick below. You can change it any time in Settings → Access Control.</p>
+    <form id="gu-form">
+      <div class="two-col"><div class="form-row"><label>Full name</label><input id="gu-name" required></div>
+      <div class="form-row"><label>Mobile number (login)</label><input id="gu-phone" required maxlength="11" placeholder="03XXXXXXXXX"></div></div>
+      <div class="two-col"><div class="form-row"><label>Password (at least 6)</label><input id="gu-pw" type="text" required minlength="6"></div>
+      <div class="form-row"><label>Email (optional)</label><input id="gu-email" type="email"></div></div>
+      <div class="form-row"><label>What can this person see?</label>
+        <div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;max-height:240px;overflow:auto">
+          ${pageBox('ft_trend', 'Fuel Trends (view only)')}
+          <div class="hint" style="margin:6px 0 2px">Field Visit</div>
+          ${pageBox('page:fv_report', 'Visit Report')}${pageBox('page:fv_riders', 'Rider Summary')}${pageBox('page:fv_issues', 'Issues Summary')}${pageBox('page:fv_visits', 'Visit Summary')}
+          <div class="hint" style="margin:6px 0 2px">Other pages</div>${others}
+        </div></div>
+      <div class="form-row"><label>Access ends on (optional)</label><input id="gu-until" type="date"></div>
+      <button class="btn-primary" type="submit">Create login</button> <span id="gu-st" class="hint"></span>
+    </form>`);
+  document.getElementById('gu-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const st = document.getElementById('gu-st'), full_name = toProperCase(document.getElementById('gu-name').value.trim());
+    const phone = toE164(document.getElementById('gu-phone').value.trim()), pw = document.getElementById('gu-pw').value, email = document.getElementById('gu-email').value.trim();
+    const keys = [...document.querySelectorAll('[data-gk]:checked')].map(c => c.dataset.gk);
+    const until = document.getElementById('gu-until').value;
+    if (!phone){ toast('Please enter a valid mobile number'); return; }
+    if (!keys.length){ toast('Tick at least one thing this person may see'); return; }
+    if (until && until < new Date().toLocaleDateString('sv-SE')){ toast('The end date is in the past'); return; }
+    st.textContent = 'Creating…';
+    try {
+      const tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'fh-tmp-create' } });
+      const empId = 'GU' + phone.replace(/\D/g, '').slice(-8);
+      const { data, error } = await tmp.auth.signUp({ phone, password: pw, options: { data: { full_name, requested_role: 'coordinator' } } });
+      if (error || !data || !data.user){ st.textContent = ''; toast('Could not create: ' + (error ? error.message : 'unknown problem')); return; }
+      const uid = data.user.id;
+      let r = null;
+      for (let i = 0; i < 5; i++) { r = await sb.from('profiles').update({ status: 'active', role: 'coordinator', full_name, employee_id: empId, ...(email ? { email } : {}) }).eq('id', uid).select('id'); if (!r.error && r.data && r.data.length) break; await new Promise(x => setTimeout(x, 600)); }
+      if (r.error || !(r.data && r.data.length)){ st.textContent = ''; toast('Login created but could not be activated — open it in Team and approve it.'); return; }
+      const exp = until ? new Date(until + 'T23:59:59').toISOString() : null;
+      const ins = await sb.from('custom_permissions').insert(['viewer_only', ...keys].map(k => ({ profile_id: uid, permission_key: k, granted_by: state.user.id, expires_at: k === 'viewer_only' ? null : exp })));
+      if (ins.error){ st.textContent = ''; toast('Login created, but access could not be saved: ' + ins.error.message); return; }
+      closeModal(); toast(`Login created for ${full_name}. Mobile ${toLocalPhone(phone)} + the password you typed.`); renderTeam();
+    } catch (err) { st.textContent = ''; toast('Could not create: ' + (err.message || err)); }
+  };
+}
 async function renderTeam(){
   const main = document.getElementById('main-content');
   const canBulkAddTeam = isAdmin() || hasPermission('team_bulk_add');
   if (canBulkAddTeam){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="bulk-add-btn">+ Bulk Add Riders</button>`;
     document.getElementById('bulk-add-btn').onclick = openBulkUploadModal;
+  }
+  if (isSuperAdmin()){
+    document.getElementById('topbar-actions').insertAdjacentHTML('beforeend', `<button class="btn outline" id="gen-user-btn" style="margin-left:8px">+ Create general user</button>`);
+    document.getElementById('gen-user-btn').onclick = openGeneralUserModal;
   }
   await loadScopedProfiles(true);
   const pending = state.profilesInScope.filter(p=>p.status==='pending');
@@ -4046,10 +4099,16 @@ async function renderCompliance(){
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
   // Region = where the Roster says the rider works now (so the two always agree). A month in which the
   // sheet was already received keeps the region it was received under, so old records never change.
-  const { data: rosNow } = await sb.from('roster_entries').select('rider_id, region_id').neq('status', 'removed');
-  const rosReg = new Map((rosNow||[]).map(e => [e.rider_id, e.region_id]));
+  const rosAll = await fvFetchAll(() => sb.from('roster_entries').select('rider_id, region_id, status, created_at').order('id'));
+  const rosReg = new Map(rosAll.filter(e => e.status !== 'removed').map(e => [e.rider_id, e.region_id]));
+  // a rider's first month = month added to the Roster, or the OJT joining date when moved from On Job Training
+  const startYM = new Map(), ymOf = (d) => new Date(d).toLocaleDateString('sv-SE').slice(0, 7);
+  rosAll.forEach(e => { if (!e.created_at) return; const m = ymOf(e.created_at); if (!startYM.has(e.rider_id) || m < startYM.get(e.rider_id)) startYM.set(e.rider_id, m); });
+  try { const { data: oj } = await sb.from('roster_ojt').select('moved_rider_id, joining_date').not('moved_rider_id', 'is', null); (oj||[]).forEach(o => { if (o.joining_date) startYM.set(o.moved_rider_id, o.joining_date.slice(0, 7)); }); } catch (_) {}
+  const subRidersAll = new Set((subs||[]).map(x => x.rider_id));
   const subReg = new Map((subs||[]).filter(x => x.region_id).map(x => [x.rider_id, x.region_id]));
   riders.forEach(r => { r.cmp_region = subReg.get(r.id) || rosReg.get(r.id) || r.region_id; });
+  for (let i = riders.length - 1; i >= 0; i--) { const sm = startYM.get(riders[i].id); if (sm && sm > period && !subRidersAll.has(riders[i].id)) riders.splice(i, 1); }
   if (!window.__cmpRT) { window.__cmpRT = true; let tm = null; const kick = () => { clearTimeout(tm); tm = setTimeout(() => { if (state.view === 'compliance' && !document.getElementById('active-modal')) renderCompliance(); }, 700); };
     try { sb.channel('cmp-live').on('postgres_changes', { event: '*', schema: 'public', table: 'roster_entries' }, kick).on('postgres_changes', { event: '*', schema: 'public', table: 'compliance_submissions' }, kick).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, kick).subscribe(); } catch (_) {} }
   const canCorrect = isSuperAdmin() || hasPermission('manage_types');
@@ -4841,6 +4900,7 @@ async function renderPopupsSettings(body){
 }
 
 const GRANTABLE_PERMISSIONS = [
+  ['viewer_only', 'General user — hide all the normal menus (only the pages granted here are shown)'],
   ['categories_add', 'Request Categories — Add'],
   ['categories_edit', 'Request Categories — Edit'],
   ['categories_remove', 'Request Categories — Remove'],
@@ -7318,6 +7378,7 @@ body.ft-nosc{overflow:hidden}
 .ft-wrap td.n,.ft-wrap th.n{text-align:right;font-variant-numeric:tabular-nums}
 .ft-wrap tr.tot td{font-weight:700;background:#f3f5fb;position:sticky;bottom:0;z-index:2}.ft-wrap tr.tot td:first-child{z-index:4}
 .ft-wrap tbody tr:hover td{background:#f6f8ff}
+@media(max-width:700px){.ft-wrap td:first-child,.ft-wrap th:first-child{width:96px;min-width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere;font-size:11px;line-height:1.25;padding:6px 6px}.ft-wrap th,.ft-wrap td{padding:6px 8px}.ft-wrap tr.tot td:first-child{font-size:10.5px}}
 .ft-wrap input.ei{width:100%;min-width:70px;box-sizing:border-box;border:1px solid transparent;background:transparent;border-radius:5px;padding:4px 6px;font:inherit;font-size:12px}
 .ft-wrap input.ei:hover{border-color:#dfe3ee}.ft-wrap input.ei:focus{border-color:#1E2A6E;background:#fff;outline:none}
 .ft-wrap tr.dirty td{background:#fff8e4}.ft-wrap td.act{display:flex;gap:4px}
