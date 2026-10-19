@@ -4039,77 +4039,108 @@ async function renderCompliance(){
     return;
   }
 
-  // Staff/Admin view: who has/hasn't submitted, with a month picker and CSV export
+  // Staff/Admin view: who has/hasn't submitted — any month, with filters and CSV export
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider' && fhLive(p));
   const { data: subs } = await sb.from('compliance_submissions').select('*').eq('period', period);
   const subMap = new Map((subs||[]).map(s => [s.rider_id+'|'+s.item_type_id, s.submitted_at]));
-
-  const pendingCount = riders.reduce((sum, r) => sum + state.complianceItemTypes.filter(t => !subMap.has(r.id+'|'+t.id)).length, 0);
   const canCorrect = isSuperAdmin() || hasPermission('manage_types');
+  const F = window.__cmpF = window.__cmpF || { region: '', q: '', st: '' };
+  const rgName = (r) => state.regions.find(rg=>rg.id===r.region_id)?.name||'';
+  const regionIds = [...new Set(riders.map(r => r.region_id).filter(Boolean))];
+  const regionOpts = regionIds.map(id => [id, state.regions.find(rg=>rg.id===id)?.name||'—']).sort((a,b)=>a[1].localeCompare(b[1]));
+  const cur = currentPeriod(), months = []; for (let i = 0; i < 36; i++) months.push(shiftPeriod(cur, -i));
+  if (!months.includes(period)) months.unshift(period);
+  const itemsN = state.complianceItemTypes;
+  const filtered = () => {
+    const q = F.q.trim().toLowerCase();
+    return riders.filter(r => {
+      if (F.region && r.region_id !== F.region) return false;
+      if (q && !((r.full_name||'').toLowerCase().includes(q) || String(r.employee_id||'').toLowerCase().includes(q))) return false;
+      const pend = itemsN.filter(t => !subMap.has(r.id+'|'+t.id)).length;
+      if (F.st === 'pending' && !pend) return false;
+      if (F.st === 'done' && pend) return false;
+      return true;
+    });
+  };
 
   main.innerHTML = `
     <div class="card" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
-      <div style="display:flex; align-items:center; gap:10px;">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <button class="btn small outline" id="compliance-prev">‹ Prev</button>
-        <h3 style="margin:0;">${monthLabel(period)}${isCurrentMonth?' <span class="badge active" style="margin-left:6px;">Current</span>':''}</h3>
+        <select id="compliance-month" style="min-width:170px;font-weight:700;">${months.map(m => `<option value="${m}" ${m===period?'selected':''}>${monthLabel(m)}${m===cur?' (current)':''}</option>`).join('')}</select>
         <button class="btn small outline" id="compliance-next" ${isCurrentMonth?'disabled':''}>Next ›</button>
+        ${isCurrentMonth?'<span class="badge active">Current</span>':''}
       </div>
       <button class="btn small" id="compliance-csv-btn">Download Pending (CSV)</button>
     </div>
-    <div class="card">
-      <p class="hint">${pendingCount} item(s) still pending across all riders this month. Click "Mark as Received" for a pending item${canCorrect ? ', or click a ✓ received item to correct a mistaken click' : ''}.</p>
-      <table><thead><tr><th>Rider</th><th>Employee ID</th><th>Region</th>${state.complianceItemTypes.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
-      ${riders.map(r => `<tr>
+    <div class="card" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div><label class="hint" style="display:block">Region</label><select id="cmp-rg"><option value="">All regions</option>${regionOpts.map(([id,n]) => `<option value="${id}" ${F.region===id?'selected':''}>${escapeHtml(n)}</option>`).join('')}</select></div>
+      <div style="flex:1;min-width:180px"><label class="hint" style="display:block">Rider name or Employee ID</label><input id="cmp-q" type="search" placeholder="Type a name or ID…" value="${escapeHtml(F.q)}" style="width:100%"></div>
+      <div><label class="hint" style="display:block">Status</label><select id="cmp-st"><option value="" ${!F.st?'selected':''}>All</option><option value="pending" ${F.st==='pending'?'selected':''}>Has pending items</option><option value="done" ${F.st==='done'?'selected':''}>Everything received</option></select></div>
+      <button class="btn small outline" id="cmp-clear" type="button">Clear</button>
+    </div>
+    <div class="card" id="cmp-tbl"></div>`;
+
+  const paint = () => {
+    const list = filtered(), box = document.getElementById('cmp-tbl');
+    const pendingCount = list.reduce((sum, r) => sum + itemsN.filter(t => !subMap.has(r.id+'|'+t.id)).length, 0);
+    box.innerHTML = `<p class="hint">${list.length} rider(s) shown · ${pendingCount} item(s) still pending for ${monthLabel(period)}. Click "Mark as Received" for a pending item${canCorrect ? ', or use Revert to correct a mistaken click' : ''}.</p>
+      <table><thead><tr><th>Rider</th><th>Employee ID</th><th>Region</th>${itemsN.map(t=>`<th>${escapeHtml(t.name)}</th>`).join('')}</tr></thead><tbody>
+      ${list.map(r => `<tr>
         <td>${escapeHtml(r.full_name)}</td>
         <td class="mono">${escapeHtml(r.employee_id||'—')}</td>
-        <td>${escapeHtml(state.regions.find(rg=>rg.id===r.region_id)?.name||'—')}</td>
-        ${state.complianceItemTypes.map(t => {
+        <td>${escapeHtml(rgName(r)||'—')}</td>
+        ${itemsN.map(t => {
           const submitted = subMap.get(r.id+'|'+t.id);
           if (submitted){
             return `<td><span class="badge active">✓ ${formatDate(submitted)}</span>${canCorrect ? ` <button class="btn small outline" data-revert-compliance="${r.id}|${t.id}" title="Mistakenly marked? Revert to pending">Revert</button>` : ''}</td>`;
           }
-          return `<td><button class="btn small" data-mark-received="${r.id}|${t.id}" ${!isCurrentMonth?'disabled title="Only current month can be marked"':''}>Mark as Received</button></td>`;
+          return `<td><button class="btn small" data-mark-received="${r.id}|${t.id}">Mark as Received</button></td>`;
         }).join('')}
-      </tr>`).join('')}
-      </tbody></table>
-    </div>`;
-
+      </tr>`).join('') || `<tr><td colspan="${3+itemsN.length}" class="hint">No riders match these filters.</td></tr>`}
+      </tbody></table>`;
+    box.querySelectorAll('[data-mark-received]').forEach(btn => {
+      btn.onclick = async () => {
+        const [riderId, itemTypeId] = btn.dataset.markReceived.split('|');
+        const rider = riders.find(r=>r.id===riderId);
+        const { error } = await sb.from('compliance_submissions').insert({
+          rider_id: riderId, region_id: rider?.region_id, item_type_id: itemTypeId, period
+        });
+        if (error){ toast('Could not mark: ' + error.message); return; }
+        toast('Marked as received'); renderCompliance();
+      };
+    });
+    box.querySelectorAll('[data-revert-compliance]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Revert this back to Pending? Use this to correct a mistaken click.')) return;
+        const [riderId, itemTypeId] = btn.dataset.revertCompliance.split('|');
+        const { error } = await sb.from('compliance_submissions').delete().eq('rider_id', riderId).eq('item_type_id', itemTypeId).eq('period', period);
+        if (error){ toast('Could not revert: ' + error.message); return; }
+        toast('Reverted to pending'); renderCompliance();
+      };
+    });
+  };
+  paint();
+  document.getElementById('cmp-rg').onchange = (e) => { F.region = e.target.value; paint(); };
+  document.getElementById('cmp-st').onchange = (e) => { F.st = e.target.value; paint(); };
+  document.getElementById('cmp-q').oninput = (e) => { F.q = e.target.value; paint(); };
+  document.getElementById('cmp-clear').onclick = () => { F.region = ''; F.q = ''; F.st = ''; document.getElementById('cmp-rg').value = ''; document.getElementById('cmp-st').value = ''; document.getElementById('cmp-q').value = ''; paint(); };
+  document.getElementById('compliance-month').onchange = (e) => { complianceSelectedPeriod = e.target.value; renderCompliance(); };
   document.getElementById('compliance-prev').onclick = () => { complianceSelectedPeriod = shiftPeriod(period, -1); renderCompliance(); };
   document.getElementById('compliance-next').onclick = () => { complianceSelectedPeriod = shiftPeriod(period, 1); renderCompliance(); };
   document.getElementById('compliance-csv-btn').onclick = () => {
     const rows = [];
-    riders.forEach(r => {
-      state.complianceItemTypes.forEach(t => {
+    filtered().forEach(r => {
+      itemsN.forEach(t => {
         if (!subMap.has(r.id+'|'+t.id)){
-          rows.push({ Rider: r.full_name, 'Employee ID': r.employee_id||'', Region: state.regions.find(rg=>rg.id===r.region_id)?.name||'', Item: t.name, Month: monthLabel(period) });
+          rows.push({ Rider: r.full_name, 'Employee ID': r.employee_id||'', Region: rgName(r), Item: t.name, Month: monthLabel(period) });
         }
       });
     });
     if (!rows.length){ toast('No pending items — nothing to export'); return; }
     downloadCSV(`compliance-pending-${period}.csv`, toCSV(rows));
   };
-  main.querySelectorAll('[data-mark-received]').forEach(btn => {
-    if (btn.disabled) return;
-    btn.onclick = async () => {
-      const [riderId, itemTypeId] = btn.dataset.markReceived.split('|');
-      const rider = riders.find(r=>r.id===riderId);
-      const { error } = await sb.from('compliance_submissions').insert({
-        rider_id: riderId, region_id: rider?.region_id, item_type_id: itemTypeId, period
-      });
-      if (error){ toast('Could not mark: ' + error.message); return; }
-      toast('Marked as received'); renderCompliance();
-    };
-  });
-  main.querySelectorAll('[data-revert-compliance]').forEach(btn => {
-    btn.onclick = async () => {
-      if (!confirm('Revert this back to Pending? Use this to correct a mistaken click.')) return;
-      const [riderId, itemTypeId] = btn.dataset.revertCompliance.split('|');
-      const { error } = await sb.from('compliance_submissions').delete().eq('rider_id', riderId).eq('item_type_id', itemTypeId).eq('period', period);
-      if (error){ toast('Could not revert: ' + error.message); return; }
-      toast('Reverted to pending'); renderCompliance();
-    };
-  });
 }
 
 // ---------------------------------------------------------
