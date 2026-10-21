@@ -121,17 +121,20 @@ async function callEdgeFunction(action, payload){
   if (!FUNCTIONS_URL || FUNCTIONS_URL.includes('PASTE_YOUR')) {
     return { skipped: true, reason: 'Edge Function not configured yet' };
   }
-  const { data: { session } } = await sb.auth.getSession();
-  const res = await fetch(FUNCTIONS_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session?.access_token || ''}`,
-      'apikey': SUPABASE_ANON_KEY
-    },
-    body: JSON.stringify({ action, ...payload })
-  });
-  return res.json();
+  const token = async (force) => {
+    let { data: { session } } = await sb.auth.getSession();
+    if (force || !session || !session.expires_at || session.expires_at * 1000 - Date.now() < 180000) {
+      try { const r = await sb.auth.refreshSession(); if (r && r.data && r.data.session) session = r.data.session; } catch (_) {}
+    }
+    return session ? session.access_token : '';
+  };
+  const send = async (t) => {
+    const res = await fetch(FUNCTIONS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}`, 'apikey': SUPABASE_ANON_KEY }, body: JSON.stringify({ action, ...payload }) });
+    try { return await res.json(); } catch (_) { return { error: 'The server sent an unexpected answer (' + res.status + '). Please try again.' }; }
+  };
+  let out = await send(await token(false));
+  if (out && out.error && /only admin|unauthor|jwt|token|expired|not allowed/i.test(String(out.error))) out = await send(await token(true));   // one retry with a brand-new token
+  return out;
 }
 
 // ---------------------------------------------------------
@@ -363,9 +366,19 @@ function fhInstallPolish(){
 #main-content>.card{max-width:none!important}
 .modal-overlay{z-index:10050!important}
 #main-content .hint,.card .hint{line-height:1.5}
-.card,.stat-card .stat-label,.badge,.mono{overflow-wrap:anywhere}
+.card,.stat-card .stat-label,.mono{overflow-wrap:break-word}
+.badge{white-space:nowrap}
 .stat-card{min-width:0}
-table td,table th{overflow-wrap:anywhere}
+table td,table th{overflow-wrap:normal;word-break:normal}
+@media (max-width:700px){#main-content table td,#main-content table th{white-space:nowrap}#main-content table td.wrap,#main-content table td .hint{white-space:normal}}
+/* page title and its buttons never overlap */
+.topbar{flex-wrap:wrap;gap:8px 12px;align-items:center}
+#topbar-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+@media (max-width:700px){#topbar-actions .btn{padding:8px 12px;font-size:13px}.topbar h1{font-size:20px}}
+/* no rubber-band pull that reveals the login page behind the app */
+html,body{overscroll-behavior-y:none}
+body.fh-app #auth-screen,body.fh-app #pending-screen,body.fh-app #force-password-screen,body.fh-app #maintenance-screen{display:none!important}
+#ribbon-reload{font-size:18px;line-height:1}
 @media (max-width:900px){
   .sidebar{display:block!important;visibility:visible!important;position:fixed!important;top:var(--fh-top,56px);bottom:0;left:0!important;width:min(84vw,310px)!important;transform:translateX(-106%)!important;transition:transform .38s cubic-bezier(.22,1,.36,1),box-shadow .38s!important;z-index:10000;overflow-y:auto;will-change:transform}
   body.fh-drawer-open .sidebar{transform:none!important;box-shadow:10px 0 34px rgba(10,15,45,.4)}
@@ -575,6 +588,7 @@ function paintBranding(data){
 }
 
 function showAuthScreen(){
+  document.body.classList.remove('fh-app');
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('pending-screen').style.display = 'none';
   document.getElementById('force-password-screen').style.display = 'none';
@@ -629,6 +643,7 @@ async function afterLogin(user){
   document.getElementById('force-password-screen').style.display = 'none';
   document.getElementById('maintenance-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'flex';
+  document.body.classList.add('fh-app');
 
   state.systemSettings = sysSettings || {};
   // all reference lists load together instead of one after another
@@ -1246,7 +1261,7 @@ function bindForgotPasswordLink(){
     e.preventDefault();
     openModal(`
       <h2>Forgot password</h2>
-      <p class="hint">Submit your mobile number and your Area Lead / Regional POC will reset it for you and let you know your temporary password.</p>
+      <p class="hint">Enter your registered mobile number. When your request is approved your temporary password will be <b>Test@123</b>. Sign in with it and the portal will ask you to choose your own new password. One request at a time.</p>
       <form id="forgot-form">
         <div class="form-row"><label>Mobile Number</label><input type="tel" id="forgot-phone" required maxlength="11" placeholder="03124244131"></div>
         <div class="form-row"><label>Note (optional)</label><textarea id="forgot-note" placeholder="Anything that helps us find your account"></textarea></div>
@@ -1256,12 +1271,17 @@ function bindForgotPasswordLink(){
     document.getElementById('forgot-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
     document.getElementById('forgot-form').onsubmit = async (ev) => {
       ev.preventDefault();
-      const { error } = await sb.from('password_reset_requests').insert({
-        phone: toE164(document.getElementById('forgot-phone').value.trim()),
-        note: document.getElementById('forgot-note').value.trim()
-      });
-      if (error){ toast('Could not submit: ' + error.message); return; }
-      closeModal(); toast('Request submitted — your team will reach out to reset it.');
+      const phone = toE164(document.getElementById('forgot-phone').value.trim());
+      try {
+        const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
+        if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
+      } catch (_) {}
+      const { error } = await sb.from('password_reset_requests').insert({ phone, note: document.getElementById('forgot-note').value.trim() });
+      if (error){
+        if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('Your reset request is already waiting for approval. Please wait — you cannot send another one until it is done.'); return; }
+        toast('Could not submit: ' + error.message); return;
+      }
+      closeModal(); toast('Request received. Once it is approved your password becomes Test@123 — sign in with it and you will be asked to choose a new password.');
     };
   };
 }
@@ -1466,6 +1486,11 @@ function renderUserBadge(){
 function bindProfileMenu(){
   const btn = document.getElementById('ribbon-profile-btn');
   if (btn) btn.onclick = () => navigateTo('myprofile');
+  if (btn && !document.getElementById('ribbon-reload')) {
+    const rb = document.createElement('button'); rb.id = 'ribbon-reload'; rb.className = btn.className; rb.type = 'button'; rb.title = 'Reload'; rb.setAttribute('aria-label', 'Reload'); rb.textContent = '⟳';
+    rb.onclick = () => { rb.style.transition = 'transform .6s'; rb.style.transform = 'rotate(360deg)'; setTimeout(() => location.reload(), 250); };
+    btn.parentNode.insertBefore(rb, btn);
+  }
   const homeBtn = document.getElementById('ribbon-home-btn');
   if (homeBtn) homeBtn.onclick = () => navigateTo('dashboard');
 }
@@ -1511,7 +1536,7 @@ async function navigateTo(view){
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
-    main.innerHTML = `<div class="empty-state">Something went wrong loading this page. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Try again</button></div>`;
+    main.innerHTML = `<div class="empty-state">Something went wrong loading this page. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Try again</button><div class="hint" style="margin-top:8px;font-size:11.5px">${escapeHtml(String((err && err.message) || err).slice(0, 160))}</div></div>`;
   }finally{
     clearTimeout(slowTimer);
     fhProgress(false);
@@ -2177,7 +2202,7 @@ async function renderRequests(){
       </details>
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
         ${requestActionControls(r)}
-        ${(isAdmin() && !r.assigned_poc_id) ? `<button class="btn small outline" data-reassign-request="${r.id}">Assign Handler</button>` : ''}
+        ${(isAdmin() && !r.assigned_poc_id) ? `<button class="btn small outline" data-reassign-request="${r.id}">Assign Handler</button>` : (isSuperAdmin() ? `<button class="btn small outline" data-reassign-request="${r.id}">Change Handler</button>` : '')}
         ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
         ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
       </div>
@@ -2811,10 +2836,12 @@ async function renderTeam(){
     const { data: resetRequests } = await sb.from('password_reset_requests').select('*').eq('status','pending').order('created_at', {ascending:false});
     if (resetRequests && resetRequests.length){
       html += `<div class="card"><h3>Password reset requests (${resetRequests.length})</h3>
-      <table><thead><tr><th>Phone</th><th>Note</th><th>Submitted</th><th></th></tr></thead><tbody>
+      ${isSuperAdmin() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="btn small outline" id="rr-all" type="button">Select all</button><button class="btn small" id="rr-bulk" type="button">Reset selected to Test@123</button><span class="hint" id="rr-st"></span></div>` : ''}
+      <table><thead><tr>${isSuperAdmin() ? '<th></th>' : ''}<th>Phone</th><th>Note</th><th>Submitted</th><th></th></tr></thead><tbody>
       ${resetRequests.map(r => {
         const match = state.profilesInScope.find(p => toE164(p.phone) === toE164(r.phone));
         return `<tr>
+          ${isSuperAdmin() ? `<td>${match ? `<input type="checkbox" class="rr-chk" data-rr="${r.id}" data-rp="${match.id}" data-rn="${escapeHtml(match.full_name)}">` : ''}</td>` : ''}
           <td class="mono">${escapeHtml(r.phone)}</td>
           <td>${escapeHtml(r.note||'—')}</td>
           <td class="mono">${formatDateTime(r.created_at)}</td>
@@ -2907,6 +2934,25 @@ async function renderTeam(){
   main.querySelectorAll('[data-resolve-reset]').forEach(btn => {
     btn.onclick = () => openResetPasswordModal(btn.dataset.resolveProfile, btn.dataset.resolveReset);
   });
+  { const all = document.getElementById('rr-all'), bulk = document.getElementById('rr-bulk');
+    if (all) all.onclick = () => { const cs = [...main.querySelectorAll('.rr-chk')], on = cs.some(c => !c.checked); cs.forEach(c => { c.checked = on; }); all.textContent = on ? 'Clear selection' : 'Select all'; };
+    if (bulk) bulk.onclick = async () => {
+      const sel = [...main.querySelectorAll('.rr-chk:checked')]; if (!sel.length) { toast('Tick the requests you want to reset'); return; }
+      if (!confirm(`Reset the password of ${sel.length} person(s) to Test@123? Each will be asked to choose a new password at their next sign-in.`)) return;
+      const st = document.getElementById('rr-st'); let ok = 0, bad = [];
+      for (let i = 0; i < sel.length; i++) {
+        const c = sel[i]; st.textContent = `Working… ${i + 1} of ${sel.length}`;
+        try {
+          const resp = await callEdgeFunction('reset_password', { user_id: c.dataset.rp, new_password: 'Test@123' });
+          if (resp.skipped || resp.error) { bad.push(c.dataset.rn + ' — ' + (resp.error || 'not configured')); continue; }
+          await sb.from('password_reset_requests').update({ status: 'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', c.dataset.rr);
+          await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'reset password for', entity_type: 'Team Member', entity_label: c.dataset.rn });
+          ok++;
+        } catch (e) { bad.push(c.dataset.rn + ' — ' + (e.message || e)); }
+      }
+      toast(`${ok} password(s) reset to Test@123` + (bad.length ? `. Not done: ${bad.join('; ')}` : '')); renderTeam();
+    };
+  }
   main.querySelectorAll('[data-dismiss-reset]').forEach(btn => {
     btn.onclick = async () => {
       await sb.from('password_reset_requests').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', btn.dataset.dismissReset);
