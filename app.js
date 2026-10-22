@@ -368,6 +368,7 @@ function fhInstallPolish(){
 #main-content .hint,.card .hint{line-height:1.5}
 .card,.stat-card .stat-label,.mono{overflow-wrap:break-word}
 .badge{white-space:nowrap}
+.badge.cancelled{background:#eceef5;color:#6b7390}
 .stat-card{min-width:0}
 table td,table th{overflow-wrap:normal;word-break:normal}
 @media (max-width:700px){#main-content table td,#main-content table th{white-space:nowrap}#main-content table td.wrap,#main-content table td .hint{white-space:normal}}
@@ -2180,7 +2181,7 @@ async function renderRequests(){
     .is('deleted_at', null)
     .order('created_at', {ascending:false});
 
-  const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3 };
+  const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3, cancelled:4 };
   const requests = (rawRequests||[]).slice().sort((a,b) => (STATUS_WEIGHT[a.status]??9) - (STATUS_WEIGHT[b.status]??9) || new Date(b.created_at)-new Date(a.created_at));
 
   currentRequestsList = requests || [];
@@ -2206,7 +2207,7 @@ async function renderRequests(){
         ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
         ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
       </div>
-      <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed'].includes(r.status)?'none':'flex'}; flex-direction:column; gap:4px;">
+      <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed','cancelled'].includes(r.status)?'none':'flex'}; flex-direction:column; gap:4px;">
         <div style="display:flex; gap:8px;">
           <input type="text" placeholder="Short remark…" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
           <button class="btn small" type="submit">Send</button>
@@ -2216,7 +2217,7 @@ async function renderRequests(){
     </div>
   `).join('');
 
-  main.insertAdjacentHTML('afterbegin', `<div class="form-row" id="req-find" style="display:flex;gap:8px;flex-wrap:wrap;max-width:none"><input type="search" id="req-q" placeholder="Search by rider / handler name, Employee ID, category or text…" style="flex:1;min-width:200px"><select id="req-st"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select></div>`);
+  main.insertAdjacentHTML('afterbegin', `<div class="form-row" id="req-find" style="display:flex;gap:8px;flex-wrap:wrap;max-width:none"><input type="search" id="req-q" placeholder="Search by rider / handler name, Employee ID, category or text…" style="flex:1;min-width:200px"><select id="req-st"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option></select></div>`);
   const reqCards = [...main.querySelectorAll(':scope > .card')];
   const reqFilter = () => { const q = document.getElementById('req-q').value.trim().toLowerCase(), st = document.getElementById('req-st').value;
     reqCards.forEach(c => { const ok = (!q || c.textContent.toLowerCase().includes(q)) && (!st || (c.querySelector('.badge')?.textContent.trim().toLowerCase().replace(' ', '_') === st)); c.style.display = ok ? '' : 'none'; }); };
@@ -2303,15 +2304,29 @@ function openEditRequestModal(r){
 
 async function changeRequestStatus(requestId, newStatus){
   const wordLimit = state.systemSettings?.request_remark_word_limit ?? 25;
+  const reqRow = (typeof currentRequestsList !== 'undefined' && currentRequestsList.find(x => x.id === requestId)) || null;
+  let toolTypesForReq = [];
+  if (newStatus === 'resolved' && isStaff()) { try { const tt = await sb.from('tool_types').select('id,name').eq('active', true).order('name'); toolTypesForReq = tt.data || []; } catch (_) {} }
+  const toolBox = (newStatus === 'resolved' && toolTypesForReq.length && reqRow && reqRow.rider_id) ? `
+      <div class="form-row" style="border:1px solid var(--line);border-radius:8px;padding:10px;background:#f8f9fd">
+        <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="rs-tool-on" ${/tool/i.test(reqRow.category || '') ? 'checked' : ''}> A tool is being issued with this request</label>
+        <div id="rs-tool-box" style="margin-top:8px;display:${/tool/i.test(reqRow.category || '') ? 'block' : 'none'}">
+          <div class="two-col"><div class="form-row"><label>Tool</label><select id="rs-tool">${toolTypesForReq.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}</select></div>
+          <div class="form-row"><label>Serial no. (optional)</label><input id="rs-serial" type="text"></div></div>
+          <div class="form-row"><label>Issued on</label><input id="rs-tdate" type="date" value="${new Date().toLocaleDateString('sv-SE')}"></div>
+          <p class="hint" style="margin:0">It is added to Tool Issuance now, and shows as <b>Acknowledged</b> there once the rider presses Accept &amp; Close.</p>
+        </div></div>` : '';
   openModal(`
-    <h2>Mark as ${newStatus.replace('_',' ')}</h2>
+    <h2>${newStatus === 'cancelled' ? 'Cancel this request' : 'Mark as ' + newStatus.replace('_',' ')}</h2>
     <form id="req-status-form">
-      <div class="form-row"><label>Remarks</label><textarea id="rs-remark" required placeholder="Short remark for this status change"></textarea>
+      <div class="form-row"><label>${newStatus === 'cancelled' ? 'Reason for cancelling' : 'Remarks'}</label><textarea id="rs-remark" required placeholder="${newStatus === 'cancelled' ? 'e.g. Not eligible for this tool yet — next due on …' : 'Short remark for this status change'}"></textarea>
         <span class="field-hint" id="rs-word-count">0 words${wordLimit?` / ${wordLimit} max`:''}</span>
       </div>
-      <button class="btn-primary" type="submit">Save</button>
+      ${toolBox}
+      <button class="btn-primary" type="submit">${newStatus === 'cancelled' ? 'Cancel request' : 'Save'}</button>
     </form>
   `);
+  { const on = document.getElementById('rs-tool-on'); if (on) on.onchange = () => { document.getElementById('rs-tool-box').style.display = on.checked ? 'block' : 'none'; }; }
   const remarkEl = document.getElementById('rs-remark');
   const counterEl = document.getElementById('rs-word-count');
   remarkEl.oninput = () => {
@@ -2330,15 +2345,28 @@ async function changeRequestStatus(requestId, newStatus){
     if (newStatus === 'resolved') payload.resolved_at = new Date().toISOString();
     if (newStatus === 'closed') payload.closed_at = new Date().toISOString();
 
+    const toolOn = document.getElementById('rs-tool-on') && document.getElementById('rs-tool-on').checked;
     const { error } = await sb.from('requests').update(payload).eq('id', requestId);
-    if (error){ toast('Could not update: ' + error.message); return; }
+    if (error){ toast('Could not update: ' + error.message + (newStatus === 'cancelled' ? ' — please run migration_44.sql in Supabase.' : '')); return; }
+    let toolMsg = '';
+    if (toolOn && reqRow) {
+      const ins = await sb.from('tool_issuances').insert({ rider_id: reqRow.rider_id, region_id: reqRow.region_id || null, tool_type_id: document.getElementById('rs-tool').value, issued_date: document.getElementById('rs-tdate').value, serial_number: (document.getElementById('rs-serial').value || '').trim() || null, recorded_by: state.user.id, request_id: requestId });
+      toolMsg = ins.error ? ' The tool could not be recorded: ' + ins.error.message + (/request_id/.test(ins.error.message) ? ' — please run migration_44.sql in Supabase.' : '') : ' Tool recorded in Tool Issuance.';
+    }
+    if (newStatus === 'closed') {
+      // the rider accepted: the tool issued through this request becomes "Acknowledged" automatically
+      try {
+        const iss = await sb.from('tool_issuances').select('id').eq('request_id', requestId);
+        for (const i of (iss.data || [])) { await sb.from('tool_issuance_acks').insert({ tool_issuance_id: i.id, user_id: state.user.id }); }
+      } catch (_) {}
+    }
 
     const { error: remarkErr } = await sb.from('request_updates').insert({
       request_id: requestId, message: remark, created_by: state.user.id, new_status: newStatus
     });
     closeModal();
     if (remarkErr){ toast('Status changed, but the remark could not be saved: ' + remarkErr.message); }
-    else { toast('Updated'); }
+    else { toast('Updated.' + toolMsg); }
     renderRequests();
   };
 }
@@ -2358,10 +2386,14 @@ function requestActionControls(r){
   if (isRider && r.status==='resolved'){
     html += `<button class="btn small success" data-req-id="${r.id}" data-req-status="closed">Accept &amp; Close</button>`;
   }
+  // Cancel: handler / region staff / admin / inventory coordinator, or the rider while it is still open
+  if (['open','in_progress'].includes(r.status) && (canAct || state.profile.role === 'inventory_coordinator' || (isRider && r.status === 'open'))){
+    html += `<button class="btn small danger" data-req-id="${r.id}" data-req-status="cancelled">Cancel Request</button>`;
+  }
   return html;
 }
 
-const STATUS_ICON = { in_progress:'🔵', resolved:'🟢', closed:'⚪', open:'🔴' };
+const STATUS_ICON = { in_progress:'🔵', resolved:'🟢', closed:'⚪', open:'🔴', cancelled:'⛔' };
 async function loadThread(requestId){
   const { data: updates, error } = await sb.from('request_updates').select('*, profiles(full_name)').eq('request_id', requestId).order('created_at');
   const el = document.getElementById('thread-'+requestId);
@@ -5562,7 +5594,7 @@ async function renderTools(){
       const isMine = i.rider_id === state.user.id;
       let ackCell;
       if (ack){
-        ackCell = `<span class="badge active">✓ Acknowledged ${formatDate(ack.seen_at)}</span>`;
+        ackCell = `<span class="badge active">✓ Acknowledged ${formatDate(ack.seen_at)}</span>${i.request_id ? '<div class="hint" style="font-size:11px">via request</div>' : ''}`;
       } else if (isMine){
         ackCell = `<button class="btn small" data-ack-tool="${i.id}">Acknowledge Receipt</button>`;
       } else {
