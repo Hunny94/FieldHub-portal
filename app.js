@@ -629,6 +629,7 @@ async function afterLogin(user){
 
   // Maintenance mode: only Super Admin can get past this
   const sysSettings = sysRes.data;
+  if (await fhAppUpdateGate(sysSettings)) return;   // old Android app: only the "Update required" screen
   if (sysSettings && !sysSettings.portal_active && profile.role !== 'super_admin'){
     document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('pending-screen').style.display = 'none';
@@ -740,6 +741,59 @@ function fhIsNativeApp(){
   try{ return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()); }
   catch(_e){ return false; }
 }
+
+// ---------------------------------------------------------
+// FORCED APP UPDATE — Super Admin sets the lowest allowed app build (Settings → App Updates).
+// Older Android apps see only an "Update required" screen with the download button.
+// The website is never affected.
+// ---------------------------------------------------------
+async function fhAppInfo(){
+  try { const AppP = (window.Capacitor && window.Capacitor.Plugins || {}).App; if (AppP && AppP.getInfo){ const i = await AppP.getInfo(); return { version: i.version || '', build: parseInt(i.build, 10) || 0 }; } } catch (_e) {}
+  return { version: '', build: 0 };
+}
+function fhUpdateScreen(sys, info){
+  let el = document.getElementById('fh-upd-screen');
+  if (!el){ el = document.createElement('div'); el.id = 'fh-upd-screen'; document.body.appendChild(el); }
+  el.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#1E2A6E;display:flex;align-items:center;justify-content:center;padding:20px;font-family:inherit;';
+  const url = (sys && sys.app_apk_url) || '';
+  el.innerHTML = `<div style="background:#fff;border-radius:16px;max-width:380px;width:100%;padding:26px 22px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="font-size:42px;line-height:1">⬇️</div>
+    <h2 style="margin:10px 0 8px;color:#1c2b6e;font-size:20px">Update required</h2>
+    <p style="color:#46506e;font-size:14px;line-height:1.5;margin:0 0 14px">${escapeHtml((sys && sys.app_update_message) || 'A new version of the FieldHub app is required. Please download and install it, then open the app again.')}</p>
+    <p style="color:#8b92ad;font-size:12px;margin:0 0 16px">Your app: version ${escapeHtml(info.version || '—')} (build ${info.build || '—'}) · required build ${Number(sys && sys.app_min_build) || ''}</p>
+    ${url ? `<a href="${escapeHtml(url)}" style="display:block;background:#1E2A6E;color:#fff;text-decoration:none;border-radius:10px;padding:13px;font-weight:700;font-size:15px">Download the new app</a>
+    <p style="color:#8b92ad;font-size:11.5px;margin:8px 0 0">When it has downloaded, open the file and tap Install.</p>` : '<p style="color:#b3321b;font-size:13px">The download link has not been set yet. Please contact your supervisor.</p>'}
+    <button id="fh-upd-chk" style="margin-top:14px;border:1px solid #dfe3ee;background:#fff;border-radius:10px;padding:10px 16px;font:inherit;font-size:13.5px;color:#1E2A6E;font-weight:600;cursor:pointer">I have installed it — check again</button>
+  </div>`;
+  el.querySelector('#fh-upd-chk').onclick = async () => {
+    const r = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle();
+    if (!(await fhAppUpdateGate(r.data))) location.reload(); else toast('This is still the old version. Please install the new app first.');
+  };
+}
+// returns true when this app is too old (and shows the blocking screen)
+async function fhAppUpdateGate(sys){
+  if (!fhIsNativeApp() || !sys) return false;
+  const min = Number(sys.app_min_build) || 0, latest = Number(sys.app_latest_build) || 0;
+  if (!min && !latest) return false;
+  const info = await fhAppInfo();
+  if (min && info.build < min){ fhUpdateScreen(sys, info); return true; }
+  const old = document.getElementById('fh-upd-screen'); if (old) old.remove();
+  if (latest && info.build < latest && sys.app_apk_url && !document.getElementById('fh-upd-bar')){
+    let seen = false; try { seen = sessionStorage.getItem('fh_upd_seen') === String(latest); } catch (_e) {}
+    if (!seen){
+      const b = document.createElement('div'); b.id = 'fh-upd-bar';
+      b.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9990;background:#1E2A6E;color:#fff;border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.3)';
+      b.innerHTML = `<span style="flex:1">A new version of the app is available.</span><a href="${escapeHtml(sys.app_apk_url)}" style="background:#fff;color:#1E2A6E;border-radius:8px;padding:6px 12px;font-weight:700;text-decoration:none">Update</a><button style="background:none;border:0;color:#fff;font-size:18px">✕</button>`;
+      b.querySelector('button').onclick = () => { try { sessionStorage.setItem('fh_upd_seen', String(latest)); } catch (_e) {} b.remove(); };
+      document.body.appendChild(b);
+    }
+  }
+  return false;
+}
+async function fhRecheckAppUpdate(){
+  if (!fhIsNativeApp()) return;
+  try { const r = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle(); if (r.data) await fhAppUpdateGate(r.data); } catch (_e) {}
+}
 let _fhNativeListeners = false;
 async function fhSetupNativeApp(){
   if (!fhIsNativeApp() || !state.user) return;
@@ -749,7 +803,7 @@ async function fhSetupNativeApp(){
     if (!_fhNativeListeners){
       _fhNativeListeners = true;
       if (AppP && AppP.addListener){
-        AppP.addListener('appStateChange', (st) => { if (st && st.isActive) fhTouchActivity(true); });
+        AppP.addListener('appStateChange', (st) => { if (st && st.isActive){ fhTouchActivity(true); fhRecheckAppUpdate(); } });
         AppP.addListener('backButton', () => {
           if (typeof ftCloseBig === 'function' && ftCloseBig()) return;
           if (document.body.classList.contains('fh-drawer-open')){ fhCloseDrawer(); return; }
@@ -3535,6 +3589,7 @@ async function renderSettings(){
       ['trash','Trash (restore deleted items)', () => isSuperAdmin()],
       ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
       ['fv_centers','Field Visit Centers & Location', () => isSuperAdmin()],
+      ['appupdate','Android App Updates', () => isSuperAdmin()],
       ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
     ]}
   ];
@@ -3580,10 +3635,108 @@ async function renderSettings(){
   else if (settingsTab === 'trash') await renderTrashSettings(body);
   else if (settingsTab === 'maintenance') await renderMaintenanceSettings(body);
   else if (settingsTab === 'fv_centers') await renderFvCentersSettings(body);
+  else if (settingsTab === 'appupdate') await renderAppUpdateSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
 }
 
 // ---------------- Settings: Field Visit centres, location rule, wild cards ----------------
+async function renderAppUpdateSettings(body){
+  body.innerHTML = '<div class="mono">Loading…</div>';
+  const { data: sys, error } = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle();
+  if (error || !sys || !('app_min_build' in sys)){ body.innerHTML = '<div class="card"><h3>Android App Updates</h3><p class="hint">Please run <b>migration_46.sql</b> in Supabase (SQL Editor) first, then reopen this page.</p></div>'; return; }
+  const info = fhIsNativeApp() ? await fhAppInfo() : null;
+  body.innerHTML = `
+    <div class="card">
+      <h3>Android App Updates</h3>
+      <p class="hint">Make everyone install a new APK. A person on an older app sees only an <b>“Update required”</b> screen with your download button, and cannot use the app until they install it. The website is never affected.${info ? `<br><b>This device:</b> version ${escapeHtml(info.version)} · build ${info.build}` : ''}</p>
+      <div class="form-row"><label>Download link of the new APK</label><input id="au-url" type="url" placeholder="https://github.com/Hunny94/FieldHub-portal/releases/download/…/FieldHub.apk" value="${escapeHtml(sys.app_apk_url || '')}"></div>
+      <div class="two-col">
+        <div class="form-row"><label>Lowest allowed build number (blocks older apps)</label><input id="au-min" type="number" min="0" value="${sys.app_min_build || 0}"><span class="field-hint">0 = nobody is blocked. This is the “Build number” you type when running the build.</span></div>
+        <div class="form-row"><label>Newest build number (gentle reminder only)</label><input id="au-latest" type="number" min="0" value="${sys.app_latest_build || 0}"><span class="field-hint">Older apps see an “Update available” bar they can close.</span></div>
+      </div>
+      <div class="form-row"><label>Message shown on the update screen (optional)</label><textarea id="au-msg" placeholder="A new version of the FieldHub app is required…">${escapeHtml(sys.app_update_message || '')}</textarea></div>
+      <button class="btn" id="au-save">Save</button>
+    </div>
+    <div class="card"><h3>How to roll out a new APK</h3>
+      <ol style="line-height:1.7;margin:0;padding-left:20px">
+        <li>Build the APK (GitHub → FieldHub-App → Actions) with a build number higher than the last one, e.g. <b>6</b>. Download and unzip it.</li>
+        <li>Open the <b>FieldHub-portal</b> repo → <b>Releases</b> → <b>Create a new release</b> → type a tag like <b>v6</b> → drag the .apk file in → <b>Publish release</b>.</li>
+        <li>On the release page, right-click the .apk file name → <b>Copy link address</b> and paste it above.</li>
+        <li>Put <b>6</b> in “Newest build number” and save. People get a gentle reminder.</li>
+        <li>When most people have updated, put <b>6</b> in “Lowest allowed build number” too. Older apps are then blocked until they update.</li>
+      </ol></div>`;
+  document.getElementById('au-save').onclick = async () => {
+    const url = document.getElementById('au-url').value.trim(), min = parseInt(document.getElementById('au-min').value, 10) || 0, latest = parseInt(document.getElementById('au-latest').value, 10) || 0;
+    if ((min || latest) && !/^https:\/\//i.test(url)){ toast('Please paste the https:// download link of the APK first.'); return; }
+    if (min > latest && !confirm('The lowest allowed build is higher than the newest build. Continue?')) return;
+    if (min && min !== (sys.app_min_build || 0) && !confirm(`Everyone using an app older than build ${min} will be blocked until they install the new APK. Continue?`)) return;
+    const { error } = await sb.from('system_settings').update({ app_apk_url: url || null, app_min_build: min, app_latest_build: latest, app_update_message: document.getElementById('au-msg').value.trim() || null }).eq('id', 1);
+    if (error){ toast('Could not save: ' + error.message); return; }
+    toast('Saved'); renderAppUpdateSettings(body);
+  };
+}
+
+function fvCentersBulk(existing, done){
+  openModal(`<h2>Bulk upload centers</h2>
+    <p class="hint">Excel (.xlsx) or CSV with columns: <b>Center Name, Code, Latitude, Longitude</b> and optionally <b>Radius (m)</b> and <b>Active</b> (Yes/No). A single “Location” column like <i>24.8607, 67.0011</i> also works.
+    A row whose <b>Code</b> already exists <b>updates</b> that center; a new Code <b>adds</b> one. Tip: press “Download list” first, edit it, then upload it back. The file itself is not stored.</p>
+    <div class="form-row"><input type="file" id="fvb-file" accept=".xlsx,.xls,.csv"></div>
+    <div id="fvb-out"></div>`);
+  const out = document.getElementById('fvb-out');
+  const norm = (k) => String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const pick = (row, names) => { for (const k of Object.keys(row)) if (names.includes(norm(k))) return row[k]; return ''; };
+  const byCode = new Map(existing.map(c => [String(c.code).trim().toLowerCase(), c]));
+  document.getElementById('fvb-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    out.innerHTML = '<div class="mono">Reading…</div>';
+    let raw;
+    try { await ensureXLSX(); const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' }); raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); }
+    catch (err) { out.innerHTML = `<p class="hint" style="color:var(--clay)">Could not read the file: ${escapeHtml(err.message)}</p>`; return; }
+    const seen = new Set(), rows = raw.map((r, i) => {
+      const name = String(pick(r, ['centername', 'center', 'centre', 'centrename', 'name']) || '').trim();
+      const code = String(pick(r, ['code', 'centercode', 'centrecode']) || '').trim();
+      let lat = pick(r, ['latitude', 'lat']), lng = pick(r, ['longitude', 'lng', 'long', 'lon']);
+      const loc = String(pick(r, ['location', 'coordinates', 'gps', 'latlong']) || '');
+      if ((lat === '' || lng === '') && loc) { const m = loc.match(/(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/); if (m) { lat = m[1]; lng = m[2]; } }
+      lat = lat === '' ? NaN : Number(lat); lng = lng === '' ? NaN : Number(lng);
+      const rad = pick(r, ['radiusm', 'radius', 'allowedmeters', 'distance']);
+      const act = String(pick(r, ['active', 'status', 'enabled']) || '').trim().toLowerCase();
+      const ex = byCode.get(code.toLowerCase());
+      let err = '';
+      if (!name || !code) err = 'Name and Code are required';
+      else if (seen.has(code.toLowerCase())) err = 'Code repeated in this file';
+      else if (!isFinite(lat) || !isFinite(lng)) err = ex ? '' : 'Latitude / Longitude missing';
+      else if (Math.abs(lat) > 90 || Math.abs(lng) > 180) err = 'Latitude / Longitude out of range';
+      else if (lat > 60 && lng < 40) err = 'Latitude and Longitude look swapped';
+      if (code) seen.add(code.toLowerCase());
+      const radN = rad === '' ? null : parseInt(rad, 10);
+      if (!err && radN !== null && (!(radN >= 30) || radN > 5000)) err = 'Radius must be 30–5000 m';
+      const row = { name, code };
+      if (isFinite(lat) && isFinite(lng)) { row.latitude = lat; row.longitude = lng; }
+      if (radN !== null && !err) row.radius_m = radN;
+      if (act) row.active = !/^(no|n|false|0|inactive|disabled)$/.test(act);
+      return { n: i + 2, row, ex, err };
+    }).filter(x => x.row.name || x.row.code || x.err);
+    const good = rows.filter(x => !x.err), adds = good.filter(x => !x.ex), upds = good.filter(x => x.ex), bad = rows.filter(x => x.err);
+    out.innerHTML = `<div style="margin:8px 0"><b style="color:#1d7a47">${adds.length} new</b> · <b style="color:#1E2A6E">${upds.length} updates</b> · <b style="color:${bad.length ? '#b3321b' : 'inherit'}">${bad.length} with problems</b> (of ${rows.length} rows)</div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px"><table><thead><tr><th>Row</th><th>Name</th><th>Code</th><th>Location</th><th>Result</th></tr></thead><tbody>
+      ${rows.slice(0, 200).map(x => `<tr><td>${x.n}</td><td>${escapeHtml(x.row.name || '')}</td><td>${escapeHtml(x.row.code || '')}</td><td>${x.row.latitude != null ? x.row.latitude + ', ' + x.row.longitude : '—'}</td><td style="color:${x.err ? '#b3321b' : x.ex ? '#1E2A6E' : '#1d7a47'}">${x.err ? escapeHtml(x.err) : x.ex ? 'Update' : 'New'}</td></tr>`).join('')}</tbody></table></div>
+      ${good.length ? `<button class="btn-primary" id="fvb-go" style="margin-top:10px">Apply ${good.length} change${good.length === 1 ? '' : 's'}${bad.length ? ' (skip the problem rows)' : ''}</button>` : '<p class="hint">Nothing to apply.</p>'}`;
+    const go = document.getElementById('fvb-go'); if (!go) return;
+    go.onclick = async () => {
+      go.disabled = true; go.textContent = 'Saving…'; let a = 0, u = 0, fail = 0, msg = '';
+      for (let i = 0; i < adds.length; i += 200) {
+        const chunk = adds.slice(i, i + 200).map(x => ({ radius_m: 200, active: true, ...x.row, created_by: state.user.id }));
+        const r = await sb.from('fv_centers').insert(chunk); if (r.error) { fail += chunk.length; msg = r.error.message; } else a += chunk.length;
+      }
+      for (let i = 0; i < upds.length; i += 10) {
+        await Promise.all(upds.slice(i, i + 10).map(async x => { const r = await sb.from('fv_centers').update(x.row).eq('id', x.ex.id); if (r.error) { fail++; msg = r.error.message; } else u++; }));
+      }
+      closeModal(); toast(`Added ${a}, updated ${u}${fail ? ', failed ' + fail + ' (' + msg + ')' : ''}`); done();
+    };
+  };
+}
+
 async function renderFvCentersSettings(body){
   body.innerHTML = '<div class="mono">Loading…</div>';
   const [sys, cs, wc] = await Promise.all([
@@ -3606,7 +3759,7 @@ async function renderFvCentersSettings(body){
       ${geoOn && !centers.some(c => c.active && c.latitude != null) ? '<p class="hint" style="color:var(--clay);margin-top:8px;">⚠ No active centre has a location yet — nobody could add an on-site visit. Add centres below first.</p>' : ''}
     </div>
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><button class="btn small" id="fvc-add">+ Add Center</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small outline" id="fvc-bulk">⬆ Bulk upload (Excel / CSV)</button><button class="btn small outline" id="fvc-dl">⬇ Download list</button><button class="btn small" id="fvc-add">+ Add Center</button></div></div>
       <div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th>Name</th><th>Code</th><th>Location</th><th>Radius</th><th>Status</th><th></th></tr></thead><tbody>
       ${centers.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${gmap(c)}</td><td>${c.radius_m} m</td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
         <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" style="color:var(--muted)">No centers yet.</td></tr>'}
@@ -3657,6 +3810,8 @@ async function renderFvCentersSettings(body){
     };
   };
   document.getElementById('fvc-add').onclick = () => openCenter(null);
+  document.getElementById('fvc-dl').onclick = () => downloadCSV('fv-centers.csv', toCSV(centers.length ? centers.map(c => ({ 'Center Name': c.name, 'Code': c.code, 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No' })) : [{ 'Center Name': 'Example Centre', 'Code': 'EX-01', 'Latitude': 24.8607, 'Longitude': 67.0011, 'Radius (m)': 200, 'Active': 'Yes' }]));
+  document.getElementById('fvc-bulk').onclick = () => fvCentersBulk(centers, () => renderFvCentersSettings(body));
   body.querySelectorAll('[data-fvc-edit]').forEach(b => b.onclick = () => openCenter(centers.find(x => x.id === b.dataset.fvcEdit)));
   body.querySelectorAll('[data-fvc-tog]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcTog); const { error } = await sb.from('fv_centers').update({ active: !c.active }).eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
   body.querySelectorAll('[data-fvc-del]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcDel); if (!confirm(`Delete center "${c.name}"? Past visits keep its name. (Use Disable instead to just hide it.)`)) return; const { error } = await sb.from('fv_centers').delete().eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
@@ -5171,7 +5326,7 @@ const GRANTABLE_PERMISSIONS = [
   ['field_visit_manage', 'Field Visit Reports — Manager rights (manage checklist & KPIs, correct any visit, see all teams)'],
   ['fv_geo_wildcard', 'Field Visits — Wild card (add visits without the centre location check)']
 ];
-const SETTINGS_TAB_LABELS = [['categories','Request Categories'],['circularcategories','Circular Categories'],['requestrouting','Request Auto-Routing'],['warningtypes','Warning Types'],['expirytypes','Expiry Item Types'],['tooltypes','Tool Types'],['compliancetypes','Compliance Items'],['shifttypes','Shift Types'],['designations','Designations'],['subregions','Sub-Regions / Cities'],['hotspots','Hotspots'],['notice','Home Notice'],['branding','Login Page Branding'],['menuicons','Menu Icons'],['homebanner','Home Banner'],['popups','Popup Announcements'],['storage','Storage Usage'],['trash','Trash'],['maintenance','Maintenance & Word Limits'],['fv_centers','Field Visit Centers'],['shortcuts','Keyboard Shortcuts']];
+const SETTINGS_TAB_LABELS = [['categories','Request Categories'],['circularcategories','Circular Categories'],['requestrouting','Request Auto-Routing'],['warningtypes','Warning Types'],['expirytypes','Expiry Item Types'],['tooltypes','Tool Types'],['compliancetypes','Compliance Items'],['shifttypes','Shift Types'],['designations','Designations'],['subregions','Sub-Regions / Cities'],['hotspots','Hotspots'],['notice','Home Notice'],['branding','Login Page Branding'],['menuicons','Menu Icons'],['homebanner','Home Banner'],['popups','Popup Announcements'],['storage','Storage Usage'],['trash','Trash'],['maintenance','Maintenance & Word Limits'],['fv_centers','Field Visit Centers'],['appupdate','App Updates'],['shortcuts','Keyboard Shortcuts']];
 function permSections(){
   const pages = Object.keys(NAV_LABEL).filter(v => !v.startsWith('ft_') && v !== 'dashboard').map(v => ['page:' + v, NAV_LABEL[v]]);
   return [
