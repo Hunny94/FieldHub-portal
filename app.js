@@ -2169,6 +2169,33 @@ async function openNewTaskModal(){
 // REQUESTS
 // ---------------------------------------------------------
 let currentRequestsList = [];
+const RQ = { q: '', st: '', c: '', h: '', from: '', to: '' };
+function rqEnsureStyle(){
+  if (document.getElementById('rq-style')) return;
+  const st = document.createElement('style'); st.id = 'rq-style';
+  st.textContent = `
+.rq-bar{background:#fff;border:1px solid rgba(30,42,110,.08);border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(30,42,110,.06)}
+.rq-bar input[type=search]{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
+.rq-chips{display:flex;gap:6px;overflow-x:auto;padding:10px 0 4px;-webkit-overflow-scrolling:touch}
+.rq-chips button{flex:0 0 auto;border:1px solid #dfe3ee;background:#fff;border-radius:999px;padding:6px 12px;font:inherit;font-size:12.5px;font-weight:600;color:#46506e;cursor:pointer;white-space:nowrap}
+.rq-chips button b{background:#eef0f9;border-radius:999px;padding:1px 7px;margin-left:4px;font-size:11px;color:#1E2A6E}
+.rq-chips button.on{background:#1E2A6E;border-color:#1E2A6E;color:#fff}.rq-chips button.on b{background:rgba(255,255,255,.22);color:#fff}
+.rq-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end;margin-top:6px}
+.rq-grid label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:#7a819c;font-weight:600}
+.rq-grid select,.rq-grid input{height:34px;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:0 8px;font:inherit;font-size:13px;color:#2b3350;background:#fff;width:100%}
+.rq-count{font-size:12px;color:#7a819c;margin-top:8px}
+.card.rq{padding:12px 14px;margin-bottom:10px;border-left:4px solid #c9cff0}
+.card.rq[data-st=open]{border-left-color:#c0532f}.card.rq[data-st=in_progress]{border-left-color:#2a8fa8}.card.rq[data-st=resolved]{border-left-color:#2e7d4f}.card.rq[data-st=closed],.card.rq[data-st=cancelled]{border-left-color:#aab0c6}
+.rq-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.rq-title{font-weight:700;color:#1c2b6e;font-size:15px}
+.rq-sub{font-size:12.5px;color:#5b6483;margin-top:3px;line-height:1.5}.rq-dot{margin:0 6px;color:#b6bcd2}
+.rq-desc{font-size:13.5px;color:#2b3350;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card.rq.open .rq-desc{display:none}
+.rq-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.rq-more{margin-top:12px;padding-top:10px;border-top:1px dashed #dfe3ee}
+`;
+  document.head.appendChild(st);
+}
 async function renderRequests(){
   const main = document.getElementById('main-content');
   if (state.profile.role === 'rider'){
@@ -2187,41 +2214,82 @@ async function renderRequests(){
   currentRequestsList = requests || [];
   if (!requests || requests.length===0){ main.innerHTML = emptyState('No requests yet.'); return; }
 
-  main.innerHTML = requests.map(r => `
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-        <div>
-          <h3>${escapeHtml(r.category)}</h3>
-          <div class="mono">Rider: ${escapeHtml(r.rider?.full_name||'—')}${r.rider?.employee_id?' ('+escapeHtml(r.rider.employee_id)+')':''} · Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')}${r.poc?.employee_id?' ('+escapeHtml(r.poc.employee_id)+')':''} · ${formatDateTime(r.created_at)}</div>
-        </div>
+  rqEnsureStyle();
+  const rqDay = (iso) => new Date(iso).toLocaleDateString('sv-SE');
+  const handlers = new Map(); const cats = new Set();
+  requests.forEach(r => { handlers.set(r.assigned_poc_id || 'none', r.poc ? (r.poc.full_name + (r.poc.employee_id ? ' (' + r.poc.employee_id + ')' : '')) : 'Unassigned'); if (r.category) cats.add(r.category); });
+  const cnt = (st) => requests.filter(r => !st || r.status === st).length;
+  const chips = [['', 'All'], ['open', 'Open'], ['in_progress', 'In progress'], ['resolved', 'Resolved'], ['closed', 'Closed'], ['cancelled', 'Cancelled']];
+  const showHandler = state.profile.role !== 'rider';
+  main.innerHTML = `
+    <div class="rq-bar">
+      <input type="search" id="req-q" placeholder="Search name, Employee ID, item or text…" autocomplete="off" value="${escapeHtml(RQ.q)}">
+      <div class="rq-chips" id="req-chips">${chips.map(([v, l]) => `<button type="button" data-st="${v}" class="${RQ.st === v ? 'on' : ''}">${l} <b>${cnt(v)}</b></button>`).join('')}</div>
+      <div class="rq-grid">
+        <label>Item / category<select id="req-cat"><option value="">All items</option>${[...cats].sort().map(c => `<option ${RQ.c === c ? 'selected' : ''} value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}</select></label>
+        ${showHandler ? `<label>Handler<select id="req-h"><option value="">All handlers</option>${[...handlers].sort((x, y) => x[1].localeCompare(y[1])).map(([k, n]) => `<option ${RQ.h === k ? 'selected' : ''} value="${escapeHtml(k)}">${escapeHtml(n)}</option>`).join('')}</select></label>` : ''}
+        <label>From date<input type="date" id="req-from" value="${RQ.from}"></label>
+        <label>To date<input type="date" id="req-to" value="${RQ.to}"></label>
+        <button type="button" class="btn small outline" id="req-clear">Clear filters</button>
+      </div>
+      <div class="rq-count" id="req-count"></div>
+    </div>
+    <div id="req-list">${requests.map(r => `
+    <div class="card rq" data-rid="${r.id}" data-st="${r.status}" data-cat="${escapeHtml(r.category || '')}" data-h="${r.assigned_poc_id || 'none'}" data-day="${rqDay(r.created_at)}"
+         data-txt="${escapeHtml(((r.rider?.full_name || '') + ' ' + (r.rider?.employee_id || '') + ' ' + (r.poc?.full_name || '') + ' ' + (r.poc?.employee_id || '') + ' ' + (r.category || '') + ' ' + (r.description || '')).toLowerCase())}">
+      <div class="rq-top">
+        <div class="rq-title">${escapeHtml(r.category)}</div>
         <span class="badge ${r.status}">${r.status.replace('_',' ')}</span>
       </div>
-      <p style="font-size:13.5px;">${escapeHtml(r.description)}</p>
-      <details class="thread-details">
-        <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Status history &amp; remarks ▾</summary>
-        <div id="thread-${r.id}" class="thread">Loading thread…</div>
-      </details>
-      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+      <div class="rq-sub"><b>${escapeHtml(r.rider?.full_name||'—')}</b>${r.rider?.employee_id?' · '+escapeHtml(r.rider.employee_id):''}<span class="rq-dot">•</span>${formatDateTime(r.created_at)}${showHandler ? `<span class="rq-dot">•</span>Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')}` : ''}</div>
+      <div class="rq-desc">${escapeHtml(r.description)}</div>
+      <div class="rq-btns">
         ${requestActionControls(r)}
-        ${(isAdmin() && !r.assigned_poc_id) ? `<button class="btn small outline" data-reassign-request="${r.id}">Assign Handler</button>` : (isSuperAdmin() ? `<button class="btn small outline" data-reassign-request="${r.id}">Change Handler</button>` : '')}
-        ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
-        ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
+        <button class="btn small outline" data-rq-open="${r.id}" type="button">Details ▾</button>
       </div>
-      <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed','cancelled'].includes(r.status)?'none':'flex'}; flex-direction:column; gap:4px;">
-        <div style="display:flex; gap:8px;">
-          <input type="text" placeholder="Short remark…" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
-          <button class="btn small" type="submit">Send</button>
+      <div class="rq-more" hidden>
+        <p style="font-size:13.5px;margin:0 0 8px;white-space:pre-wrap">${escapeHtml(r.description)}</p>
+        <div class="rq-sub" style="margin-bottom:8px">Rider: ${escapeHtml(r.rider?.full_name||'—')}${r.rider?.employee_id?' ('+escapeHtml(r.rider.employee_id)+')':''} · Handler: ${escapeHtml(r.poc?.full_name||'Unassigned')}${r.poc?.employee_id?' ('+escapeHtml(r.poc.employee_id)+')':''}</div>
+        <div class="thread-details"><div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:4px">Status history &amp; remarks</div><div id="thread-${r.id}" class="thread">Loading thread…</div></div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          ${(isAdmin() && !r.assigned_poc_id) ? `<button class="btn small outline" data-reassign-request="${r.id}">Assign Handler</button>` : (isSuperAdmin() ? `<button class="btn small outline" data-reassign-request="${r.id}">Change Handler</button>` : '')}
+          ${isSuperAdmin() ? `<button class="btn small outline" data-edit-request="${r.id}">Edit</button>` : ''}
+          ${(isSuperAdmin() || hasPermission('request_delete')) ? `<button class="btn small danger" data-delete-request="${r.id}">Delete Permanently</button>` : ''}
         </div>
-        <span class="field-hint reply-word-count">0 words${state.systemSettings?.request_remark_word_limit ? ` / ${state.systemSettings.request_remark_word_limit} max` : ''}</span>
-      </form>
-    </div>
-  `).join('');
-
-  main.insertAdjacentHTML('afterbegin', `<div class="form-row" id="req-find" style="display:flex;gap:8px;flex-wrap:wrap;max-width:none"><input type="search" id="req-q" placeholder="Search by rider / handler name, Employee ID, category or text…" style="flex:1;min-width:200px"><select id="req-st"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option></select></div>`);
-  const reqCards = [...main.querySelectorAll(':scope > .card')];
-  const reqFilter = () => { const q = document.getElementById('req-q').value.trim().toLowerCase(), st = document.getElementById('req-st').value;
-    reqCards.forEach(c => { const ok = (!q || c.textContent.toLowerCase().includes(q)) && (!st || (c.querySelector('.badge')?.textContent.trim().toLowerCase().replace(' ', '_') === st)); c.style.display = ok ? '' : 'none'; }); };
-  document.getElementById('req-q').oninput = reqFilter; document.getElementById('req-st').onchange = reqFilter;
+        <form class="reply-form" data-request-id="${r.id}" style="margin-top:10px; display:${['closed','cancelled'].includes(r.status)?'none':'flex'}; flex-direction:column; gap:4px;">
+          <div style="display:flex; gap:8px;">
+            <input type="text" placeholder="Short remark…" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13.5px;">
+            <button class="btn small" type="submit">Send</button>
+          </div>
+          <span class="field-hint reply-word-count">0 words${state.systemSettings?.request_remark_word_limit ? ` / ${state.systemSettings.request_remark_word_limit} max` : ''}</span>
+        </form>
+      </div>
+    </div>`).join('')}</div><div id="req-none" class="empty" style="display:none;text-align:center;color:var(--muted);padding:26px 0">No requests match these filters.</div>`;
+  const reqCards = [...main.querySelectorAll('#req-list > .rq')];
+  const reqFilter = () => {
+    RQ.q = document.getElementById('req-q').value.trim().toLowerCase();
+    RQ.c = document.getElementById('req-cat').value; RQ.h = (document.getElementById('req-h') || {}).value || '';
+    RQ.from = document.getElementById('req-from').value; RQ.to = document.getElementById('req-to').value;
+    let n = 0;
+    reqCards.forEach(c => {
+      const d = c.dataset;
+      const ok = (!RQ.q || d.txt.includes(RQ.q)) && (!RQ.st || d.st === RQ.st) && (!RQ.c || d.cat === RQ.c) && (!RQ.h || d.h === RQ.h) && (!RQ.from || d.day >= RQ.from) && (!RQ.to || d.day <= RQ.to);
+      c.style.display = ok ? '' : 'none'; if (ok) n++;
+    });
+    document.getElementById('req-count').textContent = `Showing ${n} of ${reqCards.length} request${reqCards.length === 1 ? '' : 's'}`;
+    document.getElementById('req-none').style.display = n ? 'none' : '';
+    main.querySelectorAll('#req-chips button').forEach(b => b.classList.toggle('on', b.dataset.st === RQ.st));
+  };
+  ['req-q'].forEach(i => document.getElementById(i).oninput = reqFilter);
+  ['req-cat', 'req-h', 'req-from', 'req-to'].forEach(i => { const e = document.getElementById(i); if (e) e.onchange = reqFilter; });
+  main.querySelectorAll('#req-chips button').forEach(b => b.onclick = () => { RQ.st = b.dataset.st; reqFilter(); });
+  document.getElementById('req-clear').onclick = () => { RQ.q = ''; RQ.st = ''; RQ.c = ''; RQ.h = ''; RQ.from = ''; RQ.to = ''; document.getElementById('req-q').value = ''; document.getElementById('req-cat').value = ''; const h = document.getElementById('req-h'); if (h) h.value = ''; document.getElementById('req-from').value = ''; document.getElementById('req-to').value = ''; reqFilter(); };
+  main.querySelectorAll('[data-rq-open]').forEach(b => b.onclick = () => {
+    const card = b.closest('.rq'), more = card.querySelector('.rq-more'), open = more.hasAttribute('hidden');
+    if (open) { more.removeAttribute('hidden'); card.classList.add('open'); if (!card.dataset.loaded) { card.dataset.loaded = 1; loadThread(card.dataset.rid); } } else { more.setAttribute('hidden', ''); card.classList.remove('open'); }
+    b.textContent = open ? 'Hide ▴' : 'Details ▾';
+  });
+  reqFilter();
   main.querySelectorAll('[data-delete-request]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('Delete this request? It can be restored from Settings → Trash within 48 hours.')) return;
@@ -2254,7 +2322,6 @@ async function renderRequests(){
       };
     };
   });
-  requests.forEach(r => loadThread(r.id));
   main.querySelectorAll('.reply-form').forEach(f => {
     const input = f.querySelector('input');
     const counterEl = f.querySelector('.reply-word-count');
@@ -3467,6 +3534,7 @@ async function renderSettings(){
       ['storage','Storage Usage', () => isSuperAdmin()],
       ['trash','Trash (restore deleted items)', () => isSuperAdmin()],
       ['maintenance','Maintenance & Word Limits', () => isSuperAdmin()],
+      ['fv_centers','Field Visit Centers & Location', () => isSuperAdmin()],
       ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
     ]}
   ];
@@ -3511,7 +3579,101 @@ async function renderSettings(){
   else if (settingsTab === 'storage') await renderStorageSettings(body);
   else if (settingsTab === 'trash') await renderTrashSettings(body);
   else if (settingsTab === 'maintenance') await renderMaintenanceSettings(body);
+  else if (settingsTab === 'fv_centers') await renderFvCentersSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
+}
+
+// ---------------- Settings: Field Visit centres, location rule, wild cards ----------------
+async function renderFvCentersSettings(body){
+  body.innerHTML = '<div class="mono">Loading…</div>';
+  const [sys, cs, wc] = await Promise.all([
+    sb.from('system_settings').select('*').eq('id', 1).maybeSingle(),
+    sb.from('fv_centers').select('*').order('name'),
+    sb.from('custom_permissions').select('profile_id').eq('permission_key', 'fv_geo_wildcard')]);
+  if (cs.error) { body.innerHTML = `<div class="card"><h3>Field Visit Centers</h3><p class="hint">Please run <b>migration_45.sql</b> in Supabase (SQL Editor) first, then reopen this page.<br>(${escapeHtml(cs.error.message)})</p></div>`; return; }
+  const geoOn = !!(sys.data && sys.data.fv_geo_required), minW = (sys.data && sys.data.fv_issue_min_words) || 5;
+  const centers = cs.data || [], wildSet = new Set((wc.data || []).map(x => x.profile_id));
+  await loadScopedProfiles();
+  const staff = state.profilesInScope.filter(p => p.role !== 'rider' && p.role !== 'super_admin' && p.status === 'active');
+  const gmap = (c) => c.latitude != null ? `<a href="https://www.google.com/maps?q=${c.latitude},${c.longitude}" target="_blank" rel="noopener">${(+c.latitude).toFixed(5)}, ${(+c.longitude).toFixed(5)}</a>` : '<span style="color:var(--clay)">not set</span>';
+  body.innerHTML = `
+    <div class="card" style="border-left:4px solid ${geoOn ? 'var(--moss)' : 'var(--muted)'};">
+      <h3>Location check for visits: ${geoOn ? 'ON' : 'OFF'}</h3>
+      <p class="hint">When ON, an Area Incharge adding an <b>On-site</b> visit must choose the centre and be physically within its radius (checked with the phone / browser location). Online visits are never location-checked. People marked as <b>Wild card</b> below are exempt.</p>
+      <div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="fvc-geo" ${geoOn ? 'checked' : ''}> Require the visitor to be at the centre</label></div>
+      <div class="form-row"><label>Minimum words to describe an “Issue”</label><input type="number" id="fvc-min" min="3" max="30" value="${minW}" style="max-width:120px"></div>
+      <button class="btn" id="fvc-save">Save</button>
+      ${geoOn && !centers.some(c => c.active && c.latitude != null) ? '<p class="hint" style="color:var(--clay);margin-top:8px;">⚠ No active centre has a location yet — nobody could add an on-site visit. Add centres below first.</p>' : ''}
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><button class="btn small" id="fvc-add">+ Add Center</button></div>
+      <div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th>Name</th><th>Code</th><th>Location</th><th>Radius</th><th>Status</th><th></th></tr></thead><tbody>
+      ${centers.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${gmap(c)}</td><td>${c.radius_m} m</td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+        <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" style="color:var(--muted)">No centers yet.</td></tr>'}
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Wild card (no location restriction)</h3>
+      <p class="hint">People switched on here can add visit reports from anywhere, even while the location check is ON for everyone else.</p>
+      <input type="search" id="fvc-ws" placeholder="Search name or Employee ID…" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+      <div id="fvc-wl"></div>
+    </div>`;
+  document.getElementById('fvc-save').onclick = async () => {
+    const mw = Math.max(3, Math.min(30, parseInt(document.getElementById('fvc-min').value, 10) || 5));
+    const on = document.getElementById('fvc-geo').checked;
+    if (on && !confirm('Switch the location check ON? Area Incharges (except wild cards) will have to be at the centre to add an on-site visit.')) return;
+    const { error } = await sb.from('system_settings').update({ fv_geo_required: on, fv_issue_min_words: mw }).eq('id', 1);
+    if (error) { toast('Could not save: ' + error.message + ' — run migration_45.sql first.'); return; }
+    state.systemSettings = { ...state.systemSettings, fv_geo_required: on, fv_issue_min_words: mw };
+    toast('Saved'); renderFvCentersSettings(body);
+  };
+  const openCenter = (c) => {
+    openModal(`<h2>${c ? 'Edit center' : 'Add center'}</h2>
+      <form id="fvc-form">
+        <div class="two-col"><div class="form-row"><label>Center name</label><input id="fvc-n" required value="${escapeHtml(c ? c.name : '')}"></div>
+        <div class="form-row"><label>Code</label><input id="fvc-c" required value="${escapeHtml(c ? c.code : '')}"></div></div>
+        <div class="form-row"><label>Location</label>
+          <button type="button" class="btn small outline" id="fvc-gps">📍 Use my current location (stand at the center)</button>
+          <input id="fvc-paste" placeholder="…or paste from Google Maps, e.g. 24.86071, 67.00114" style="margin-top:6px"></div>
+        <div class="two-col"><div class="form-row"><label>Latitude</label><input id="fvc-lat" type="number" step="any" min="-90" max="90" value="${c && c.latitude != null ? c.latitude : ''}" required></div>
+        <div class="form-row"><label>Longitude</label><input id="fvc-lng" type="number" step="any" min="-180" max="180" value="${c && c.longitude != null ? c.longitude : ''}" required></div></div>
+        <div class="form-row"><label>Allowed distance from the center (metres)</label><input id="fvc-r" type="number" min="30" max="5000" value="${c ? c.radius_m : 200}"><span class="field-hint">200 m suits most centers; GPS can be off by 20–50 m indoors.</span></div>
+        <button class="btn-primary" type="submit">Save</button>
+      </form>`);
+    document.getElementById('fvc-gps').onclick = () => {
+      if (!navigator.geolocation) { toast('This browser cannot read the location.'); return; }
+      toast('Reading location…');
+      navigator.geolocation.getCurrentPosition(p => { document.getElementById('fvc-lat').value = p.coords.latitude.toFixed(6); document.getElementById('fvc-lng').value = p.coords.longitude.toFixed(6); toast('Location filled (accuracy ≈ ' + Math.round(p.coords.accuracy) + ' m)'); },
+        () => toast('Could not read the location — please allow Location access, or paste the coordinates.'), { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    };
+    document.getElementById('fvc-paste').oninput = (e) => { const m = e.target.value.match(/(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/); if (m) { document.getElementById('fvc-lat').value = m[1]; document.getElementById('fvc-lng').value = m[2]; } };
+    document.getElementById('fvc-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const row = { name: document.getElementById('fvc-n').value.trim(), code: document.getElementById('fvc-c').value.trim(), latitude: parseFloat(document.getElementById('fvc-lat').value), longitude: parseFloat(document.getElementById('fvc-lng').value), radius_m: parseInt(document.getElementById('fvc-r').value, 10) || 200 };
+      if (!row.name || !row.code || !isFinite(row.latitude) || !isFinite(row.longitude)) { toast('Name, code and location are required'); return; }
+      const r = c ? await sb.from('fv_centers').update(row).eq('id', c.id) : await sb.from('fv_centers').insert({ ...row, created_by: state.user.id });
+      if (r.error) { toast(/duplicate|unique/i.test(r.error.message) ? 'That code is already used by another center.' : 'Could not save: ' + r.error.message); return; }
+      closeModal(); toast('Saved'); renderFvCentersSettings(body);
+    };
+  };
+  document.getElementById('fvc-add').onclick = () => openCenter(null);
+  body.querySelectorAll('[data-fvc-edit]').forEach(b => b.onclick = () => openCenter(centers.find(x => x.id === b.dataset.fvcEdit)));
+  body.querySelectorAll('[data-fvc-tog]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcTog); const { error } = await sb.from('fv_centers').update({ active: !c.active }).eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
+  body.querySelectorAll('[data-fvc-del]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcDel); if (!confirm(`Delete center "${c.name}"? Past visits keep its name. (Use Disable instead to just hide it.)`)) return; const { error } = await sb.from('fv_centers').delete().eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
+  const wl = document.getElementById('fvc-wl');
+  const drawW = () => {
+    const q = document.getElementById('fvc-ws').value.trim().toLowerCase();
+    const list = staff.filter(p => !q || (p.full_name + ' ' + (p.employee_id || '')).toLowerCase().includes(q)).sort((a, b) => (wildSet.has(b.id) - wildSet.has(a.id)) || a.full_name.localeCompare(b.full_name)).slice(0, 80);
+    wl.innerHTML = list.map(p => `<label style="display:flex;gap:10px;align-items:center;padding:7px 4px;border-bottom:1px solid var(--line)"><input type="checkbox" data-wc="${p.id}" ${wildSet.has(p.id) ? 'checked' : ''}><span><b>${escapeHtml(p.full_name)}</b> ${p.employee_id ? '· ' + escapeHtml(p.employee_id) : ''} <span style="color:var(--muted)">${escapeHtml(designationLabel(p))}</span></span></label>`).join('') || '<div class="hint">No one found.</div>';
+    wl.querySelectorAll('[data-wc]').forEach(cb => cb.onchange = async () => {
+      const id = cb.dataset.wc; cb.disabled = true;
+      const r = cb.checked ? await sb.from('custom_permissions').insert({ profile_id: id, permission_key: 'fv_geo_wildcard', granted_by: state.user.id, expires_at: null }) : await sb.from('custom_permissions').delete().eq('profile_id', id).eq('permission_key', 'fv_geo_wildcard');
+      cb.disabled = false;
+      if (r.error) { cb.checked = !cb.checked; toast('Could not save: ' + r.error.message); return; }
+      cb.checked ? wildSet.add(id) : wildSet.delete(id); toast(cb.checked ? 'Wild card ON' : 'Wild card OFF');
+    });
+  };
+  document.getElementById('fvc-ws').oninput = drawW; drawW();
 }
 
 async function renderCategoriesInto(body){
@@ -5006,9 +5168,10 @@ const GRANTABLE_PERMISSIONS = [
   ['hotspot_bulk_add', 'Hotspots — Bulk Add'],
   ['roster_ojt', 'Roster — On Job Training'],
   ['tooltypes_manage', 'Tool Types — add / edit tool categories'],
-  ['field_visit_manage', 'Field Visit Reports — Manager rights (manage checklist & KPIs, correct any visit, see all teams)']
+  ['field_visit_manage', 'Field Visit Reports — Manager rights (manage checklist & KPIs, correct any visit, see all teams)'],
+  ['fv_geo_wildcard', 'Field Visits — Wild card (add visits without the centre location check)']
 ];
-const SETTINGS_TAB_LABELS = [['categories','Request Categories'],['circularcategories','Circular Categories'],['requestrouting','Request Auto-Routing'],['warningtypes','Warning Types'],['expirytypes','Expiry Item Types'],['tooltypes','Tool Types'],['compliancetypes','Compliance Items'],['shifttypes','Shift Types'],['designations','Designations'],['subregions','Sub-Regions / Cities'],['hotspots','Hotspots'],['notice','Home Notice'],['branding','Login Page Branding'],['menuicons','Menu Icons'],['homebanner','Home Banner'],['popups','Popup Announcements'],['storage','Storage Usage'],['trash','Trash'],['maintenance','Maintenance & Word Limits'],['shortcuts','Keyboard Shortcuts']];
+const SETTINGS_TAB_LABELS = [['categories','Request Categories'],['circularcategories','Circular Categories'],['requestrouting','Request Auto-Routing'],['warningtypes','Warning Types'],['expirytypes','Expiry Item Types'],['tooltypes','Tool Types'],['compliancetypes','Compliance Items'],['shifttypes','Shift Types'],['designations','Designations'],['subregions','Sub-Regions / Cities'],['hotspots','Hotspots'],['notice','Home Notice'],['branding','Login Page Branding'],['menuicons','Menu Icons'],['homebanner','Home Banner'],['popups','Popup Announcements'],['storage','Storage Usage'],['trash','Trash'],['maintenance','Maintenance & Word Limits'],['fv_centers','Field Visit Centers'],['shortcuts','Keyboard Shortcuts']];
 function permSections(){
   const pages = Object.keys(NAV_LABEL).filter(v => !v.startsWith('ft_') && v !== 'dashboard').map(v => ['page:' + v, NAV_LABEL[v]]);
   return [
@@ -6296,9 +6459,20 @@ async function fvFetchAll(build) {
   return out;
 }
 const FV_VISIT_COLS = 'id, rider_id, rider_name, rider_employee_id, region_id, region_name, sub_region_name, submitted_by, submitted_by_name, visit_date, visit_type, score, ok_count, issue_count, edit_count, created_at';
-const fvLoadVisits = (r) => fvFetchAll(() => sb.from('fv_visits').select(FV_VISIT_COLS)
-  .gte('visit_date', r.from).lte('visit_date', r.to)
-  .order('visit_date', { ascending: false }).order('created_at', { ascending: false }).order('id'));
+let FV_HAS_CENTER = true;
+const fvLoadVisits = async (r) => {
+  const q = (cols) => fvFetchAll(() => sb.from('fv_visits').select(cols)
+    .gte('visit_date', r.from).lte('visit_date', r.to)
+    .order('visit_date', { ascending: false }).order('created_at', { ascending: false }).order('id'));
+  if (FV_HAS_CENTER) { try { return await q(FV_VISIT_COLS + ', center_name, center_code'); } catch (e) { FV_HAS_CENTER = false; } }
+  return q(FV_VISIT_COLS);
+};
+// "Issue" descriptions: punctuation does not count; needs real words
+function fvIssueWords(text) {
+  const w = String(text || '').replace(/[^\p{L}\p{N}\s]+/gu, ' ').split(/\s+/).filter(x => x.length >= 2);
+  return { n: w.length, u: new Set(w.map(x => x.toLowerCase())).size };
+}
+const fvIssueOk = (text, min) => { const x = fvIssueWords(text); return x.n >= min && x.u >= Math.min(3, min); };
 const fvLoadIssues = (r) => fvFetchAll(() => sb.from('fv_issues').select('*')
   .gte('visit_date', r.from).lte('visit_date', r.to)
   .order('visit_date', { ascending: false }).order('created_at', { ascending: false }).order('id'));
@@ -6670,7 +6844,7 @@ async function fvKpiBoard(host) {
 function fvVisitsToRows(rows) {
   return rows.map(v => ({ Date: v.visit_date, Rider: v.rider_name, 'Employee ID': v.rider_employee_id || '', 'Team / Region': v.region_name || '',
     'Sub-Region': v.sub_region_name || '', 'Visit Type': fvTypeLabel(v.visit_type), 'Score %': fvNum(v.score), 'OK': v.ok_count, 'Issues': v.issue_count,
-    'Visited By': v.submitted_by_name || '' }));
+    'Visited By': v.submitted_by_name || '', 'Centre': v.center_name || '', 'Centre Code': v.center_code || '' }));
 }
 async function fvPageVisits(host) {
   const rider = fvIsRider();
@@ -6698,11 +6872,12 @@ async function fvPageVisits(host) {
             <button class="fv-btn ghost" data-delsel type="button" style="color:#b3321b;border-color:#e0a79b;" ${sel.size ? '' : 'disabled'}>Delete selected (${sel.size})</button>
             <button class="fv-btn ghost" data-delall type="button" style="color:#b3321b;border-color:#e0a79b;">Delete all ${current.length} listed</button></div>` : '';
         res.innerHTML = bulk + `<div class="fv-note" style="margin:0 2px 8px;"><strong>${fvVisitCount(current)}</strong> visit${fvVisitCount(current) === 1 ? '' : 's'} · <strong>${fvRiderCount(current)}</strong> rider${fvRiderCount(current) === 1 ? '' : 's'} checked · ${current.length} rider evaluation${current.length === 1 ? '' : 's'} listed · average score <strong style="color:${fvScoreColor(fvAvg(current))}">${fvNum(fvAvg(current))}%</strong></div>
-          <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr>${sa ? '<th style="width:30px;"><input type="checkbox" data-selall title="Select all shown"></th>' : ''}<th>Visit date</th><th>Team name</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
+          <div class="fv-card2" style="padding:0;overflow:hidden;"><div style="overflow-x:auto;"><table class="fv-table"><thead><tr>${sa ? '<th style="width:30px;"><input type="checkbox" data-selall title="Select all shown"></th>' : ''}<th>Visit date</th><th>Team name</th><th>Centre</th><th>Rider name</th><th>Visit type</th><th>Score</th><th>Visited by</th><th class="c">${canEdit ? 'Edit' : 'View'}</th></tr></thead><tbody>
           ${current.slice(0, shown).map(v => `<tr>
             ${sa ? `<td><input type="checkbox" data-sel="${v.id}" ${sel.has(v.id) ? 'checked' : ''}></td>` : ''}
             <td>${fvFmtDate(v.visit_date)}</td>
             <td>${escapeHtml(v.region_name || '—')}${v.sub_region_name ? `<div class="fv-note">${escapeHtml(v.sub_region_name)}</div>` : ''}</td>
+            <td>${v.center_name ? `<strong>${escapeHtml(v.center_name)}</strong>${v.center_code ? `<div class="fv-note">${escapeHtml(v.center_code)}</div>` : ''}` : '<span class="fv-note">—</span>'}</td>
             <td><strong>${escapeHtml(v.rider_name)}</strong><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
             <td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td>
             <td>${escapeHtml(v.submitted_by_name || '—')}${v.edit_count ? ' <span class="fv-chip" title="Corrected by Super Admin">✎ edited</span>' : ''}</td>
@@ -6768,6 +6943,7 @@ async function fvOpenVisit(id, onChanged, startEditing) {
       <div id="fv-ring-box">${fvRing(score)}</div>
       <div><h2 style="margin:0 0 4px;">${escapeHtml(v.rider_name)} <span class="fv-note">${escapeHtml(v.rider_employee_id || '')}</span></h2>
         <div>${escapeHtml(v.region_name || '—')}${v.sub_region_name ? ' · ' + escapeHtml(v.sub_region_name) : ''} <span class="fv-note">(as on the visit date)</span></div>
+        ${v.center_name ? `<div style="margin-top:3px;">📍 <strong>${escapeHtml(v.center_name)}</strong>${v.center_code ? ' <span class="fv-note">(' + escapeHtml(v.center_code) + ')</span>' : ''}${v.distance_m != null ? ` <span class="fv-note">· visited ${v.distance_m} m from the centre${v.geo_checked ? ' (location verified)' : ''}</span>` : ''}</div>` : ''}
         <div style="margin-top:3px;">${fvFmtDate(v.visit_date)} · ${fvTypeBadge(v.visit_type)} · <span class="fv-note">Visited by ${escapeHtml(v.submitted_by_name || '—')}</span></div>
         ${v.edit_count ? `<div class="fv-note">✎ Corrected by ${escapeHtml(v.last_edited_name || 'Super Admin')} on ${formatDateTime(v.last_edited_at)}${v.edit_count > 1 ? ' (' + v.edit_count + ' times)' : ''}</div>` : ''}</div></div>`;
 
@@ -7016,6 +7192,23 @@ async function fvPageAdd(body) {
   const totalW = cps.reduce((s, c) => s + Number(c.weight), 0);
   const ans = {}; cps.forEach(c => { ans[c.id] = { status: '', obs: '' }; });
   let vtype = 'Onsite', riderId = '';
+  // centres + location rules (live from the database; the database re-checks everything on submit)
+  let geoOnSetting = !!(state.systemSettings || {}).fv_geo_required, minWords = Number((state.systemSettings || {}).fv_issue_min_words) || 5, centers = [];
+  try {
+    const [sr, cr] = await Promise.all([sb.from('system_settings').select('*').eq('id', 1).maybeSingle(), sb.from('fv_centers').select('id,name,code,latitude,longitude,radius_m').eq('active', true).order('name')]);
+    if (sr.data) { geoOnSetting = !!sr.data.fv_geo_required; minWords = Number(sr.data.fv_issue_min_words) || 5; }
+    if (!cr.error) centers = cr.data || [];
+  } catch (e) { console.warn(e); }
+  const wild = hasPermission('fv_geo_wildcard');
+  const geoReq = () => geoOnSetting && !wild && vtype === 'Onsite';
+  const hav = (a, b, c, d) => { const t = x => x * Math.PI / 180, dl = t(c - a), dg = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dg / 2) ** 2; return 2 * 6371000 * Math.asin(Math.sqrt(h)); };
+  const fmtDist = (m) => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km';
+  let geo = { ok: false, err: '', lat: null, lng: null, acc: null, busy: false, tried: false };
+  const readGeo = () => new Promise(res => {
+    if (!navigator.geolocation) { res({ ok: false, err: 'unsupported' }); return; }
+    navigator.geolocation.getCurrentPosition(p => res({ ok: true, lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+      e => res({ ok: false, err: e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable' }), { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  });
 
   body.innerHTML = `
     <div class="fv-panel"><h3>1 · Who was visited?</h3>
@@ -7027,10 +7220,13 @@ async function fvPageAdd(body) {
     <div class="fv-panel"><h3>2 · Visit details</h3>
       <div class="fv-filters"><label>Visit date <input type="date" id="fv-a-date" value="${fvToday()}" max="${fvToday()}"></label>
         <div class="fv-seg" id="fv-a-type"><button type="button" class="t on" data-t="Onsite">On-site</button><button type="button" class="t" data-t="Online">Online</button></div></div></div>
-    <div class="fv-panel"><h3>3 · Checklist <span class="fv-note">(${cps.length} checkpoints · ${fvNum(totalW)} points)</span></h3>
+    <div class="fv-panel" id="fv-a-locp"><h3>3 · Centre &amp; location</h3>
+      <div class="fv-filters"><select id="fv-a-center" style="min-width:260px;"></select><button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
+      <div id="fv-a-geo" class="fv-note"></div></div>
+    <div class="fv-panel" id="fv-a-cl"><h3>4 · Checklist <span class="fv-note">(${cps.length} checkpoints · ${fvNum(totalW)} points)</span></h3>
       ${cps.map((c, i) => `<div class="fv-cprow" data-c="${c.id}"><div class="hd"><div><strong>${i + 1}. ${escapeHtml(c.name)}</strong> <span class="fv-chip">${fvNum(c.weight)} pts</span></div>
         <div class="fv-seg"><button type="button" class="ok" data-s="OK">OK</button><button type="button" class="issue" data-s="Issue">Issue</button></div></div>
-        <div class="fv-obs"><textarea placeholder="Describe what you observed…" maxlength="300"></textarea></div></div>`).join('')}</div>
+        <div class="fv-obs"><textarea placeholder="Describe what you observed…" maxlength="300"></textarea><div class="fv-ihint" style="display:none;font-size:11.5px;margin-top:3px;"></div></div></div>`).join('')}</div>
     <div class="fv-sticky"><div><div class="fv-note">Answered <strong id="fv-a-count">0</strong> / ${cps.length}</div>
         <span class="fv-score" id="fv-a-score" style="--w:0%;min-width:200px;"><span class="t"><i class="fv-bg-poor"></i></span><b class="fv-poor">0%</b></span></div>
       <div style="margin-left:auto;"><button class="btn-primary" id="fv-a-submit" type="button">Submit visit report</button></div></div>`;
@@ -7057,8 +7253,55 @@ async function fvPageAdd(body) {
   body.querySelector('#fv-a-search').oninput = fillRiders;
   sel.onchange = () => { riderId = sel.value; showInfo(); };
   fillRiders();
+  // ---- centre + location
+  const cSel = body.querySelector('#fv-a-center'), gBox = body.querySelector('#fv-a-geo');
+  let centerId = '';
+  const distTo = (c) => (geo.ok && c.latitude != null && c.longitude != null) ? hav(geo.lat, geo.lng, c.latitude, c.longitude) : null;
+  const fillCenters = () => {
+    const list = centers.map(c => ({ c, d: distTo(c) })).sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.c.name.localeCompare(b.c.name));
+    if (!centerId && geo.ok && list.length && list[0].d != null && list[0].d <= list[0].c.radius_m) centerId = list[0].c.id;
+    cSel.innerHTML = `<option value="">${centers.length ? (geoReq() ? 'Select the centre you are visiting…' : 'Centre (optional)…') : 'No centres set up'}</option>` +
+      list.map(x => `<option value="${x.c.id}" ${x.c.id === centerId ? 'selected' : ''}>${escapeHtml(x.c.name)} — ${escapeHtml(x.c.code)}${x.d != null ? ' · ' + fmtDist(x.d) + ' away' : ''}</option>`).join('');
+  };
+  const paintGeo = () => {
+    const req = geoReq(), c = centers.find(x => x.id === centerId), d = c ? distTo(c) : null;
+    const box = (bg, fg, html) => `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:${bg};color:${fg};font-size:13px;">${html}</div>`;
+    let html = '', blocked = false;
+    if (!req) {
+      html = box('#eef1fb', '#1c2b6e', wild ? '<strong>Wild card:</strong> your visits are not restricted by location. You may still pick the centre.' : (vtype === 'Online' ? 'Online visits do not need a location check.' : 'Location checking is currently switched off.'));
+    } else if (!centers.length) {
+      blocked = true; html = box('#fde7e1', '#8a2d12', '<strong>No centres have been set up yet.</strong> Please ask the Super Admin to add centres (Settings → Field Visit Centers).');
+    } else if (geo.busy) {
+      blocked = true; html = box('#fff3d6', '#7a5a00', 'Checking your location…');
+    } else if (!geo.ok) {
+      blocked = true;
+      const how = geo.err === 'denied' ? '<b>Location is blocked.</b> Please allow it: <br>• <b>Android app:</b> Settings → Apps → FieldHub → Permissions → Location → Allow (and switch the phone\'s Location / GPS on).<br>• <b>Browser:</b> tap the lock icon next to the address → Location → Allow.' : geo.err === 'unsupported' ? 'This device or browser cannot give your location. Please use the FieldHub app or another browser.' : geo.err === 'timeout' ? 'Your location took too long. Please switch on GPS, go outdoors or near a window, and try again.' : geo.tried ? 'Your location is not available. Please switch on the phone\'s Location / GPS and try again.' : 'Location is required to add a visit. Tap “Check my location” and choose Allow.';
+      html = box('#fde7e1', '#8a2d12', '<strong>Location is required to add a visit.</strong><br>' + how);
+    } else if (!c) {
+      blocked = true; html = box('#fff3d6', '#7a5a00', 'Please select the centre you are visiting.');
+    } else if (d == null) {
+      blocked = true; html = box('#fde7e1', '#8a2d12', 'The location of this centre has not been set. Please ask the Super Admin.');
+    } else if (d > c.radius_m) {
+      blocked = true; html = box('#fde7e1', '#8a2d12', `✗ You are about <strong>${fmtDist(d)}</strong> from <strong>${escapeHtml(c.name)}</strong>. You must be within <strong>${c.radius_m} m</strong> of the centre to add its visit.`);
+    } else {
+      html = box('#e6f4ec', '#1d5a38', `✓ You are at <strong>${escapeHtml(c.name)}</strong> (${fmtDist(d)} from the centre).`);
+    }
+    gBox.innerHTML = html;
+    const lock = blocked && req;
+    ['#fv-a-cl', '.fv-sticky'].forEach(q => { const e = body.querySelector(q); if (e) { e.style.opacity = lock ? '.4' : ''; e.style.pointerEvents = lock ? 'none' : ''; } });
+  };
+  const checkGeo = async () => {
+    geo.busy = true; geo.tried = true; paintGeo();
+    const r = await readGeo(); geo = { ...geo, ...r, busy: false };
+    fillCenters(); paintGeo();
+  };
+  cSel.onchange = () => { centerId = cSel.value; paintGeo(); };
+  body.querySelector('#fv-a-loc').onclick = checkGeo;
+  fillCenters(); paintGeo();
+  if (geoReq()) checkGeo();
   body.querySelectorAll('#fv-a-type [data-t]').forEach(b => b.onclick = () => {
     vtype = b.dataset.t; body.querySelectorAll('#fv-a-type [data-t]').forEach(x => x.classList.toggle('on', x === b));
+    fillCenters(); paintGeo(); if (geoReq() && !geo.ok && !geo.tried) checkGeo();
   });
 
   const recalc = () => {
@@ -7076,9 +7319,17 @@ async function fvPageAdd(body) {
       ans[cid].status = btn.dataset.s;
       row.classList.toggle('ok', btn.dataset.s === 'OK'); row.classList.toggle('issue', btn.dataset.s === 'Issue');
       row.querySelectorAll('[data-s]').forEach(x => x.classList.toggle('on', x === btn));
-      recalc();
+      recalc(); hint();
     });
-    row.querySelector('textarea').oninput = (e) => { ans[cid].obs = e.target.value; };
+    const ta = row.querySelector('textarea'), ih = row.querySelector('.fv-ihint');
+    const hint = () => {
+      if (ans[cid].status !== 'Issue') { ih.style.display = 'none'; ta.placeholder = 'Describe what you observed…'; return; }
+      const x = fvIssueWords(ans[cid].obs), ok = fvIssueOk(ans[cid].obs, minWords);
+      ta.placeholder = `Describe the issue clearly — at least ${minWords} words`;
+      ih.style.display = ''; ih.style.color = ok ? '#1d7a47' : '#b3321b';
+      ih.textContent = ok ? `✓ ${x.n} words` : `${x.n} of ${minWords} words — please describe the issue in at least ${minWords} meaningful words (punctuation like . or , does not count).`;
+    };
+    ta.oninput = (e) => { ans[cid].obs = e.target.value; hint(); };
   });
   recalc();
   fvGo(body);
@@ -7090,16 +7341,29 @@ async function fvPageAdd(body) {
     if (!date) { toast('Please choose the visit date.'); return; }
     const missing = cps.find(c => !ans[c.id].status);
     if (missing) { toast(`Please mark "${missing.name}" as OK or Issue.`); body.querySelector(`[data-c="${missing.id}"]`).scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
-    const noObs = cps.find(c => ans[c.id].status === 'Issue' && !ans[c.id].obs.trim());
-    if (noObs) { toast(`Please describe the issue for "${noObs.name}".`); body.querySelector(`[data-c="${noObs.id}"] textarea`).focus(); return; }
+    const noObs = cps.find(c => ans[c.id].status === 'Issue' && !fvIssueOk(ans[c.id].obs, minWords));
+    if (noObs) { toast(`Please describe the issue for "${noObs.name}" in at least ${minWords} meaningful words (punctuation like . or , does not count).`); const ta = body.querySelector(`[data-c="${noObs.id}"] textarea`); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); return; }
+    // location (Onsite visits, unless switched off or wild card)
+    if (geoReq()) {
+      const btn0 = body.querySelector('#fv-a-submit'); btn0.disabled = true; geo.busy = true; paintGeo();
+      const g = await readGeo(); geo = { ...geo, ...g, busy: false, tried: true }; btn0.disabled = false; fillCenters(); paintGeo();
+      const c0 = centers.find(x => x.id === centerId), d0 = c0 ? distTo(c0) : null;
+      if (!geo.ok) { toast('Location is required to add a visit. Please switch on Location / GPS and allow access.'); return; }
+      if (!c0) { toast('Please select the centre you are visiting.'); return; }
+      if (d0 == null || d0 > c0.radius_m) { toast(d0 == null ? 'The location of this centre has not been set.' : `You are about ${fmtDist(d0)} from ${c0.name}. You must be within ${c0.radius_m} m.`); return; }
+    }
     const { pct } = recalc();
     const issues = cps.filter(c => ans[c.id].status === 'Issue').length;
     const dup = await sb.from('fv_visits').select('id').eq('rider_id', r.id).eq('visit_date', date).eq('visit_type', vtype).limit(1);
     const dupMsg = dup.data && dup.data.length ? `\n\nNOTE: a ${fvTypeLabel(vtype)} visit for this rider on this date already exists.` : '';
-    if (!confirm(`Submit this visit report?\n\nRider: ${r.name} (${r.emp})\nTeam / Region: ${r.region_name}\nDate: ${fvFmtDate(date)}\nType: ${fvTypeLabel(vtype)}\nScore: ${fvNum(pct)}%  (${issues} issue${issues === 1 ? '' : 's'})${dupMsg}\n\nOnly the Super Admin can correct it afterwards.`)) return;
+    if (!confirm(`Submit this visit report?\n\nRider: ${r.name} (${r.emp})\nTeam / Region: ${r.region_name}${centerId ? '\nCentre: ' + ((centers.find(x => x.id === centerId) || {}).name || '') : ''}\nDate: ${fvFmtDate(date)}\nType: ${fvTypeLabel(vtype)}\nScore: ${fvNum(pct)}%  (${issues} issue${issues === 1 ? '' : 's'})${dupMsg}\n\nOnly the Super Admin can correct it afterwards.`)) return;
     const btn = body.querySelector('#fv-a-submit'); btn.disabled = true;
     const payload = cps.map(c => ({ checkpoint_id: c.id, status: ans[c.id].status, observation: ans[c.id].obs.trim() }));
-    const { error } = await sb.rpc('fv_submit_visit', { p_rider: r.id, p_date: date, p_type: vtype, p_answers: payload });
+    let { error } = await sb.rpc('fv_submit_visit_geo', { p_rider: r.id, p_date: date, p_type: vtype, p_answers: payload, p_center: centerId || null, p_lat: geo.ok ? geo.lat : null, p_lng: geo.ok ? geo.lng : null });
+    if (error && /fv_submit_visit_geo|schema cache/i.test(error.message)) {
+      if (geoReq() || centerId) { btn.disabled = false; toast('Please run migration_45.sql in Supabase first, then try again.'); return; }
+      ({ error } = await sb.rpc('fv_submit_visit', { p_rider: r.id, p_date: date, p_type: vtype, p_answers: payload }));
+    }
     btn.disabled = false;
     if (error) { toast('Could not submit: ' + error.message); return; }
     toast('Visit report submitted');
