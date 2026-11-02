@@ -3760,9 +3760,15 @@ async function renderFvCentersSettings(body){
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small outline" id="fvc-bulk">⬆ Bulk upload (Excel / CSV)</button><button class="btn small outline" id="fvc-dl">⬇ Download list</button><button class="btn small" id="fvc-add">+ Add Center</button></div></div>
-      <div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th>Name</th><th>Code</th><th>Location</th><th>Radius</th><th>Status</th><th></th></tr></thead><tbody>
-      ${centers.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${gmap(c)}</td><td>${c.radius_m} m</td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
-        <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" style="color:var(--muted)">No centers yet.</td></tr>'}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:10px;background:#f6f7fc;border-radius:10px">
+        <b style="font-size:13px">Set the allowed distance (radius)</b>
+        <input type="number" id="fvc-rall" min="30" max="5000" placeholder="metres e.g. 200" style="width:130px;padding:7px 8px;border:1px solid var(--line);border-radius:7px">
+        <button class="btn small" id="fvc-rsel" type="button">Apply to selected (0)</button>
+        <button class="btn small outline" id="fvc-rallbtn" type="button">Apply to ALL ${centers.length} centers</button>
+        <span class="hint" style="margin:0">Or type a new number straight into any row's Radius box — it saves by itself.</span></div>
+      <div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th><input type="checkbox" id="fvc-selall" title="Select all"></th><th>Name</th><th>Code</th><th>Location</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead><tbody>
+      ${centers.map(c => `<tr><td><input type="checkbox" data-fvc-sel="${c.id}"></td><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${gmap(c)}</td><td><input type="number" min="30" max="5000" value="${c.radius_m}" data-fvc-rad="${c.id}" style="width:80px;padding:5px 6px;border:1px solid var(--line);border-radius:6px"></td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+        <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" style="color:var(--muted)">No centers yet.</td></tr>'}
       </tbody></table></div>
     </div>
     <div class="card">
@@ -3810,6 +3816,27 @@ async function renderFvCentersSettings(body){
     };
   };
   document.getElementById('fvc-add').onclick = () => openCenter(null);
+  const selIds = () => [...body.querySelectorAll('[data-fvc-sel]:checked')].map(x => x.dataset.fvcSel);
+  const paintSel = () => { document.getElementById('fvc-rsel').textContent = `Apply to selected (${selIds().length})`; };
+  body.querySelectorAll('[data-fvc-sel]').forEach(c => c.onchange = paintSel);
+  document.getElementById('fvc-selall').onchange = (e) => { body.querySelectorAll('[data-fvc-sel]').forEach(c => c.checked = e.target.checked); paintSel(); };
+  const setRadius = async (ids, label) => {
+    const r = parseInt(document.getElementById('fvc-rall').value, 10);
+    if (!(r >= 30 && r <= 5000)) { toast('Please enter a distance between 30 and 5000 metres.'); return; }
+    if (!ids.length) { toast('Nothing selected.'); return; }
+    if (!confirm(`Set the allowed distance to ${r} m for ${label}?`)) return;
+    for (let i = 0; i < ids.length; i += 100) { const x = await sb.from('fv_centers').update({ radius_m: r }).in('id', ids.slice(i, i + 100)); if (x.error) { toast('Could not save: ' + x.error.message); return; } }
+    toast(`Radius set to ${r} m for ${ids.length} center${ids.length === 1 ? '' : 's'}`); renderFvCentersSettings(body);
+  };
+  document.getElementById('fvc-rsel').onclick = () => setRadius(selIds(), `the ${selIds().length} selected center(s)`);
+  document.getElementById('fvc-rallbtn').onclick = () => setRadius(centers.map(c => c.id), `ALL ${centers.length} centers`);
+  body.querySelectorAll('[data-fvc-rad]').forEach(inp => inp.onchange = async () => {
+    const r = parseInt(inp.value, 10), c = centers.find(x => x.id === inp.dataset.fvcRad);
+    if (!(r >= 30 && r <= 5000)) { toast('Distance must be 30 – 5000 m'); inp.value = c.radius_m; return; }
+    const x = await sb.from('fv_centers').update({ radius_m: r }).eq('id', c.id);
+    if (x.error) { toast('Could not save: ' + x.error.message); inp.value = c.radius_m; return; }
+    c.radius_m = r; toast(`${c.name}: ${r} m saved`);
+  });
   document.getElementById('fvc-dl').onclick = () => downloadCSV('fv-centers.csv', toCSV(centers.length ? centers.map(c => ({ 'Center Name': c.name, 'Code': c.code, 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No' })) : [{ 'Center Name': 'Example Centre', 'Code': 'EX-01', 'Latitude': 24.8607, 'Longitude': 67.0011, 'Radius (m)': 200, 'Active': 'Yes' }]));
   document.getElementById('fvc-bulk').onclick = () => fvCentersBulk(centers, () => renderFvCentersSettings(body));
   body.querySelectorAll('[data-fvc-edit]').forEach(b => b.onclick = () => openCenter(centers.find(x => x.id === b.dataset.fvcEdit)));
@@ -6867,10 +6894,12 @@ async function fvPageReport(host) {
   await fvListShell(host.querySelector('#fv-ov'), {
     filters: { region: !rider, search: !rider },
     load: async (r) => {
-      const cur = { from: fvToday().slice(0, 7) + '-01', to: fvMonthEnd(fvToday().slice(0, 7)) };
+      // the KPI column judges the month you are looking at (when the dates are inside one month); otherwise the current month
+      const km = (r.from.slice(0, 4) !== '2000' && r.from.slice(0, 7) === r.to.slice(0, 7)) ? r.from.slice(0, 7) : fvToday().slice(0, 7);
+      const cur = { from: km + '-01', to: fvMonthEnd(km) };
       const [v, i, targets, ai, cmv] = await Promise.all([fvLoadVisits(r), fvLoadIssues(r),
         rider ? [] : fvLoadTargets().catch(() => []), rider ? [] : fvLoadAiMap().catch(() => []), rider ? [] : fvLoadVisits(cur)]);
-      return { v, i, targets, ai, cmv, r };
+      return { v, i, targets, ai, cmv, r, km };
     },
     draw: (d, f, res) => {
       const visits = fvFilterVisits(d.v, f);
@@ -6904,6 +6933,7 @@ async function fvPageReport(host) {
       let teamHtml = '';
       if (!rider) {
         const today = fvToday(), months = fvMonthsSpan(d.r, visits);
+        const kEnd = fvMonthEnd(d.km), kEval = kEnd < today ? kEnd : today, kPast = kEnd < today;
         const regionIds = new Set(fvRegionOptions().filter(x => !f.region || x.id === f.region).map(x => x.id));
         if (!f.region && fvSeesAllAreas()) visits.forEach(v => v.region_id && regionIds.add(v.region_id));
         const nameOf = (id) => (state.regions.find(x => x.id === id)?.name) || visits.find(v => v.region_id === id)?.region_name || '—';
@@ -6911,27 +6941,27 @@ async function fvPageReport(host) {
           const vs = visits.filter(v => v.region_id === id), is = issues.filter(i => i.region_id === id);
           const von = vs.filter(v => v.visit_type === 'Onsite'), vof = vs.filter(v => v.visit_type === 'Online');
           const ais = d.ai.filter(a => a.regionIds.includes(id));
-          const tOn = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).onsite_kpi, 0);
-          const tOff = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, today).online_target, 0);
+          const tOn = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, kEval).onsite_kpi, 0);
+          const tOff = ais.reduce((s, a) => s + fvTargetFor(d.targets, a.id, kEval).online_target, 0);
           const monthOn = fvVisitCount(d.cmv.filter(v => v.region_id === id && v.visit_type === 'Onsite'));
           const dist = (arr) => new Set(arr.map(v => v.rider_id || v.rider_name)).size;
           return { id, name: nameOf(id), on: fvVisitCount(von), onT: tOn * months, onR: dist(von), off: fvVisitCount(vof), offT: tOff * months, offR: dist(vof),
             tv: fvVisitCount(vs), tr: dist(vs), open: is.filter(i => i.status === 'open').length, res: is.filter(i => i.status === 'resolved').length, it: is.length,
-            kpi: tOn > 0 ? (monthOn >= tOn ? 'ok' : 'no') : 'na', avg: fvAvg(vs) };
+            kpi: tOn > 0 ? (monthOn >= tOn ? 'ok' : (kPast ? 'no' : 'prog')) : 'na', avg: fvAvg(vs) };
         }).filter(r => r.tv || r.it || regionIds.size <= 12).sort((a, b) => a.name.localeCompare(b.name));
         const gOn = visits.filter(v => v.visit_type === 'Onsite'), gOff = visits.filter(v => v.visit_type !== 'Onsite');
         const gTot = { on: fvVisitCount(gOn), off: fvVisitCount(gOff), tv: fvVisitCount(visits), onR: fvRiderCount(gOn), offR: fvRiderCount(gOff), tr: fvRiderCount(visits) };
         const sum = (k) => (k in gTot ? gTot[k] : rows.reduce((s, r) => s + r[k], 0));
         const frac = (c, t) => t > 0 ? `${c}<span class="fv-note">/${t}</span>` : `${c}`;
-        const kpiPill = (k) => k === 'ok' ? '<span class="fv-pill green">Achieved</span>' : k === 'no' ? '<span class="fv-pill red">Not Achieved</span>' : '<span class="fv-note">—</span>';
+        const kpiPill = (k) => k === 'ok' ? '<span class="fv-pill green">Achieved</span>' : k === 'prog' ? '<span class="fv-pill amber">In progress</span>' : k === 'no' ? '<span class="fv-pill red">Not Achieved</span>' : '<span class="fv-note">—</span>';
         teamHtml = `<div class="fv-card2"><h3>By Team</h3><div style="overflow-x:auto;"><table class="fv-table">
-          <thead><tr><th rowspan="2">Team</th><th colspan="2" class="c">On Site</th><th colspan="2" class="c">Online</th><th colspan="2" class="c">Total</th><th colspan="3" class="c g-red">Issues</th><th rowspan="2" class="c g-olive">KPI<br><span style="font-weight:400;font-size:9px;">(this month)</span></th><th rowspan="2" class="c">Avg Score</th></tr>
+          <thead><tr><th rowspan="2">Team</th><th colspan="2" class="c">On Site</th><th colspan="2" class="c">Online</th><th colspan="2" class="c">Total</th><th colspan="3" class="c g-red">Issues</th><th rowspan="2" class="c g-olive">KPI<br><span style="font-weight:400;font-size:9px;">(${ftMonthLabel(d.km)})</span></th><th rowspan="2" class="c">Avg Score</th></tr>
           <tr><th class="c">Visit count</th><th class="c">Rider count</th><th class="c">Visit count</th><th class="c">Rider count</th><th class="c">Total visit</th><th class="c">Total rider</th><th class="c g-red">Open</th><th class="c g-red">Resolved</th><th class="c g-red">Total</th></tr></thead>
           <tbody>${rows.map(r => `<tr><td><strong>${escapeHtml(r.name)}</strong></td><td class="c">${frac(r.on, r.onT)}</td><td class="c">${r.onR}</td><td class="c">${frac(r.off, r.offT)}</td><td class="c">${r.offR}</td>
             <td class="c">${r.tv}</td><td class="c">${r.tr}</td><td class="c" style="color:#c0392b;font-weight:600;">${r.open}</td><td class="c" style="color:#0f7a56;font-weight:600;">${r.res}</td><td class="c">${r.it}</td>
             <td class="c">${kpiPill(r.kpi)}</td><td class="c" style="font-weight:600;color:${r.avg === null ? '#999' : fvScoreColor(r.avg)};">${r.avg === null ? '—' : fvNum(r.avg) + '%'}</td></tr>`).join('')}</tbody>
           <tfoot><tr><td>Total</td><td class="c">${frac(sum('on'), sum('onT'))}</td><td class="c">${sum('onR')}</td><td class="c">${frac(sum('off'), sum('offT'))}</td><td class="c">${sum('offR')}</td><td class="c">${sum('tv')}</td><td class="c">${sum('tr')}</td><td class="c">${sum('open')}</td><td class="c">${sum('res')}</td><td class="c">${sum('it')}</td><td class="c"></td><td class="c">${fvNum(avg)}%</td></tr></tfoot></table></div>
-          <p class="fv-note" style="margin-top:8px;">A <strong>visit</strong> is one Area Incharge visit on one date — checking several riders in it still counts as <strong>1 visit</strong>; the riders are counted in <em>Rider count</em>. Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status always looks at the <strong>current month</strong>.</p></div>`;
+          <p class="fv-note" style="margin-top:8px;">A <strong>visit</strong> is one Area Incharge visit on one date — checking several riders in it still counts as <strong>1 visit</strong>; the riders are counted in <em>Rider count</em>. Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status judges the <strong>month shown in its heading</strong> (the month you selected, or the current month when your dates span several months); the current month shows <em>In progress</em> until the KPI is met.</p></div>`;
       }
 
       // ----- Issue Category table -----
