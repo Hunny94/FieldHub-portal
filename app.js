@@ -205,12 +205,13 @@ function fhInstallFx(){
 #nav-links .nav-link.active{background:linear-gradient(90deg,rgba(45,212,191,.42),rgba(45,212,191,.12));color:#fff;border-left-color:#2dd4bf;font-weight:600}
 #nav-links .nav-link.active .nav-ico{color:#5eead4}
 #nav-links .nav-group-arrow{display:inline-block;transition:transform .25s ease}
-#nav-links .nav-group-items{overflow:hidden;max-height:3000px;opacity:1;visibility:visible;transition:max-height .32s ease,opacity .25s ease}
-#nav-links .nav-group-items:not(.collapsed){height:auto!important;min-height:0!important}
-/* the menu must always scroll with the mouse wheel / touch, and no item may be cut off */
-#nav-links{overflow:visible!important;height:auto!important;max-height:none!important}
-.sidebar{overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.35) transparent}
-.sidebar::-webkit-scrollbar{width:8px}.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.32);border-radius:8px}
+#nav-links .nav-group-items{overflow:hidden;max-height:4000px;opacity:1;visibility:visible;transition:max-height .32s ease,opacity .25s ease}
+/* THE FIX: the menu is a flex column; its groups used to be squeezed (shrunk) to fit the window, which cut off the last item
+   (Targets & KPI) and stopped the wheel from scrolling. Groups and headers must keep their full height; the menu then scrolls. */
+#nav-links{overflow-y:auto!important;overflow-x:hidden;overscroll-behavior:contain;min-height:0;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.3) transparent}
+#nav-links>*{flex-shrink:0!important}
+#nav-links .nav-group-items:not(.collapsed){flex-shrink:0!important;max-height:4000px}
+#nav-links::-webkit-scrollbar{width:7px}#nav-links::-webkit-scrollbar-thumb{background:rgba(255,255,255,.3);border-radius:6px}
 #nav-links .nav-group-items.collapsed{display:block!important;max-height:0;opacity:0;visibility:hidden;transition:max-height .28s ease,opacity .2s ease,visibility 0s linear .28s}
 @media (prefers-reduced-motion:reduce){
   #main-content>*,.modal-overlay,.modal-overlay .modal,.toast,.fh-skel .b{animation:none!important}
