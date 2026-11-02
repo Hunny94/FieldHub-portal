@@ -205,7 +205,12 @@ function fhInstallFx(){
 #nav-links .nav-link.active{background:linear-gradient(90deg,rgba(45,212,191,.42),rgba(45,212,191,.12));color:#fff;border-left-color:#2dd4bf;font-weight:600}
 #nav-links .nav-link.active .nav-ico{color:#5eead4}
 #nav-links .nav-group-arrow{display:inline-block;transition:transform .25s ease}
-#nav-links .nav-group-items{overflow:hidden;max-height:700px;opacity:1;visibility:visible;transition:max-height .32s ease,opacity .25s ease}
+#nav-links .nav-group-items{overflow:hidden;max-height:3000px;opacity:1;visibility:visible;transition:max-height .32s ease,opacity .25s ease}
+#nav-links .nav-group-items:not(.collapsed){height:auto!important;min-height:0!important}
+/* the menu must always scroll with the mouse wheel / touch, and no item may be cut off */
+#nav-links{overflow:visible!important;height:auto!important;max-height:none!important}
+.sidebar{overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.35) transparent}
+.sidebar::-webkit-scrollbar{width:8px}.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.32);border-radius:8px}
 #nav-links .nav-group-items.collapsed{display:block!important;max-height:0;opacity:0;visibility:hidden;transition:max-height .28s ease,opacity .2s ease,visibility 0s linear .28s}
 @media (prefers-reduced-motion:reduce){
   #main-content>*,.modal-overlay,.modal-overlay .modal,.toast,.fh-skel .b{animation:none!important}
@@ -1532,6 +1537,11 @@ function renderNav(){
     };
   });
   nav.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
+  // pressing Tab must never scroll a menu group inside itself (that is what hid "Targets & KPI")
+  if (!nav._fhFocusFix){ nav._fhFocusFix = true; nav.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('.nav-group-items'); if (g && g.scrollTop) g.scrollTop = 0; }); }
+  nav.querySelectorAll('.nav-group-items').forEach(g => { g.addEventListener('scroll', () => { if (g.scrollTop) g.scrollTop = 0; }); });
+  // bring the open page's menu item into view
+  setTimeout(() => { const a = nav.querySelector('.nav-link.active'), sd = document.querySelector('.sidebar'); if (a && sd){ const ar = a.getBoundingClientRect(), sr = sd.getBoundingClientRect(); if (ar.bottom > sr.bottom - 8) sd.scrollTop += ar.bottom - sr.bottom + 40; else if (ar.top < sr.top + 8) sd.scrollTop -= sr.top - ar.top + 40; } }, 80);
 }
 function renderUserBadge(){
   const nameEl = document.getElementById('ribbon-profile-name');
