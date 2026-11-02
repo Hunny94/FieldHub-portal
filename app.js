@@ -6614,6 +6614,8 @@ async function fvFetchAll(build) {
   return out;
 }
 const FV_VISIT_COLS = 'id, rider_id, rider_name, rider_employee_id, region_id, region_name, sub_region_name, submitted_by, submitted_by_name, visit_date, visit_type, score, ok_count, issue_count, edit_count, created_at';
+// last real day of a 'YYYY-MM' month (so November ends on the 30th, not the 31st)
+const fvMonthEnd = (ym) => { const [y, m] = String(ym).split('-').map(Number); return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`; };
 let FV_HAS_CENTER = true;
 const fvLoadVisits = async (r) => {
   const q = (cols) => fvFetchAll(() => sb.from('fv_visits').select(cols)
@@ -6865,7 +6867,7 @@ async function fvPageReport(host) {
   await fvListShell(host.querySelector('#fv-ov'), {
     filters: { region: !rider, search: !rider },
     load: async (r) => {
-      const cur = { from: fvToday().slice(0, 7) + '-01', to: fvToday().slice(0, 7) + '-31' };
+      const cur = { from: fvToday().slice(0, 7) + '-01', to: fvMonthEnd(fvToday().slice(0, 7)) };
       const [v, i, targets, ai, cmv] = await Promise.all([fvLoadVisits(r), fvLoadIssues(r),
         rider ? [] : fvLoadTargets().catch(() => []), rider ? [] : fvLoadAiMap().catch(() => []), rider ? [] : fvLoadVisits(cur)]);
       return { v, i, targets, ai, cmv, r };
@@ -7277,7 +7279,7 @@ async function fvPageTeams(host) {
   let riders, visits;
   try {
     const cur = fvToday().slice(0, 7);
-    [riders, visits] = await Promise.all([fvLoadRiders(manage), fvLoadVisits({ from: cur + '-01', to: cur + '-31' })]);
+    [riders, visits] = await Promise.all([fvLoadRiders(manage), fvLoadVisits({ from: cur + '-01', to: fvMonthEnd(cur) })]);
   } catch (e) { host.innerHTML = fvError(e); return; }
   FV.openTeams = FV.openTeams || new Set();
   const visited = new Set(visits.map(v => v.rider_id));
