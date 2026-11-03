@@ -160,6 +160,264 @@ function fhProgress(on){
   else { bar.style.transition = 'transform .25s ease'; bar.style.transform = 'scaleX(1)';
     _fhProgTimer = setTimeout(() => { bar.style.transition = 'opacity .3s ease'; bar.style.opacity = '0'; }, 280); }
 }
+// ---------------------------------------------------------
+// UI LAYER (look & feel only): consistent styles, loading bars, toast types, breadcrumb, menu badges,
+// quick search on long lists, frozen first column on phones, dark mode, print. Nothing is renamed or removed.
+// ---------------------------------------------------------
+let _fhUiBusy = false;
+function fhTheme(){ try{ return localStorage.getItem('fh_theme') === 'dark' ? 'dark' : 'light'; }catch(_e){ return 'light'; } }
+function fhApplyTheme(){
+  const on = fhTheme() === 'dark' && document.body.classList.contains('fh-app');
+  document.documentElement.classList.toggle('fh-dark', on);
+  const b = document.getElementById('ribbon-theme');
+  if (b){ b.textContent = fhTheme() === 'dark' ? '☀' : '🌙'; b.title = fhTheme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; b.setAttribute('aria-label', b.title); }
+}
+function fhToggleTheme(){ try{ localStorage.setItem('fh_theme', fhTheme() === 'dark' ? 'light' : 'dark'); }catch(_e){} fhApplyTheme(); }
+function fhSetCrumb(view){
+  const el = document.getElementById('fh-crumb'); if (!el) return;
+  let grp = '';
+  (typeof NAV_GROUPS !== 'undefined' ? NAV_GROUPS : []).forEach(g => { if (g.label && g.items.includes(view)) grp = g.label; });
+  el.innerHTML = view === 'dashboard' ? '<b>Home</b>' : `<b>FieldHub</b>${grp ? `<i>›</i><b>${escapeHtml(grp)}</b>` : ''}`;
+}
+// ---- menu badges (counts only; same numbers the Dashboard shows) ----
+const FH_BADGES = {};
+function fhApplyNavBadges(){
+  document.querySelectorAll('#nav-links .nav-link .nav-badge').forEach(b => b.remove());
+  Object.entries(FH_BADGES).forEach(([view, n]) => {
+    if (!n) return;
+    const a = document.querySelector(`#nav-links .nav-link[data-view="${view}"]`); if (!a) return;
+    a.insertAdjacentHTML('beforeend', `<span class="nav-badge" title="${n} waiting">${n > 99 ? '99+' : n}</span>`);
+  });
+}
+async function fhRefreshNavBadges(){
+  if (!state.user || !state.profile) return;
+  try {
+    const uid = state.user.id, allowed = getAllowedViews();
+    const jobs = [];
+    if (allowed.includes('requests')) jobs.push(sb.from('requests').select('id', { count: 'exact', head: true }).is('deleted_at', null).in('status', ['open', 'in_progress']).then(r => { FH_BADGES.requests = r.count || 0; }));
+    if (allowed.includes('tasks')) jobs.push(sb.from('tasks').select('id', { count: 'exact', head: true }).eq('assigned_to', uid).in('status', ['pending', 'in_progress']).then(r => { FH_BADGES.tasks = r.count || 0; }));
+    await Promise.all(jobs.map(j => j.catch(() => {})));
+    fhApplyNavBadges();
+  } catch (_e) {}
+}
+// ---- generic quick search / status chips for long lists that have no filter of their own ----
+const FH_QF_VIEWS = ['circulars', 'tasks', 'warnings', 'tools', 'expiries', 'activitylog', 'knowledgebase'];
+function fhAddQuickFilter(main){
+  if (!FH_QF_VIEWS.includes(state.view) || main.querySelector('#fh-qf')) return;
+  if (main.querySelector('input[type=search], input[type=text], select')) return;   // the page already has its own filters
+  const cards = [...main.querySelectorAll(':scope > .card')].filter(c => !c.querySelector('table'));
+  const rows = cards.length >= 5 ? cards : [...main.querySelectorAll('table tbody tr')];
+  if (rows.length < 6) return;
+  const host = cards.length >= 5 ? cards[0].parentNode : rows[0].closest('table').parentNode;
+  const texts = new Map(rows.map(r => [r, r.textContent.toLowerCase()]));
+  const badge = (r) => { const b = r.querySelector('.badge'); return b ? b.textContent.trim().toLowerCase() : ''; };
+  const kinds = {}; rows.forEach(r => { const k = badge(r); if (k) kinds[k] = (kinds[k] || 0) + 1; });
+  const bar = document.createElement('div'); bar.id = 'fh-qf'; bar.className = 'fh-qf';
+  bar.innerHTML = `<input type="search" placeholder="Search this list…" autocomplete="off"><span class="cnt"></span>${Object.keys(kinds).length > 1 ? `<div class="chips"><button type="button" data-k="" class="on">All <b>${rows.length}</b></button>${Object.entries(kinds).map(([k, n]) => `<button type="button" data-k="${escapeHtml(k)}">${escapeHtml(k)} <b>${n}</b></button>`).join('')}</div>` : ''}`;
+  host.insertBefore(bar, host.firstChild === bar ? null : (cards.length >= 5 ? cards[0] : rows[0].closest('table')));
+  let kind = '';
+  const run = () => { const q = bar.querySelector('input').value.trim().toLowerCase(); let n = 0;
+    rows.forEach(r => { const ok = (!q || texts.get(r).includes(q)) && (!kind || badge(r) === kind); r.style.display = ok ? '' : 'none'; if (ok) n++; });
+    bar.querySelector('.cnt').textContent = `Showing ${n} of ${rows.length}`; };
+  bar.querySelector('input').oninput = run;
+  bar.querySelectorAll('.chips button').forEach(b => b.onclick = () => { kind = b.dataset.k; bar.querySelectorAll('.chips button').forEach(x => x.classList.toggle('on', x === b)); run(); });
+  run();
+}
+function fhUiPass(){
+  if (_fhUiBusy) return; _fhUiBusy = true;
+  try {
+    const main = document.getElementById('main-content'); if (!main) return;
+    // "Loading…" text becomes soft loading bars
+    document.querySelectorAll('#main-content .mono, #main-content .fv-note, #settings-body .mono, #settings-body > div, .modal .mono').forEach(el => {
+      if (!el.children.length && /^Loading(…|\.\.\.)$/.test(el.textContent.trim()) && !el.dataset.fhL) { el.dataset.fhL = 1; el.innerHTML = '<span class="fh-loadbars"><i></i><i></i><i></i></span>'; }
+    });
+    fhAddQuickFilter(main);
+    // phones: tables that scroll sideways keep their first column visible
+    if (window.innerWidth <= 700) {
+      main.querySelectorAll('table').forEach(t => {
+        if (t.dataset.fhT || t.closest('.ft-wrap, .fh-stk')) return;
+        t.dataset.fhT = 1;
+        const cols = t.querySelectorAll('tr:first-child > *').length;
+        const first = t.querySelector('tr:first-child > *');
+        if (cols < 4 || !first || first.querySelector('input[type=checkbox]') || first.colSpan > 1) return;
+        const par = t.parentNode;
+        let sc = (par && /(auto|scroll)/.test(getComputedStyle(par).overflowX)) ? par : null;
+        if (!sc && par){ const w = document.createElement('div'); w.className = 'fh-tscroll'; par.insertBefore(w, t); w.appendChild(t); sc = w; }
+        t.classList.add('fh-stk');
+      });
+    }
+  } catch (e) { console.warn(e); } finally { _fhUiBusy = false; }
+}
+function fhInstallUI(){
+  if (document.getElementById('fh-ui')) return;
+  const st = document.createElement('style'); st.id = 'fh-ui';
+  st.textContent = `/* =====================================================================
+   FIELDHUB UI LAYER — one consistent look. Nothing here renames or removes anything.
+   ===================================================================== */
+:root{--fh-r:14px;--fh-line:#E3E8F2;--fh-sh:0 1px 2px rgba(30,42,110,.05),0 8px 24px rgba(30,42,110,.06);--fh-sh2:0 2px 4px rgba(30,42,110,.07),0 14px 34px rgba(30,42,110,.12);--fh-navy:linear-gradient(135deg,#1E2A6E,#2C3B8F)}
+body{font-size:14px;line-height:1.45}
+/* ribbon */
+.top-ribbon{background:linear-gradient(90deg,#1E2A6E,#27368F)!important;box-shadow:0 2px 12px rgba(20,30,90,.28)}
+.ribbon-link{border-radius:9px!important;transition:background .2s,transform .15s}.ribbon-link:hover{transform:translateY(-1px)}
+/* title bar + breadcrumb */
+.topbar{padding:12px 32px!important;box-shadow:0 1px 0 var(--fh-line)}
+.fh-titlewrap{display:flex;flex-direction:column;gap:1px;min-width:0}
+.fh-crumb{font-size:11.5px;color:#7a86a8;letter-spacing:.02em;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.fh-crumb b{font-weight:600;color:#5b6b85}.fh-crumb i{font-style:normal;opacity:.55}
+.topbar h1{margin:0!important}
+/* cards */
+.card{border-radius:var(--fh-r);border:1px solid var(--fh-line);box-shadow:var(--fh-sh);transition:box-shadow .2s,transform .2s,border-color .2s}
+.card[onclick],.card[data-open-circular],.card.fh-click{cursor:pointer}
+.card[onclick]:hover,.card[data-open-circular]:hover,.card.fh-click:hover{box-shadow:var(--fh-sh2);transform:translateY(-2px);border-color:#c9d2ec}
+.card h3{color:#1c2b6e;letter-spacing:-.01em}
+/* buttons */
+.btn,.btn-primary,.btn-secondary,.fv-btn{border-radius:9px;font-weight:600;min-height:36px;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.btn.small{min-height:30px;border-radius:8px}
+.btn{background:var(--fh-navy)}.btn.outline{background:transparent;color:#1E2A6E;border:1px solid #cdd5ea}.btn.outline:hover{background:#eef1fb}
+.btn.amber{background:linear-gradient(135deg,#D99A2B,#b87e17)}
+.btn.danger{background:linear-gradient(135deg,#c1502e,#a63d1f)}.btn.success{background:linear-gradient(135deg,#3F7A5E,#2e6a4e)}
+body.fh-app .btn-primary{background:var(--fh-navy);width:100%}
+.btn-primary,.btn-secondary{min-height:40px}
+.btn:disabled,.btn-primary:disabled,.fv-btn:disabled{opacity:.55;cursor:not-allowed}
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;white-space:nowrap}
+.badge:before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.75}
+.badge.cancelled{background:#EEF0F5;color:#6b7390}
+.badge.open,.badge.pending{background:#FDEDEA;color:#C1502E}.badge.in_progress{background:#E6F0F8;color:#2f6a95}
+.badge.resolved,.badge.completed,.badge.active{background:#E6F4EC;color:#2f7a55}.badge.closed,.badge.disabled{background:#EEF0F5;color:#6b7390}
+/* tables */
+table{border-collapse:separate;border-spacing:0}
+th{background:#F6F8FC;color:#5b6b85;font-size:11.5px;white-space:nowrap}
+th:first-child{border-top-left-radius:8px}th:last-child{border-top-right-radius:8px}
+tbody tr{transition:background .15s}tbody tr:hover td{background:#F7F9FE}
+td{border-bottom:1px solid #EEF1F7}
+.fh-tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+/* forms */
+input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),select,textarea{border-radius:9px;transition:border-color .15s,box-shadow .15s,background .15s}
+.form-row input,.form-row select,.form-row textarea,.auth-form input{min-height:38px;border:1px solid #d3dbea!important}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus,#main-content input:focus,#main-content select:focus,#main-content textarea:focus,.modal input:focus,.modal select:focus,.modal textarea:focus{outline:none;border-color:#2C3B8F!important;box-shadow:0 0 0 3px rgba(44,59,143,.14)}
+.form-row label{color:#35406e}
+select:not([multiple]){-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%235b6b85' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;padding-right:30px!important;background-color:#fff}
+input[type=checkbox],input[type=radio]{accent-color:#1E2A6E}
+/* modals */
+.modal-overlay{backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);background:rgba(15,22,70,.45)!important}
+.modal{border-radius:18px!important;box-shadow:0 24px 70px rgba(10,15,50,.35)!important;padding:26px!important}
+.modal h2{color:#1c2b6e;font-size:19px;margin-bottom:12px}
+.modal-close{width:32px;height:32px;border-radius:50%!important;line-height:1;transition:background .15s}.modal-close:hover{background:#eef1fb}
+/* toasts */
+.toast{border-radius:12px!important;padding:12px 14px!important;border-left:4px solid #5eead4;box-shadow:0 12px 34px rgba(10,15,50,.35)!important;gap:10px!important}
+.toast.ok{border-left-color:#4ade80}.toast.err{border-left-color:#f87171}
+.toast .ti{font-size:15px;line-height:1}
+/* empty + loading */
+.empty-state{padding:44px 20px!important}
+.empty-state .fh-eico{width:64px;height:64px;border-radius:50%;background:#eef1fb;color:#2C3B8F;display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+.empty-state p{max-width:420px;margin:0 auto 8px}
+.fh-loadbars{display:flex;flex-direction:column;gap:9px;padding:6px 0;width:100%}
+.fh-loadbars i{display:block;height:14px;border-radius:8px;background:linear-gradient(90deg,#e8ebf4 30%,#f5f7fc 50%,#e8ebf4 70%);background-size:300% 100%;animation:fhShim 1.3s ease-in-out infinite}
+.fh-loadbars i:nth-child(2){width:82%}.fh-loadbars i:nth-child(3){width:64%}
+/* ----- dashboard ----- */
+.fh-hero{position:relative;overflow:hidden;border-radius:var(--fh-r);padding:22px 24px;margin-bottom:16px;color:#fff;background:radial-gradient(900px 260px at 100% 0,rgba(45,212,191,.22),transparent 60%),linear-gradient(120deg,#1E2A6E,#2C3B8F);box-shadow:var(--fh-sh2);display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.fh-hero .hi{font-size:12.5px;color:#b9c6f5;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
+.fh-hero h2{margin:3px 0 4px;font-size:23px;color:#fff}.fh-hero p{margin:0;color:#d5def9;font-size:13.5px;max-width:560px}
+.fh-hero .dt{font-size:12.5px;color:#d5def9;text-align:right}.fh-hero .dt b{display:block;font-size:15px;color:#fff}
+.stat-card{position:relative;overflow:hidden;padding:16px 18px!important}
+.stat-card:before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--amber)}
+.stat-card.clay:before{background:var(--clay)}.stat-card.sky:before{background:var(--sky)}.stat-card.moss:before{background:var(--moss)}
+.stat-card .sico{position:absolute;right:14px;top:12px;width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#f1f4fb;color:#2C3B8F}
+.stat-card .go{font-size:11.5px;color:#7a86a8;margin-top:8px;display:block}
+.stat-card.attn .stat-number:after{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:8px;background:var(--clay);vertical-align:middle;animation:fhDot 1.8s ease-in-out infinite}
+@keyframes fhDot{0%,100%{box-shadow:0 0 0 0 rgba(193,80,46,.5)}50%{box-shadow:0 0 0 7px rgba(193,80,46,0)}}
+.fh-quick{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:6px}
+.fh-quick button{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--fh-line);background:#fff;border-radius:12px;font:inherit;font-size:13px;font-weight:600;color:#1c2b6e;cursor:pointer;text-align:left;transition:transform .15s,box-shadow .2s,border-color .2s}
+.fh-quick button:hover{transform:translateY(-2px);box-shadow:var(--fh-sh2);border-color:#c9d2ec}
+.fh-quick .q-ic{width:30px;height:30px;border-radius:9px;background:#eef1fb;color:#2C3B8F;display:flex;align-items:center;justify-content:center;flex:0 0 30px}
+.fh-feed{display:flex;flex-direction:column}.fh-feed a{display:flex;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid #EEF1F7;color:#1c2b6e;text-decoration:none;font-size:13.5px;cursor:pointer}
+.fh-feed a:last-child{border-bottom:0}.fh-feed a:hover{color:#2C3B8F}.fh-feed small{color:#7a86a8;white-space:nowrap}
+.fh-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.fh-cols{grid-template-columns:1fr}}
+.grid>.card{margin-bottom:0}
+@media(max-width:640px){.fh-stagger.grid-4{grid-template-columns:1fr 1fr!important;gap:10px}.fh-stagger .stat-card{padding:13px 14px!important}.fh-stagger .stat-card .stat-number{font-size:26px}.fh-stagger .stat-card .sico{display:none}.fh-stagger .stat-card .stat-label{font-size:12px}}
+/* menu badges */
+#nav-links .nav-link .nav-badge{margin-left:auto;background:var(--clay);color:#fff;font-size:10.5px;min-width:18px;height:18px;line-height:18px;padding:0 6px;border-radius:10px;font-weight:700;text-align:center}
+/* generic list tools */
+.fh-qf{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#fff;border:1px solid var(--fh-line);border-radius:12px;padding:10px;margin-bottom:12px;box-shadow:var(--fh-sh)}
+.fh-qf input{flex:1;min-width:180px;height:36px;padding:0 12px;border:1px solid #d3dbea;border-radius:9px;font:inherit;font-size:13.5px}
+.fh-qf .chips{display:flex;gap:6px;flex-wrap:wrap;width:100%}
+.fh-qf .chips button{border:1px solid #dfe3ee;background:#fff;border-radius:999px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;color:#46506e;cursor:pointer}
+.fh-qf .chips button b{background:#eef0f9;border-radius:999px;padding:1px 7px;margin-left:4px;font-size:11px;color:#1E2A6E}
+.fh-qf .chips button.on{background:#1E2A6E;border-color:#1E2A6E;color:#fff}.fh-qf .chips button.on b{background:rgba(255,255,255,.22);color:#fff}
+.fh-qf .cnt{font-size:12px;color:#7a86a8;margin-left:auto}
+/* ----- phones ----- */
+@media(max-width:700px){
+  .topbar{padding:10px 14px!important}.fh-crumb{display:none}
+  .main-content{padding:16px 14px!important}
+  .card{padding:15px!important}
+  .btn,.btn-primary,.btn-secondary,.fv-btn{min-height:42px}.btn.small{min-height:36px}
+  input:not([type=checkbox]):not([type=radio]),select,textarea{font-size:15px}
+  .two-col{grid-template-columns:1fr!important}
+  .fh-hero{padding:18px}.fh-hero h2{font-size:20px}.fh-hero .dt{text-align:left}
+  .modal-overlay{align-items:flex-end!important;padding:0!important}
+  .modal{width:100%!important;max-width:100%!important;max-height:92vh!important;border-radius:20px 20px 0 0!important;animation:fhSheet .28s cubic-bezier(.2,.8,.2,1)!important}
+  .fh-stk td:first-child,.fh-stk th:first-child{position:sticky;left:0;z-index:2;background:#fff;box-shadow:1px 0 0 #e3e8f2;width:112px;min-width:112px;max-width:112px;white-space:normal;overflow-wrap:break-word;font-size:12.5px;line-height:1.3}
+  .fh-stk th:first-child{background:#F6F8FC;z-index:3}
+  .toast{left:12px;right:12px;bottom:14px!important;max-width:none!important}
+}
+@keyframes fhSheet{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+/* ----- gentle motion ----- */
+.fh-stagger>*{animation:fhPageIn .4s cubic-bezier(.2,.7,.2,1) backwards}
+.fh-stagger>*:nth-child(1){animation-delay:.00s}.fh-stagger>*:nth-child(2){animation-delay:.05s}.fh-stagger>*:nth-child(3){animation-delay:.10s}.fh-stagger>*:nth-child(4){animation-delay:.15s}.fh-stagger>*:nth-child(5){animation-delay:.20s}.fh-stagger>*:nth-child(6){animation-delay:.25s}
+@media(prefers-reduced-motion:reduce){.fh-stagger>*,.stat-card.attn .stat-number:after,.fh-loadbars i,.modal{animation:none!important}.card,.fh-quick button{transition:none!important}}
+/* ----- dark mode: the page is inverted, then the parts that must keep their own colours are inverted back (exact undo) ----- */
+html.fh-dark{filter:invert(1) hue-rotate(180deg);background:#fff}
+html.fh-dark body{background:#c9cfe2}
+html.fh-dark img,html.fh-dark video,html.fh-dark canvas,html.fh-dark .top-ribbon,html.fh-dark .sidebar,html.fh-dark .toast,html.fh-dark .modal-overlay,html.fh-dark .modal,html.fh-dark #fh-upd-screen,html.fh-dark .fh-hero,html.fh-dark #fh-progress{filter:invert(1) hue-rotate(180deg)}
+html.fh-dark .top-ribbon img,html.fh-dark .sidebar img,html.fh-dark .fh-hero img{filter:none}
+html.fh-dark .modal-overlay .modal{filter:invert(1) hue-rotate(180deg)}
+html.fh-dark .modal-overlay{background:rgba(15,22,70,.45)!important}
+html.fh-dark .main-area{background:#c9cfe2}
+html.fh-dark .topbar{background:#eceffa}
+html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-card2,html.fh-dark .fv-panel,html.fh-dark .modal,html.fh-dark .fh-quick button{background:#eceffa}
+/* ----- print / PDF ----- */
+@media print{
+  .top-ribbon,.sidebar,#fh-sb-zone,#fh-menu-btn,#fh-backdrop,#topbar-actions,.toast,#fh-progress,.fh-qf,.fh-quick,.fh-crumb,#ribbon-reload,#ribbon-theme,#ribbon-print,.modal-close{display:none!important}
+  html.fh-dark{filter:none}
+  html,body,.app-shell,.app-body,.main-area,#app-shell{height:auto!important;overflow:visible!important;display:block!important;background:#fff!important}
+  .main-area{margin:0!important;width:auto!important}.topbar{position:static!important;box-shadow:none!important;border:0!important;padding:0 0 8px!important}
+  .main-content{padding:0!important;max-width:none!important;animation:none!important}.main-content>*{animation:none!important}
+  .card,.fv-card2,.fv-panel,.ft-card{box-shadow:none!important;break-inside:avoid;border:1px solid #cfd6e6!important}
+  table{font-size:11px}tr,td,th{break-inside:avoid}
+  .btn,.fv-btn,.btn-primary,button:not(.fv-keep){display:none!important}
+  .fh-tscroll,.ft-wrap,[style*="overflow"]{overflow:visible!important;max-height:none!important}
+  a{color:inherit;text-decoration:none}
+  @page{margin:12mm}
+}
+`;
+  document.head.appendChild(st);
+  // title block with breadcrumb
+  const h1 = document.getElementById('view-title');
+  if (h1 && !document.getElementById('fh-crumb')){
+    const w = document.createElement('div'); w.className = 'fh-titlewrap';
+    const c = document.createElement('div'); c.id = 'fh-crumb'; c.className = 'fh-crumb';
+    h1.parentNode.insertBefore(w, h1); w.appendChild(c); w.appendChild(h1);
+  }
+  // theme + print buttons next to reload
+  const rb = document.getElementById('ribbon-reload'), ref = rb || document.getElementById('ribbon-profile-btn');
+  if (ref && !document.getElementById('ribbon-theme')){
+    const tb = document.createElement('button'); tb.id = 'ribbon-theme'; tb.type = 'button'; tb.className = ref.className; tb.onclick = fhToggleTheme;
+    ref.parentNode.insertBefore(tb, ref);
+    if (!fhIsNativeApp() && window.innerWidth > 700){
+      const pb = document.createElement('button'); pb.id = 'ribbon-print'; pb.type = 'button'; pb.className = ref.className; pb.textContent = '🖨'; pb.title = 'Print or save this page as PDF'; pb.setAttribute('aria-label', pb.title);
+      pb.onclick = () => window.print(); ref.parentNode.insertBefore(pb, tb);
+    }
+  }
+  fhApplyTheme();
+  let t = null;
+  new MutationObserver(() => { clearTimeout(t); t = setTimeout(fhUiPass, 140); }).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(fhUiPass, 200); });
+  setInterval(() => { if (!document.hidden) fhRefreshNavBadges(); }, 120000);
+  fhRefreshNavBadges(); fhSetCrumb(state.view || 'dashboard');
+}
+
 function fhInstallFx(){
   if (document.getElementById('fh-fx')) return;
   try { fhInstallSort(); fhInstallSelectSearch(); fhInstallPolish(); } catch (e) { console.warn(e); }
@@ -233,6 +491,7 @@ function fhInstallFx(){
   }, { passive: true });
   fhInstallMobile();
   fhInstallSidebar();
+  try { fhInstallUI(); } catch (e) { console.warn(e); }
   window.addEventListener('offline', () => { if (typeof toast === 'function') toast('You are offline. Changes cannot be saved until the connection returns.'); });
 }
 
@@ -1538,6 +1797,7 @@ function renderNav(){
     };
   });
   nav.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
+  try { fhApplyNavBadges(); fhRefreshNavBadges(); } catch (_e) {}
   // pressing Tab must never scroll a menu group inside itself (that is what hid "Targets & KPI")
   if (!nav._fhFocusFix){ nav._fhFocusFix = true; nav.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('.nav-group-items'); if (g && g.scrollTop) g.scrollTop = 0; }); }
   nav.querySelectorAll('.nav-group-items').forEach(g => { g.addEventListener('scroll', () => { if (g.scrollTop) g.scrollTop = 0; }); });
@@ -1570,6 +1830,7 @@ async function navigateTo(view){
   const mc0 = document.getElementById('main-content'); if (mc0) mc0.classList.remove('ft-full');
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
+  try { fhSetCrumb(view); } catch (_e) {}
   document.getElementById('topbar-actions').innerHTML = '';
   const main = document.getElementById('main-content');
   main.innerHTML = fhSkeleton();
@@ -1622,6 +1883,14 @@ function hasPermission(key){
   return !e || e > Date.now();
 }
 
+function fhGreeting(){ const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; }
+// shortcuts to pages this person can already open (same names as the menu)
+function fhQuickActions(){
+  const allowed = getAllowedViews();
+  const pick = ['requests', 'tasks', 'circulars', 'fv_add', 'fv_report', 'tools', 'expiries', 'compliance', 'warnings', 'ft_trend'].filter(v => allowed.includes(v)).slice(0, 6);
+  if (!pick.length) return '<span style="color:var(--muted);font-size:13.5px">Use the menu to open a page.</span>';
+  return pick.map(v => `<button type="button" onclick="navigateTo('${v}')"><span class="q-ic">${navIconHtml(v)}</span>${escapeHtml(NAV_LABEL[v] || v)}</button>`).join('');
+}
 // ---------------------------------------------------------
 // DASHBOARD
 // ---------------------------------------------------------
@@ -1629,14 +1898,15 @@ async function renderDashboard(){
   const main = document.getElementById('main-content');
   const uid = state.user.id;
 
-  const [openReq, myTasks, circularsRes, expiring, pendingApprovals, notices, banner] = await Promise.all([
+  const [openReq, myTasks, circularsRes, expiring, pendingApprovals, notices, banner, latestCirc] = await Promise.all([
     sb.from('requests').select('id', {count:'exact', head:true}).is('deleted_at', null).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
     sb.from('circulars').select('id').is('deleted_at', null),
     sb.from('expiry_items').select('id, group_id, expiry_date'),
     isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
     sb.from('home_notices').select('*').eq('active', true).or(`expires_at.is.null,expires_at.gte.${new Date().toISOString().slice(0,10)}`).order('created_at', {ascending:false}),
-    sb.from('home_banner').select('*').eq('id', 1).maybeSingle()
+    sb.from('home_banner').select('*').eq('id', 1).maybeSingle(),
+    sb.from('circulars').select('id, title, created_at').is('deleted_at', null).order('created_at', {ascending:false}).limit(4)
   ]);
 
   const bannerVisible = banner.data?.image_url && (!banner.data.expires_at || new Date(banner.data.expires_at) > new Date());
@@ -1660,24 +1930,49 @@ async function renderDashboard(){
       ${banner.data.title ? `<div style="padding:8px 12px; font-weight:600;">${escapeHtml(banner.data.title)}</div>` : ''}
     </div>` : ''}
     ${(notices.data||[]).map(n => `<div class="card" style="border-left:4px solid var(--amber); background:#FFF8EC;"><strong>📌 ${escapeHtml(n.message)}</strong></div>`).join('')}
-    <div class="grid grid-4">
-      <div class="card stat-card clay" style="cursor:pointer;" onclick="navigateTo('requests')"><div class="stat-number">${openReq.count ?? 0}</div><div class="stat-label">Open requests</div></div>
-      <div class="card stat-card sky" style="cursor:pointer;" onclick="navigateTo('tasks')"><div class="stat-number">${myTasks.count ?? 0}</div><div class="stat-label">My pending tasks</div></div>
-      <div class="card stat-card amber" style="cursor:pointer;" onclick="navigateTo('circulars')"><div class="stat-number">${unacked}</div><div class="stat-label">Unread circulars</div></div>
-      <div class="card stat-card amber" style="cursor:pointer;" onclick="navigateTo('expiries')"><div class="stat-number">${expiringSoon}</div><div class="stat-label">Expiring within 30 days</div></div>
+    <div class="fh-hero">
+      <div>
+        <div class="hi">${fhGreeting()}, ${escapeHtml((state.profile.full_name || '').split(' ')[0])}</div>
+        <h2>Welcome, ${escapeHtml(state.profile.full_name)}</h2>
+        <p>Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.</p>
+      </div>
+      <div class="dt"><b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
+    </div>
+    <div class="grid grid-4 fh-stagger">
+      ${[['clay','requests',openReq.count ?? 0,'Open requests','M9 12h6M9 16h6M9 8h6M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z'],
+         ['sky','tasks',myTasks.count ?? 0,'My pending tasks','M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'],
+         ['amber','circulars',unacked,'Unread circulars','M4 4h16v12H5.2L4 17.2zM8 9h8M8 12h5'],
+         ['amber','expiries',expiringSoon,'Expiring within 30 days','M12 8v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z']].map(([c,v,n,l,ic]) => `
+      <div class="card stat-card ${c} ${n > 0 && c !== 'sky' ? 'attn' : ''}" style="cursor:pointer;" onclick="navigateTo('${v}')">
+        <span class="sico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="${ic}"/></svg></span>
+        <div class="stat-number" data-count="${n}">${n}</div><div class="stat-label">${l}</div><span class="go">View ›</span>
+      </div>`).join('')}
     </div>
     ${isAdmin() ? `
-    <div class="card">
-      <h3>Pending approvals</h3>
-      <p style="color:var(--muted); font-size:13.5px;">${pendingApprovals.count ?? 0} account(s) waiting for role/region assignment.</p>
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div>
+        <h3>Pending approvals</h3>
+        <p style="color:var(--muted); font-size:13.5px;margin:0;">${pendingApprovals.count ?? 0} account(s) waiting for role/region assignment.</p>
+      </div>
       <button class="btn small" onclick="navigateTo('team')">Go to Team</button>
     </div>` : ''}
-    <div class="card">
-      <h3>Welcome, ${escapeHtml(state.profile.full_name)}</h3>
-      <p style="color:var(--muted); font-size:13.5px;">Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.</p>
+    <div class="fh-cols">
+      <div class="card">
+        <h3>Quick actions</h3>
+        <div class="fh-quick">${fhQuickActions()}</div>
+      </div>
+      <div class="card">
+        <h3>Latest circulars</h3>
+        ${(latestCirc.data || []).length ? `<div class="fh-feed">${latestCirc.data.map(c => `<a onclick="navigateTo('circulars')"><span>${escapeHtml(c.title)}</span><small>${formatDate(c.created_at)}</small></a>`).join('')}</div>` : '<p style="color:var(--muted); font-size:13.5px;margin:0;">No circulars yet.</p>'}
+      </div>
     </div>
   `;
 
+  // numbers count up gently
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) main.querySelectorAll('[data-count]').forEach(el => {
+    const to = Number(el.dataset.count) || 0; if (!to) return;
+    const t0 = performance.now(); const step = (t) => { const k = Math.min(1, (t - t0) / 700); el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); }; requestAnimationFrame(step);
+  });
   if (bannerVisible){
     document.getElementById('dashboard-banner-click').onclick = () => {
       openModal(`
@@ -10107,14 +10402,17 @@ window.addEventListener('keydown', (e) => {
 function toast(msg){
   const t = document.createElement('div');
   t.className = 'toast';
-  t.innerHTML = `<span>${escapeHtml(msg)}</span><button class="toast-close" aria-label="Dismiss">✕</button>`;
+  const m = String(msg || '');
+  const kind = /could not|can.?t |cannot|failed|error|denied|blocked|invalid|not allowed|unable|wrong|required|please run|must /i.test(m) ? 'err' : /saved|updated|added|created|submitted|deleted|enabled|disabled|applied|recorded|acknowledged|done|restored|sent|set to|assigned|issued|marked|cancelled|resolved|published|uploaded|copied|filled/i.test(m) ? 'ok' : '';
+  if (kind) t.classList.add(kind);
+  t.innerHTML = `<span class="ti">${kind === 'err' ? '⚠️' : kind === 'ok' ? '✅' : 'ℹ️'}</span><span style="flex:1">${escapeHtml(m)}</span><button class="toast-close" aria-label="Dismiss">✕</button>`;
   document.body.appendChild(t);
   const timer = setTimeout(()=>t.remove(), 12000);
   t.querySelector('.toast-close').onclick = () => { clearTimeout(timer); t.remove(); };
 }
 function emptyState(msg){
   return `<div class="empty-state">
-    <svg viewBox="0 0 200 40" class="pulse-svg"><polyline points="0,20 40,20 52,4 64,36 76,20 90,20 100,8 110,32 120,20 200,20"/></svg>
+    <div class="fh-eico"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7l3-4h12l3 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7h18"/><path d="M9 12h6"/></svg></div>
     <p>${escapeHtml(msg)}</p>
   </div>`;
 }
