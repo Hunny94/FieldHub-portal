@@ -294,7 +294,8 @@ td{border-bottom:1px solid #EEF1F7}
 .fh-tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
 /* forms */
 input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),select,textarea{border-radius:9px;transition:border-color .15s,box-shadow .15s,background .15s}
-.form-row input,.form-row select,.form-row textarea,.auth-form input{min-height:38px;border:1px solid #d3dbea!important}
+.form-row input:not([type=checkbox]):not([type=radio]),.form-row select,.form-row textarea,.auth-form input{min-height:38px;border:1px solid #d3dbea!important}
+.form-row input[type=checkbox],.form-row input[type=radio]{width:auto!important;min-height:0!important;flex:0 0 auto}
 .form-row input:focus,.form-row select:focus,.form-row textarea:focus,#main-content input:focus,#main-content select:focus,#main-content textarea:focus,.modal input:focus,.modal select:focus,.modal textarea:focus{outline:none;border-color:#2C3B8F!important;box-shadow:0 0 0 3px rgba(44,59,143,.14)}
 .form-row label{color:#35406e}
 select:not([multiple]){-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%235b6b85' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;padding-right:30px!important;background-color:#fff}
@@ -1047,10 +1048,11 @@ async function fhAppUpdateGate(sys){
     let seen = false; try { seen = sessionStorage.getItem('fh_upd_seen') === String(latest); } catch (_e) {}
     if (!seen){
       const b = document.createElement('div'); b.id = 'fh-upd-bar';
-      b.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9990;background:#1E2A6E;color:#fff;border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.3)';
-      b.innerHTML = `<span style="flex:1">A new version of the app is available.</span><a href="${escapeHtml(sys.app_apk_url)}" style="background:#fff;color:#1E2A6E;border-radius:8px;padding:6px 12px;font-weight:700;text-decoration:none">Update</a><button style="background:none;border:0;color:#fff;font-size:18px">✕</button>`;
+      b.style.cssText = 'position:relative;z-index:60;background:#1E2A6E;color:#fff;padding:9px 12px;display:flex;gap:10px;align-items:center;font-size:13px;border-bottom:1px solid rgba(255,255,255,.2)';
+      b.innerHTML = `<span style="flex:1">A new version of the app is available.</span><a href="${escapeHtml(sys.app_apk_url)}" style="background:#fff;color:#1E2A6E;border-radius:8px;padding:7px 14px;font-weight:700;text-decoration:none">Update</a><button aria-label="Close" style="background:none;border:0;color:#fff;font-size:20px;padding:4px 8px">✕</button>`;
       b.querySelector('button').onclick = () => { try { sessionStorage.setItem('fh_upd_seen', String(latest)); } catch (_e) {} b.remove(); };
-      document.body.appendChild(b);
+      const tb0 = document.querySelector('.topbar');
+      if (tb0 && tb0.parentNode) tb0.parentNode.insertBefore(b, tb0.nextSibling); else document.body.insertBefore(b, document.body.firstChild);
     }
   }
   return false;
@@ -1221,10 +1223,10 @@ async function showPendingRemindersBanner(){
   const cutoff = new Date(); cutoff.setDate(cutoff.getDate()+30);
   const cutoffStr = cutoff.toISOString().slice(0,10);
   const [{ data: expiryRows }, { count: toolCount }] = await Promise.all([
-    sb.from('expiry_items').select('id, group_id').lte('expiry_date', cutoffStr),
+    sb.from('expiry_items').select('*').is('deleted_at', null).lte('expiry_date', cutoffStr),
     sb.from('tool_issuances').select('id', {count:'exact', head:true}).lte('next_due_date', cutoffStr)
   ]);
-  const expCount = new Set((expiryRows||[]).map(i => i.group_id || i.id)).size;
+  const expCount = new Set((expiryRows||[]).filter(i => i.status !== 'closed').map(i => i.group_id || i.id)).size;
   if (expCount) toast(`⚠️ ${expCount} expiry item(s) due/overdue — check Expiry Tracker`);
   if (toolCount) toast(`⚠️ ${toolCount} tool(s) due/overdue for reissue — check Tool Issuance`);
 }
@@ -1262,6 +1264,10 @@ async function loadAndShowNotifications(){
     (taskUpdates||[]).forEach(u => items.push({ id:'task-'+u.id, type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
+  try {
+    const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:'expiries' }));
+  } catch (_e) {}
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
     const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
     (myWarnings||[]).forEach(w => items.push({ id:'warn-'+w.id, type:'Warning', title:`Warning issued by ${w.recorder?.full_name||'—'}`, body: w.action_type, created_at:w.created_at, read:false }));
@@ -1876,6 +1882,11 @@ function isSuperAdmin(){ return state.profile.role === 'super_admin'; }
 // Super Admin always has every permission. Everyone else only has a
 // permission if it was explicitly granted via Settings > Permissions
 // (custom_permissions table, loaded into state.myPermissions at login).
+function fhIsWild(){
+  if (!state.myPermissions.has('fv_geo_wildcard')) return false;
+  const e = state.myPermExp && state.myPermExp['fv_geo_wildcard'];
+  return !e || e > Date.now();
+}
 function hasPermission(key){
   if (isSuperAdmin()) return true;
   if (!state.myPermissions.has(key)) return false;
@@ -1902,7 +1913,7 @@ async function renderDashboard(){
     sb.from('requests').select('id', {count:'exact', head:true}).is('deleted_at', null).in('status', ['open','in_progress']),
     sb.from('tasks').select('id', {count:'exact', head:true}).eq('assigned_to', uid).in('status', ['pending','in_progress']),
     sb.from('circulars').select('id').is('deleted_at', null),
-    sb.from('expiry_items').select('id, group_id, expiry_date'),
+    sb.from('expiry_items').select('*').is('deleted_at', null),
     isAdmin() ? sb.from('profiles').select('id', {count:'exact', head:true}).eq('status','pending') : Promise.resolve({count:0}),
     sb.from('home_notices').select('*').eq('active', true).or(`expires_at.is.null,expires_at.gte.${new Date().toISOString().slice(0,10)}`).order('created_at', {ascending:false}),
     sb.from('home_banner').select('*').eq('id', 1).maybeSingle(),
@@ -1921,7 +1932,7 @@ async function renderDashboard(){
 
   const today = new Date();
   const soonCutoff = new Date(); soonCutoff.setDate(today.getDate()+30);
-  const expiringDueRows = (expiring.data||[]).filter(i => new Date(i.expiry_date) <= soonCutoff);
+  const expiringDueRows = (expiring.data||[]).filter(i => i.status !== 'closed' && new Date(i.expiry_date) <= soonCutoff);
   const expiringSoon = new Set(expiringDueRows.map(i => i.group_id || i.id)).size;
 
   main.innerHTML = `
@@ -2911,6 +2922,7 @@ function openNewRequestModal(){
 // ---------------------------------------------------------
 // EXPIRY TRACKER
 // ---------------------------------------------------------
+let FH_EXPF = 'open';
 async function renderExpiries(){
   const main = document.getElementById('main-content');
   if (isStaff()){
@@ -2930,20 +2942,28 @@ async function renderExpiries(){
   });
   const groupedItems = Array.from(groups.values()).map(rows => {
     const first = rows[0];
-    return { rows, first, expiry_date: first.expiry_date, item_type: first.item_type, item_label: first.item_label, added_by: first.added_by };
+    const closed = rows.every(r => r.status === 'closed');
+    const remindCount = Math.max(0, ...rows.map(r => Number(r.remind_count) || 0));
+    const lastRem = rows.map(r => r.last_reminded_at).filter(Boolean).sort().pop() || null;
+    return { rows, first, closed, remindCount, lastRem, expiry_date: first.expiry_date, item_type: first.item_type, item_label: first.item_label, added_by: first.added_by };
   }).sort((a,b) => new Date(a.expiry_date) - new Date(b.expiry_date));
+  const nOpen = groupedItems.filter(g => !g.closed).length, nClosed = groupedItems.length - nOpen;
+  const shownGroups = groupedItems.filter(g => FH_EXPF === 'all' || (FH_EXPF === 'closed' ? g.closed : !g.closed));
 
   const canRemind = isAdmin() || state.profile.role === 'inventory_coordinator';
   const canEdit = isAdmin() || hasPermission('expiry_edit');
   const canDelete = isAdmin() || hasPermission('expiry_delete');
   const showActionsCol = canRemind || canEdit || canDelete;
+  const canNotify = canRemind || canEdit;
   const today = new Date();
-  main.innerHTML = `<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
-    ${groupedItems.map(g=>{
+  main.innerHTML = `<div class="rq-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="exp-chips">${[['open','Open',nOpen],['closed','Closed',nClosed],['all','All',groupedItems.length]].map(([k,l,n]) => `<button type="button" class="btn small ${FH_EXPF===k?'':'outline'}" data-expf="${k}">${l} (${n})</button>`).join('')}</div>
+  ${shownGroups.length ? '' : '<p class="hint">Nothing in this list.</p>'}<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
+    ${shownGroups.map(g=>{
       const d = new Date(g.expiry_date);
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
       let badge = 'badge active', label='OK';
-      if (daysLeft < 0){ badge='badge open'; label='Overdue'; }
+      if (g.closed){ badge='badge closed'; label='Closed'; }
+      else if (daysLeft < 0){ badge='badge open'; label='Overdue'; }
       else if (daysLeft <= 30){ badge='badge pending'; label=`Due in ${daysLeft}d`; }
       let appliesTo;
       if (g.rows.length === 1 && g.first.profiles?.full_name){
@@ -2959,8 +2979,10 @@ async function renderExpiries(){
         <td>${escapeHtml(g.item_type)}${g.item_label?' — '+escapeHtml(g.item_label):''}</td>
         <td>${escapeHtml(g.added_by?.full_name||'—')}</td>
         <td class="mono">${g.expiry_date}</td>
-        <td><span class="${badge}">${label}</span></td>
+        <td><span class="${badge}">${label}</span>${g.closed && g.first.closed_at ? `<div class="hint" style="margin:3px 0 0">Closed ${String(g.first.closed_at).slice(0,10)}</div>` : (g.remindCount ? `<div class="hint" style="margin:3px 0 0">Reminded ${g.remindCount}× · last ${String(g.lastRem||'').slice(0,10)}</div>` : '')}</td>
         ${showActionsCol ? `<td style="white-space:nowrap;">
+          ${(canNotify && !g.closed) ? `<button class="btn small" data-exp-remind="${g.first.group_id || g.first.id}">🔔 Remind riders</button> <button class="btn small outline" data-exp-close="${g.first.group_id || g.first.id}">✔ Mark closed</button>` : ''}
+          ${(canNotify && g.closed) ? `<button class="btn small outline" data-exp-reopen="${g.first.group_id || g.first.id}">Re-open</button>` : ''}
           ${(canRemind && daysLeft<=30 && remindPhone) ? `<button class="btn small outline" data-remind="${g.first.id}" data-remind-phone="${remindPhone}" data-remind-item="${escapeHtml(g.item_type)}">Send Reminder</button>` : ''}
           ${canEdit ? `<button class="btn small outline" data-edit-expiry-group="${g.first.group_id || g.first.id}">Edit</button>` : ''}
           ${canDelete ? `<button class="btn small danger" data-delete-expiry-group="${g.first.group_id || g.first.id}">Delete</button>` : ''}
@@ -2969,6 +2991,39 @@ async function renderExpiries(){
     }).join('')}
   </tbody></table>`;
 
+  main.querySelectorAll('[data-expf]').forEach(b => b.onclick = () => { FH_EXPF = b.dataset.expf; renderExpiries(); });
+  const expNotify = async (key, kind, note) => {
+    const { data, error } = await sb.rpc('fh_expiry_notify', { p_group: String(key), p_kind: kind, p_note: note || null });
+    if (error) { toast(/fh_expiry_notify|schema cache/i.test(error.message) ? 'Please run migration_47.sql in Supabase first, then try again.' : 'Could not send: ' + error.message); return null; }
+    return Number(data) || 0;
+  };
+  main.querySelectorAll('[data-exp-remind]').forEach(btn => btn.onclick = async () => {
+    const g = groupedItems.find(x => String(x.first.group_id || x.first.id) === btn.dataset.expRemind);
+    const label = g.item_type + (g.item_label ? ' — ' + g.item_label : '');
+    if (!confirm(`Send a reminder to every rider this item applies to?\n\n${label} (expiry ${g.expiry_date})\n\nThey will get a notification asking them to hand over the vials.`)) return;
+    btn.disabled = true; const n = await expNotify(btn.dataset.expRemind, 'reminder'); btn.disabled = false;
+    if (n === null) return;
+    toast(n ? `Reminder sent to ${n} rider${n === 1 ? '' : 's'}` : 'No riders were found for this item (check its region / role).'); renderExpiries();
+  });
+  main.querySelectorAll('[data-exp-close]').forEach(btn => btn.onclick = () => {
+    const g = groupedItems.find(x => String(x.first.group_id || x.first.id) === btn.dataset.expClose);
+    const label = g.item_type + (g.item_label ? ' — ' + g.item_label : '');
+    openModal(`<h2>Mark expiry as closed</h2>
+      <p class="hint"><b>${escapeHtml(label)}</b> (expiry ${escapeHtml(g.expiry_date)})</p>
+      <p>Use this only when <b>all vials have been collected from all riders</b>. Every rider this item applies to will be told that it is now closed, and it moves to the “Closed” list (you can re-open it later).</p>
+      <div class="form-row"><label>Note to riders (optional)</label><input id="exp-cnote" maxlength="200" placeholder="e.g. Thank you, all vials received on 3 Nov"></div>
+      <button class="btn-primary" id="exp-cgo">Yes, all collected — close it</button>`);
+    document.getElementById('exp-cgo').onclick = async () => {
+      const b = document.getElementById('exp-cgo'); b.disabled = true;
+      const n = await expNotify(btn.dataset.expClose, 'closed', document.getElementById('exp-cnote').value.trim());
+      if (n === null) { b.disabled = false; return; }
+      closeModal(); toast(`Closed — ${n} rider${n === 1 ? '' : 's'} informed`); renderExpiries();
+    };
+  });
+  main.querySelectorAll('[data-exp-reopen]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('Re-open this expiry item? The riders will be told.')) return;
+    const n = await expNotify(btn.dataset.expReopen, 'reopened'); if (n === null) return; toast('Re-opened'); renderExpiries();
+  });
   main.querySelectorAll('[data-delete-expiry-group]').forEach(btn => {
     btn.onclick = async () => {
       const key = btn.dataset.deleteExpiryGroup;
@@ -3984,7 +4039,7 @@ async function renderAppUpdateSettings(body){
 
 function fvCentersBulk(existing, done){
   openModal(`<h2>Bulk upload centers</h2>
-    <p class="hint">Excel (.xlsx) or CSV with columns: <b>Center Name, Code, Latitude, Longitude</b> and optionally <b>Radius (m)</b> and <b>Active</b> (Yes/No). A single “Location” column like <i>24.8607, 67.0011</i> also works.
+    <p class="hint">Excel (.xlsx) or CSV with columns: <b>Center Name, Code, Latitude, Longitude</b> and optionally <b>City</b>, <b>Radius (m)</b> and <b>Active</b> (Yes/No). A single “Location” column like <i>24.8607, 67.0011</i> also works.
     A row whose <b>Code</b> already exists <b>updates</b> that center; a new Code <b>adds</b> one. Tip: press “Download list” first, edit it, then upload it back. The file itself is not stored.</p>
     <div class="form-row"><input type="file" id="fvb-file" accept=".xlsx,.xls,.csv"></div>
     <div id="fvb-out"></div>`);
@@ -4007,6 +4062,7 @@ function fvCentersBulk(existing, done){
       lat = lat === '' ? NaN : Number(lat); lng = lng === '' ? NaN : Number(lng);
       const rad = pick(r, ['radiusm', 'radius', 'allowedmeters', 'distance']);
       const act = String(pick(r, ['active', 'status', 'enabled']) || '').trim().toLowerCase();
+      const city = String(pick(r, ['city', 'town']) || '').trim();
       const ex = byCode.get(code.toLowerCase());
       let err = '';
       if (!name || !code) err = 'Name and Code are required';
@@ -4021,6 +4077,7 @@ function fvCentersBulk(existing, done){
       if (isFinite(lat) && isFinite(lng)) { row.latitude = lat; row.longitude = lng; }
       if (radN !== null && !err) row.radius_m = radN;
       if (act) row.active = !/^(no|n|false|0|inactive|disabled)$/.test(act);
+      if (city) row.city = city;
       return { n: i + 2, row, ex, err };
     }).filter(x => x.row.name || x.row.code || x.err);
     const good = rows.filter(x => !x.err), adds = good.filter(x => !x.ex), upds = good.filter(x => x.ex), bad = rows.filter(x => x.err);
@@ -4053,10 +4110,16 @@ async function renderFvCentersSettings(body){
   const geoOn = !!(sys.data && sys.data.fv_geo_required), minW = (sys.data && sys.data.fv_issue_min_words) || 5;
   const centers = cs.data || [], wildSet = new Set((wc.data || []).map(x => x.profile_id));
   await loadScopedProfiles();
-  const staff = state.profilesInScope.filter(p => p.role !== 'rider' && p.role !== 'super_admin' && p.status === 'active');
+  const staff = state.profilesInScope.filter(p => p.role !== 'rider' && p.status === 'active');
+  const ckey = (c) => c.latitude != null ? (+c.latitude).toFixed(5) + ',' + (+c.longitude).toFixed(5) : null;
+  const kcount = new Map(); centers.forEach(c => { const k = ckey(c); if (k) kcount.set(k, (kcount.get(k) || 0) + 1); });
+  const isDup = (c) => { const k = ckey(c); return !!k && kcount.get(k) > 1; };
+  const dupN = centers.filter(isDup).length, noLocN = centers.filter(c => c.latitude == null).length;
+  const cityNames = [...new Set(centers.map(c => (c.city || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const gmap = (c) => c.latitude != null ? `<a href="https://www.google.com/maps?q=${c.latitude},${c.longitude}" target="_blank" rel="noopener">${(+c.latitude).toFixed(5)}, ${(+c.longitude).toFixed(5)}</a>` : '<span style="color:var(--clay)">not set</span>';
   body.innerHTML = `
-    <div class="card" style="border-left:4px solid ${geoOn ? 'var(--moss)' : 'var(--muted)'};">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button type="button" class="btn small outline" data-fvc-jump="fvc-sec-top">① Location check</button><button type="button" class="btn small outline" data-fvc-jump="fvc-sec-wild">② Wild card</button><button type="button" class="btn small outline" data-fvc-jump="fvc-sec-centers">③ Centers (${centers.length})</button></div>
+    <div class="card" id="fvc-sec-top" style="border-left:4px solid ${geoOn ? 'var(--moss)' : 'var(--muted)'};">
       <h3>Location check for visits: ${geoOn ? 'ON' : 'OFF'}</h3>
       <p class="hint">When ON, an Area Incharge adding an <b>On-site</b> visit must choose the centre and be physically within its radius (checked with the phone / browser location). Online visits are never location-checked. People marked as <b>Wild card</b> below are exempt.</p>
       <div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="fvc-geo" ${geoOn ? 'checked' : ''}> Require the visitor to be at the centre</label></div>
@@ -4064,7 +4127,13 @@ async function renderFvCentersSettings(body){
       <button class="btn" id="fvc-save">Save</button>
       ${geoOn && !centers.some(c => c.active && c.latitude != null) ? '<p class="hint" style="color:var(--clay);margin-top:8px;">⚠ No active centre has a location yet — nobody could add an on-site visit. Add centres below first.</p>' : ''}
     </div>
-    <div class="card">
+    <div class="card" id="fvc-sec-wild">
+      <h3>Wild card (no location restriction)</h3>
+      <p class="hint">People switched on here can add visit reports from anywhere, even while the location check is ON for everyone else.</p>
+      <input type="search" id="fvc-ws" placeholder="Search name or Employee ID…" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+      <div id="fvc-wl"></div>
+    </div>
+    <div class="card" id="fvc-sec-centers">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small outline" id="fvc-bulk">⬆ Bulk upload (Excel / CSV)</button><button class="btn small outline" id="fvc-dl">⬇ Download list</button><button class="btn small" id="fvc-add">+ Add Center</button></div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:10px;background:#f6f7fc;border-radius:10px">
         <b style="font-size:13px">Set the allowed distance (radius)</b>
@@ -4072,17 +4141,30 @@ async function renderFvCentersSettings(body){
         <button class="btn small" id="fvc-rsel" type="button">Apply to selected (0)</button>
         <button class="btn small outline" id="fvc-rallbtn" type="button">Apply to ALL ${centers.length} centers</button>
         <span class="hint" style="margin:0">Or type a new number straight into any row's Radius box — it saves by itself.</span></div>
-      <div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th><input type="checkbox" id="fvc-selall" title="Select all"></th><th>Name</th><th>Code</th><th>Location</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead><tbody>
-      ${centers.map(c => `<tr><td><input type="checkbox" data-fvc-sel="${c.id}"></td><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${gmap(c)}</td><td><input type="number" min="30" max="5000" value="${c.radius_m}" data-fvc-rad="${c.id}" style="width:80px;padding:5px 6px;border:1px solid var(--line);border-radius:6px"></td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
-        <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" style="color:var(--muted)">No centers yet.</td></tr>'}
+      ${dupN ? `<div style="margin-top:10px;padding:9px 12px;border-radius:10px;background:#fff3d6;color:#7a5a00;font-size:13px">⚠ <b>${dupN} centers share exactly the same location</b> as another center. For those, “distance away” will look the same (and wrong) — please correct their Latitude / Longitude. <label style="margin-left:6px"><input type="checkbox" id="fvc-dupf"> show only these</label></div>` : ''}${noLocN ? `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:#fde7e1;color:#8a2d12;font-size:13px">⚠ ${noLocN} center(s) have no location yet.</div>` : ''}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px"><input type="search" id="fvc-q" placeholder="Search name, code or city…" style="flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><select id="fvc-cityf" style="padding:8px 10px;border:1px solid var(--line);border-radius:8px"><option value="">All cities</option>${cityNames.map(n => `<option>${escapeHtml(n)}</option>`).join('')}<option value="__none">City not set</option></select><span class="hint" id="fvc-cnt" style="margin:0"></span></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:10px;background:#f6f7fc;border-radius:10px"><b style="font-size:13px">City</b><input id="fvc-cityin" list="fvc-citylist" placeholder="e.g. Lahore" style="width:150px;padding:7px 8px;border:1px solid var(--line);border-radius:7px"><datalist id="fvc-citylist">${cityNames.map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist><button class="btn small" id="fvc-citysel" type="button">Set city for selected (0)</button><span class="hint" style="margin:0">Tick the centers (tick-box at the left of each row), type the city, press the button.</span></div>
+      <style>#fvc-tw thead th{position:sticky;top:0;background:#f6f7fc;z-index:2}</style>
+      <div id="fvc-tw" style="overflow:auto;max-height:52vh;margin-top:8px;border:1px solid var(--line);border-radius:8px"><table><thead><tr><th><input type="checkbox" id="fvc-selall" title="Select all shown"></th><th>Name</th><th>Code</th><th>City</th><th>Location</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead><tbody>
+      ${centers.map(c => `<tr data-fvc-row="${c.id}" data-city="${escapeHtml((c.city || '').trim())}" data-dup="${isDup(c) ? 1 : 0}" data-q="${escapeHtml((c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase())}"><td><input type="checkbox" data-fvc-sel="${c.id}"></td><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${c.city ? escapeHtml(c.city) : '<span style="color:var(--muted)">—</span>'}</td><td>${gmap(c)}${isDup(c) ? ' <span title="Same location as another center" style="color:#b87e17">⚠</span>' : ''}</td><td><input type="number" min="30" max="5000" value="${c.radius_m}" data-fvc-rad="${c.id}" style="width:80px;padding:5px 6px;border:1px solid var(--line);border-radius:6px"></td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+        <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--muted)">No centers yet.</td></tr>'}
       </tbody></table></div>
     </div>
-    <div class="card">
-      <h3>Wild card (no location restriction)</h3>
-      <p class="hint">People switched on here can add visit reports from anywhere, even while the location check is ON for everyone else.</p>
-      <input type="search" id="fvc-ws" placeholder="Search name or Employee ID…" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
-      <div id="fvc-wl"></div>
-    </div>`;
+`;
+  body.querySelectorAll('[data-fvc-jump]').forEach(b => b.onclick = () => { const e = document.getElementById(b.dataset.fvcJump); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+  const rowsEl = () => [...body.querySelectorAll('[data-fvc-row]')];
+  const applyCF = () => {
+    const q = (document.getElementById('fvc-q').value || '').trim().toLowerCase(), cf = document.getElementById('fvc-cityf').value, df = document.getElementById('fvc-dupf');
+    let n = 0;
+    rowsEl().forEach(r => {
+      const ok = (!q || r.dataset.q.includes(q)) && (!cf || (cf === '__none' ? !r.dataset.city : r.dataset.city === cf)) && (!df || !df.checked || r.dataset.dup === '1');
+      r.style.display = ok ? '' : 'none'; if (ok) n++;
+    });
+    document.getElementById('fvc-cnt').textContent = `Showing ${n} of ${centers.length}`;
+  };
+  document.getElementById('fvc-q').oninput = applyCF; document.getElementById('fvc-cityf').onchange = applyCF;
+  { const d = document.getElementById('fvc-dupf'); if (d) d.onchange = applyCF; }
+  applyCF();
   document.getElementById('fvc-save').onclick = async () => {
     const mw = Math.max(3, Math.min(30, parseInt(document.getElementById('fvc-min').value, 10) || 5));
     const on = document.getElementById('fvc-geo').checked;
@@ -4097,6 +4179,7 @@ async function renderFvCentersSettings(body){
       <form id="fvc-form">
         <div class="two-col"><div class="form-row"><label>Center name</label><input id="fvc-n" required value="${escapeHtml(c ? c.name : '')}"></div>
         <div class="form-row"><label>Code</label><input id="fvc-c" required value="${escapeHtml(c ? c.code : '')}"></div></div>
+        <div class="form-row"><label>City</label><input id="fvc-city" list="fvc-citylist" placeholder="e.g. Lahore" value="${escapeHtml(c && c.city ? c.city : '')}"></div>
         <div class="form-row"><label>Location</label>
           <button type="button" class="btn small outline" id="fvc-gps">📍 Use my current location (stand at the center)</button>
           <input id="fvc-paste" placeholder="…or paste from Google Maps, e.g. 24.86071, 67.00114" style="margin-top:6px"></div>
@@ -4114,18 +4197,25 @@ async function renderFvCentersSettings(body){
     document.getElementById('fvc-paste').oninput = (e) => { const m = e.target.value.match(/(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/); if (m) { document.getElementById('fvc-lat').value = m[1]; document.getElementById('fvc-lng').value = m[2]; } };
     document.getElementById('fvc-form').onsubmit = async (e) => {
       e.preventDefault();
-      const row = { name: document.getElementById('fvc-n').value.trim(), code: document.getElementById('fvc-c').value.trim(), latitude: parseFloat(document.getElementById('fvc-lat').value), longitude: parseFloat(document.getElementById('fvc-lng').value), radius_m: parseInt(document.getElementById('fvc-r').value, 10) || 200 };
+      const row = { name: document.getElementById('fvc-n').value.trim(), code: document.getElementById('fvc-c').value.trim(), latitude: parseFloat(document.getElementById('fvc-lat').value), longitude: parseFloat(document.getElementById('fvc-lng').value), radius_m: parseInt(document.getElementById('fvc-r').value, 10) || 200, city: document.getElementById('fvc-city').value.trim() || null };
       if (!row.name || !row.code || !isFinite(row.latitude) || !isFinite(row.longitude)) { toast('Name, code and location are required'); return; }
       const r = c ? await sb.from('fv_centers').update(row).eq('id', c.id) : await sb.from('fv_centers').insert({ ...row, created_by: state.user.id });
-      if (r.error) { toast(/duplicate|unique/i.test(r.error.message) ? 'That code is already used by another center.' : 'Could not save: ' + r.error.message); return; }
+      if (r.error) { toast(/duplicate|unique/i.test(r.error.message) ? 'That code is already used by another center.' : /city/i.test(r.error.message) ? 'Please run migration_47.sql in Supabase first.' : 'Could not save: ' + r.error.message); return; }
       closeModal(); toast('Saved'); renderFvCentersSettings(body);
     };
   };
   document.getElementById('fvc-add').onclick = () => openCenter(null);
   const selIds = () => [...body.querySelectorAll('[data-fvc-sel]:checked')].map(x => x.dataset.fvcSel);
-  const paintSel = () => { document.getElementById('fvc-rsel').textContent = `Apply to selected (${selIds().length})`; };
+  const paintSel = () => { document.getElementById('fvc-rsel').textContent = `Apply to selected (${selIds().length})`; document.getElementById('fvc-citysel').textContent = `Set city for selected (${selIds().length})`; };
   body.querySelectorAll('[data-fvc-sel]').forEach(c => c.onchange = paintSel);
-  document.getElementById('fvc-selall').onchange = (e) => { body.querySelectorAll('[data-fvc-sel]').forEach(c => c.checked = e.target.checked); paintSel(); };
+  document.getElementById('fvc-selall').onchange = (e) => { rowsEl().forEach(r => { if (r.style.display !== 'none') r.querySelector('[data-fvc-sel]').checked = e.target.checked; }); paintSel(); };
+  document.getElementById('fvc-citysel').onclick = async () => {
+    const ids = selIds(), v = document.getElementById('fvc-cityin').value.trim();
+    if (!ids.length) { toast('Please tick the centers first.'); return; }
+    if (!confirm(`Set city to "${v || '(empty)'}" for ${ids.length} center(s)?`)) return;
+    for (let i = 0; i < ids.length; i += 100) { const x = await sb.from('fv_centers').update({ city: v || null }).in('id', ids.slice(i, i + 100)); if (x.error) { toast(/city/i.test(x.error.message) ? 'Please run migration_47.sql in Supabase first.' : 'Could not save: ' + x.error.message); return; } }
+    toast('City saved'); renderFvCentersSettings(body);
+  };
   const setRadius = async (ids, label) => {
     const r = parseInt(document.getElementById('fvc-rall').value, 10);
     if (!(r >= 30 && r <= 5000)) { toast('Please enter a distance between 30 and 5000 metres.'); return; }
@@ -4143,7 +4233,7 @@ async function renderFvCentersSettings(body){
     if (x.error) { toast('Could not save: ' + x.error.message); inp.value = c.radius_m; return; }
     c.radius_m = r; toast(`${c.name}: ${r} m saved`);
   });
-  document.getElementById('fvc-dl').onclick = () => downloadCSV('fv-centers.csv', toCSV(centers.length ? centers.map(c => ({ 'Center Name': c.name, 'Code': c.code, 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No' })) : [{ 'Center Name': 'Example Centre', 'Code': 'EX-01', 'Latitude': 24.8607, 'Longitude': 67.0011, 'Radius (m)': 200, 'Active': 'Yes' }]));
+  document.getElementById('fvc-dl').onclick = () => downloadCSV('fv-centers.csv', toCSV(centers.length ? centers.map(c => ({ 'Center Name': c.name, 'Code': c.code, 'City': c.city || '', 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No' })) : [{ 'Center Name': 'Example Centre', 'Code': 'EX-01', 'City': 'Lahore', 'Latitude': 24.8607, 'Longitude': 67.0011, 'Radius (m)': 200, 'Active': 'Yes' }]));
   document.getElementById('fvc-bulk').onclick = () => fvCentersBulk(centers, () => renderFvCentersSettings(body));
   body.querySelectorAll('[data-fvc-edit]').forEach(b => b.onclick = () => openCenter(centers.find(x => x.id === b.dataset.fvcEdit)));
   body.querySelectorAll('[data-fvc-tog]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcTog); const { error } = await sb.from('fv_centers').update({ active: !c.active }).eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
@@ -7688,19 +7778,30 @@ async function fvPageAdd(body) {
   // centres + location rules (live from the database; the database re-checks everything on submit)
   let geoOnSetting = !!(state.systemSettings || {}).fv_geo_required, minWords = Number((state.systemSettings || {}).fv_issue_min_words) || 5, centers = [];
   try {
-    const [sr, cr] = await Promise.all([sb.from('system_settings').select('*').eq('id', 1).maybeSingle(), sb.from('fv_centers').select('id,name,code,latitude,longitude,radius_m').eq('active', true).order('name')]);
+    const [sr, cr] = await Promise.all([sb.from('system_settings').select('*').eq('id', 1).maybeSingle(), sb.from('fv_centers').select('*').eq('active', true).order('name')]);
     if (sr.data) { geoOnSetting = !!sr.data.fv_geo_required; minWords = Number(sr.data.fv_issue_min_words) || 5; }
     if (!cr.error) centers = cr.data || [];
   } catch (e) { console.warn(e); }
-  const wild = hasPermission('fv_geo_wildcard');
+  const wild = fhIsWild();
   const geoReq = () => geoOnSetting && !wild && vtype === 'Onsite';
   const hav = (a, b, c, d) => { const t = x => x * Math.PI / 180, dl = t(c - a), dg = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dg / 2) ** 2; return 2 * 6371000 * Math.asin(Math.sqrt(h)); };
   const fmtDist = (m) => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km';
   let geo = { ok: false, err: '', lat: null, lng: null, acc: null, busy: false, tried: false };
+  // Reads the best position it can: first a quick network/last-known fix, then GPS for up to ~12 s
+  // (stops early once accurate to 25 m). Works inside the Android app and in browsers.
   const readGeo = () => new Promise(res => {
     if (!navigator.geolocation) { res({ ok: false, err: 'unsupported' }); return; }
-    navigator.geolocation.getCurrentPosition(p => res({ ok: true, lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
-      e => res({ ok: false, err: e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable' }), { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    let best = null, done = false, wid = null, lastErr = null;
+    const fin = () => {
+      if (done) return; done = true; clearTimeout(tm); if (wid != null) try { navigator.geolocation.clearWatch(wid); } catch (_e) {}
+      if (best) res({ ok: true, lat: best.latitude, lng: best.longitude, acc: best.accuracy });
+      else res({ ok: false, err: lastErr && lastErr.code === 1 ? 'denied' : lastErr && lastErr.code === 3 ? 'timeout' : 'unavailable' });
+    };
+    const take = (p) => { if (!best || p.coords.accuracy < best.accuracy) best = p.coords; if (best.accuracy <= 25) fin(); };
+    const tm = setTimeout(fin, 12000);
+    const bad = (e) => { lastErr = e; if (e && e.code === 1) fin(); };
+    try { navigator.geolocation.getCurrentPosition(take, bad, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }); } catch (_e) {}
+    try { wid = navigator.geolocation.watchPosition(take, bad, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }); } catch (_e) {}
   });
 
   body.innerHTML = `
@@ -7714,7 +7815,9 @@ async function fvPageAdd(body) {
       <div class="fv-filters"><label>Visit date <input type="date" id="fv-a-date" value="${fvToday()}" max="${fvToday()}"></label>
         <div class="fv-seg" id="fv-a-type"><button type="button" class="t on" data-t="Onsite">On-site</button><button type="button" class="t" data-t="Online">Online</button></div></div></div>
     <div class="fv-panel" id="fv-a-locp"><h3>3 · Centre &amp; location</h3>
-      <div class="fv-filters"><select id="fv-a-center" style="min-width:260px;"></select><button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
+      <div class="fv-filters"><select id="fv-a-city" style="min-width:150px;"></select>
+        <input id="fv-a-csearch" type="search" placeholder="Search centre name, city or code…" style="min-width:210px;">
+        <select id="fv-a-center" style="min-width:260px;"></select><button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
       <div id="fv-a-geo" class="fv-note"></div></div>
     <div class="fv-panel" id="fv-a-cl"><h3>4 · Checklist <span class="fv-note">(${cps.length} checkpoints · ${fvNum(totalW)} points)</span></h3>
       ${cps.map((c, i) => `<div class="fv-cprow" data-c="${c.id}"><div class="hd"><div><strong>${i + 1}. ${escapeHtml(c.name)}</strong> <span class="fv-chip">${fvNum(c.weight)} pts</span></div>
@@ -7750,12 +7853,24 @@ async function fvPageAdd(body) {
   const cSel = body.querySelector('#fv-a-center'), gBox = body.querySelector('#fv-a-geo');
   let centerId = '';
   const distTo = (c) => (geo.ok && c.latitude != null && c.longitude != null) ? hav(geo.lat, geo.lng, c.latitude, c.longitude) : null;
+  const cityOf = (c) => (c.city && String(c.city).trim()) || 'Other / not set';
+  const citySel = body.querySelector('#fv-a-city'), csrch = body.querySelector('#fv-a-csearch');
+  let cityVal = '';
+  const fillCities = () => {
+    const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
+    citySel.innerHTML = `<option value="">All cities (${centers.length})</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === cityVal ? 'selected' : ''}>${escapeHtml(n)} (${centers.filter(c => cityOf(c) === n).length})</option>`).join('');
+  };
   const fillCenters = () => {
-    const list = centers.map(c => ({ c, d: distTo(c) })).sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.c.name.localeCompare(b.c.name));
+    const q = csrch.value.trim().toLowerCase();
+    const shown = centers.filter(c => (!cityVal || cityOf(c) === cityVal) && (!q || (c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase().includes(q)));
+    if (centerId && !shown.some(c => c.id === centerId)) centerId = '';
+    const list = shown.map(c => ({ c, d: distTo(c) })).sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.c.name.localeCompare(b.c.name));
     if (!centerId && geo.ok && list.length && list[0].d != null && list[0].d <= list[0].c.radius_m) centerId = list[0].c.id;
-    cSel.innerHTML = `<option value="">${centers.length ? (geoReq() ? 'Select the centre you are visiting…' : 'Centre (optional)…') : 'No centres set up'}</option>` +
+    cSel.innerHTML = `<option value="">${centers.length ? ((geoReq() ? 'Select the centre you are visiting' : 'Centre (optional)') + ' — ' + shown.length + ' shown…') : 'No centres set up'}</option>` +
       list.map(x => `<option value="${x.c.id}" ${x.c.id === centerId ? 'selected' : ''}>${escapeHtml(x.c.name)} — ${escapeHtml(x.c.code)}${x.d != null ? ' · ' + fmtDist(x.d) + ' away' : ''}</option>`).join('');
   };
+  citySel.onchange = () => { cityVal = citySel.value; fillCenters(); paintGeo(); };
+  csrch.oninput = () => { fillCenters(); paintGeo(); };
   const paintGeo = () => {
     const req = geoReq(), c = centers.find(x => x.id === centerId), d = c ? distTo(c) : null;
     const box = (bg, fg, html) => `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:${bg};color:${fg};font-size:13px;">${html}</div>`;
@@ -7775,9 +7890,9 @@ async function fvPageAdd(body) {
     } else if (d == null) {
       blocked = true; html = box('#fde7e1', '#8a2d12', 'The location of this centre has not been set. Please ask the Super Admin.');
     } else if (d > c.radius_m) {
-      blocked = true; html = box('#fde7e1', '#8a2d12', `✗ You are about <strong>${fmtDist(d)}</strong> from <strong>${escapeHtml(c.name)}</strong>. You must be within <strong>${c.radius_m} m</strong> of the centre to add its visit.`);
+      blocked = true; html = box('#fde7e1', '#8a2d12', `✗ You are about <strong>${fmtDist(d)}</strong> from <strong>${escapeHtml(c.name)}</strong>. You must be within <strong>${c.radius_m} m</strong> of the centre to add its visit.${geo.acc != null ? ' <span style="opacity:.8">(Your GPS accuracy is ±' + Math.round(geo.acc) + ' m' + (geo.acc > 100 ? ' — poor; go outdoors / switch on high-accuracy location and press “Check my location”' : '') + '.)</span>' : ''}`);
     } else {
-      html = box('#e6f4ec', '#1d5a38', `✓ You are at <strong>${escapeHtml(c.name)}</strong> (${fmtDist(d)} from the centre).`);
+      html = box('#e6f4ec', '#1d5a38', `✓ You are at <strong>${escapeHtml(c.name)}</strong> (${fmtDist(d)} from the centre${geo.acc != null ? ', GPS accuracy ±' + Math.round(geo.acc) + ' m' : ''}).`);
     }
     gBox.innerHTML = html;
     const lock = blocked && req;
@@ -7790,7 +7905,7 @@ async function fvPageAdd(body) {
   };
   cSel.onchange = () => { centerId = cSel.value; paintGeo(); };
   body.querySelector('#fv-a-loc').onclick = checkGeo;
-  fillCenters(); paintGeo();
+  fillCities(); fillCenters(); paintGeo();
   if (geoReq()) checkGeo();
   body.querySelectorAll('#fv-a-type [data-t]').forEach(b => b.onclick = () => {
     vtype = b.dataset.t; body.querySelectorAll('#fv-a-type [data-t]').forEach(x => x.classList.toggle('on', x === b));
