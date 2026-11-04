@@ -189,6 +189,12 @@ function fhApplyNavBadges(){
     a.insertAdjacentHTML('beforeend', `<span class="nav-badge" title="${n} waiting">${n > 99 ? '99+' : n}</span>`);
   });
 }
+let FH_LAST_RESET = null;
+function fhResetAlert(k){
+  const body = `${k} new password reset request${k === 1 ? '' : 's'} waiting — open Team to reset.`;
+  try { pushNotification({ type: 'Password reset', title: 'Password reset request', body, created_at: new Date().toISOString(), view: 'team' }); } catch (_e) {}
+  try { if (!fhIsNativeApp() && 'Notification' in window && Notification.permission === 'granted') new Notification('FieldHub: Password reset request', { body }); } catch (_e) {}
+}
 async function fhRefreshNavBadges(){
   if (!state.user || !state.profile) return;
   try {
@@ -196,6 +202,10 @@ async function fhRefreshNavBadges(){
     const jobs = [];
     if (allowed.includes('requests')) jobs.push(sb.from('requests').select('id', { count: 'exact', head: true }).is('deleted_at', null).in('status', ['open', 'in_progress']).then(r => { FH_BADGES.requests = r.count || 0; }));
     if (allowed.includes('tasks')) jobs.push(sb.from('tasks').select('id', { count: 'exact', head: true }).eq('assigned_to', uid).in('status', ['pending', 'in_progress']).then(r => { FH_BADGES.tasks = r.count || 0; }));
+    if (isSuperAdmin() && allowed.includes('team')) jobs.push(sb.from('password_reset_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending').then(r => {
+      const n = r.count || 0; FH_BADGES.team = n;
+      if (FH_LAST_RESET !== null && n > FH_LAST_RESET) fhResetAlert(n - FH_LAST_RESET);
+      FH_LAST_RESET = n; }));
     await Promise.all(jobs.map(j => j.catch(() => {})));
     fhApplyNavBadges();
   } catch (_e) {}
@@ -240,6 +250,7 @@ function fhUiPass(){
         const cols = t.querySelectorAll('tr:first-child > *').length;
         const first = t.querySelector('tr:first-child > *');
         if (cols < 4 || !first || first.querySelector('input[type=checkbox]') || first.colSpan > 1) return;
+        if ([...t.querySelectorAll('tr > *:first-child')].some(c => c.textContent.trim().length > 26)) return;   // long first column: leave the table as it is
         const par = t.parentNode;
         let sc = (par && /(auto|scroll)/.test(getComputedStyle(par).overflowX)) ? par : null;
         if (!sc && par){ const w = document.createElement('div'); w.className = 'fh-tscroll'; par.insertBefore(w, t); w.appendChild(t); sc = w; }
@@ -392,6 +403,17 @@ html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-car
   a{color:inherit;text-decoration:none}
   @page{margin:12mm}
 }
+
+/* one card per row on phones (Expiry Tracker) */
+.fh-rowcards{display:grid;gap:10px}
+.fh-rowcard{padding:12px 14px!important}
+.fh-rowcard .rc-f{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-bottom:1px dashed #e3e8f2}
+.fh-rowcard .rc-f:last-of-type{border-bottom:0}
+.fh-rowcard .rc-l{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:#6b7390;font-weight:700}
+.fh-rowcard .rc-v{font-size:14px;color:#1c2b6e;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.fh-rowcard .rc-act{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #e3e8f2}
+.fh-rowcard .rc-act .btn{flex:1 1 auto}
+html.fh-dark .fh-rowcard{background:#eceffa}
 `;
   document.head.appendChild(st);
   // title block with breadcrumb
@@ -415,7 +437,7 @@ html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-car
   let t = null;
   new MutationObserver(() => { clearTimeout(t); t = setTimeout(fhUiPass, 140); }).observe(document.body, { childList: true, subtree: true });
   window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(fhUiPass, 200); });
-  setInterval(() => { if (!document.hidden) fhRefreshNavBadges(); }, 120000);
+  setInterval(() => { if (!document.hidden) fhRefreshNavBadges(); }, 60000);
   fhRefreshNavBadges(); fhSetCrumb(state.view || 'dashboard');
 }
 
@@ -1188,6 +1210,11 @@ async function setupDesktopNotifications(){
     })
     .subscribe();
 
+  if (isSuperAdmin()) {
+    sb.channel('pwreset-notify')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'password_reset_requests' }, () => { FH_LAST_RESET = (FH_LAST_RESET === null ? 0 : FH_LAST_RESET) ; fhRefreshNavBadges(); })
+      .subscribe();
+  }
   // New requests/tasks change the relevant-ID sets — refresh periodically
   // rather than trying to keep them perfectly live.
   setInterval(async () => { ({ requestIds, taskIds } = await refreshMyIds(true)); }, 5*60*1000);
@@ -1264,6 +1291,10 @@ async function loadAndShowNotifications(){
     (taskUpdates||[]).forEach(u => items.push({ id:'task-'+u.id, type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
+  if (isSuperAdmin()) {
+    try { const r = await sb.from('password_reset_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending');
+      if (r.count) items.push({ id:'pwr-'+Date.now(), type:'Password reset', title:'Password reset requests', body:`${r.count} request${r.count === 1 ? ' is' : 's are'} waiting — open Team.`, created_at:new Date().toISOString(), read:false, view:'team' }); } catch (_e) {}
+  }
   try {
     const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
     if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:'expiries' }));
@@ -1369,6 +1400,7 @@ function renderNotificationDropdown(bell){
     el.onclick = () => {
       const n = state.notifications.find(x=>x.id===el.dataset.notifItem);
       if (n && !n.read){ n.read = true; updateNotificationBadge(); renderNotificationDropdown(bell); }
+      if (n && n.view) { try { navigateTo(n.view); } catch (_e) {} }
     };
   });
 
@@ -1765,6 +1797,7 @@ function navIconHtml(id, valueOverride){
 function renderNav(){
   const items = getAllowedViews();
   const nav = document.getElementById('nav-links');
+  const _sd0 = document.querySelector('.sidebar'), _keepN = nav ? nav.scrollTop : 0, _keepS = _sd0 ? _sd0.scrollTop : 0;
   const link = (key) => `<a href="#${key}" class="nav-link" data-view="${key}"><span class="nav-ico">${navIconHtml(key)}</span><span class="nav-txt">${NAV_LABEL[key]}</span></a>`;
   let html = '';
   NAV_GROUPS.forEach(group => {
@@ -1807,6 +1840,11 @@ function renderNav(){
   // pressing Tab must never scroll a menu group inside itself (that is what hid "Targets & KPI")
   if (!nav._fhFocusFix){ nav._fhFocusFix = true; nav.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('.nav-group-items'); if (g && g.scrollTop) g.scrollTop = 0; }); }
   nav.querySelectorAll('.nav-group-items').forEach(g => { g.addEventListener('scroll', () => { if (g.scrollTop) g.scrollTop = 0; }); });
+  if (_keepN || _keepS) { nav.scrollTop = _keepN; if (_sd0) _sd0.scrollTop = _keepS; }
+  // keep the menu where it is when a page is opened from it (nothing may jump it back to the top)
+  if (!nav._fhKeepScroll){ nav._fhKeepScroll = true;
+    nav.addEventListener('click', (e) => { if (!e.target.closest('.nav-link')) return; const sd = document.querySelector('.sidebar'), n0 = nav.scrollTop, s0 = sd ? sd.scrollTop : 0; if (!n0 && !s0) return;
+      [0, 60, 200, 450, 900, 1800].forEach(ms => setTimeout(() => { if (nav.scrollTop !== n0) nav.scrollTop = n0; if (sd && sd.scrollTop !== s0) sd.scrollTop = s0; }, ms)); }, true); }
   // bring the open page's menu item into view
   setTimeout(() => { const a = nav.querySelector('.nav-link.active'), sd = document.querySelector('.sidebar'); if (a && sd){ const ar = a.getBoundingClientRect(), sr = sd.getBoundingClientRect(); if (ar.bottom > sr.bottom - 8) sd.scrollTop += ar.bottom - sr.bottom + 40; else if (ar.top < sr.top + 8) sd.scrollTop -= sr.top - ar.top + 40; } }, 80);
 }
@@ -1896,11 +1934,52 @@ function hasPermission(key){
 
 function fhGreeting(){ const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; }
 // shortcuts to pages this person can already open (same names as the menu)
-function fhQuickActions(){
+const FH_QA_DEFAULT = ['requests', 'tasks', 'circulars', 'fv_add', 'fv_report', 'tools', 'expiries', 'compliance', 'warnings', 'ft_trend'];
+function fhQuickList(){
   const allowed = getAllowedViews();
-  const pick = ['requests', 'tasks', 'circulars', 'fv_add', 'fv_report', 'tools', 'expiries', 'compliance', 'warnings', 'ft_trend'].filter(v => allowed.includes(v)).slice(0, 6);
+  const mine = Array.isArray(state.qaPref) ? state.qaPref.filter(v => allowed.includes(v)) : null;
+  return (mine && mine.length) ? mine : FH_QA_DEFAULT.filter(v => allowed.includes(v)).slice(0, 6);
+}
+function fhQuickActions(){
+  const pick = fhQuickList();
   if (!pick.length) return '<span style="color:var(--muted);font-size:13.5px">Use the menu to open a page.</span>';
   return pick.map(v => `<button type="button" onclick="navigateTo('${v}')"><span class="q-ic">${navIconHtml(v)}</span>${escapeHtml(NAV_LABEL[v] || v)}</button>`).join('');
+}
+function fhEditQuickActions(){
+  const allowed = getAllowedViews().filter(v => v !== 'dashboard' && NAV_LABEL[v]), cur = new Set(fhQuickList());
+  openModal(`<h2>Choose your Quick actions</h2>
+    <p class="hint">Tick the pages you want as shortcuts on your Dashboard (up to 12). This is only for you — other people keep their own choice.</p>
+    <div style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px">
+      ${allowed.map(v => `<label style="display:flex;gap:10px;align-items:center;padding:7px 2px;border-bottom:1px solid var(--line)"><input type="checkbox" data-qa="${v}" ${cur.has(v) ? 'checked' : ''} style="width:auto"><span class="q-ic" style="display:inline-flex;width:24px">${navIconHtml(v)}</span>${escapeHtml(NAV_LABEL[v])}</label>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn-primary" id="qa-save" type="button">Save</button><button class="btn outline" id="qa-reset" type="button">Back to standard</button></div>`);
+  const save = async (list) => {
+    state.qaPref = list;
+    try { localStorage.setItem('fh_qa_' + state.user.id, JSON.stringify(list)); } catch (_e) {}
+    try { await sb.from('user_prefs').upsert({ user_id: state.user.id, quick_actions: list, updated_at: new Date().toISOString() }); } catch (_e) {}
+    closeModal(); toast('Quick actions saved'); renderDashboard();
+  };
+  document.getElementById('qa-save').onclick = () => {
+    const list = [...document.querySelectorAll('[data-qa]:checked')].map(x => x.dataset.qa);
+    if (!list.length) { toast('Please tick at least one page.'); return; }
+    if (list.length > 12) { toast('Please choose 12 pages at most.'); return; }
+    save(list);
+  };
+  document.getElementById('qa-reset').onclick = () => save(null);
+}
+function fhEditWelcome(cur){
+  openModal(`<h2>Edit the Welcome banner</h2>
+    <p class="hint">Everyone sees this on their Dashboard. Use <b>{name}</b> to show each person's own name. Leave a box empty to use the standard text.</p>
+    <div class="form-row"><label>Heading</label><input id="wl-t" maxlength="120" placeholder="Welcome, {name}" value="${escapeHtml(cur.title || '')}"></div>
+    <div class="form-row"><label>Message</label><textarea id="wl-x" rows="4" maxlength="400" placeholder="Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries." style="width:100%;box-sizing:border-box">${escapeHtml(cur.text || '')}</textarea></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-primary" id="wl-save" type="button">Save</button><button class="btn outline" id="wl-reset" type="button">Back to standard text</button></div>`);
+  const put = async (t, x) => {
+    const { error } = await sb.from('system_settings').update({ welcome_title: t || null, welcome_text: x || null }).eq('id', 1);
+    if (error) { toast(/welcome_/i.test(error.message) ? 'Please run migration_48.sql in Supabase first.' : 'Could not save: ' + error.message); return; }
+    closeModal(); toast('Welcome banner saved'); renderDashboard();
+  };
+  document.getElementById('wl-save').onclick = () => put(document.getElementById('wl-t').value.trim(), document.getElementById('wl-x').value.trim());
+  document.getElementById('wl-reset').onclick = () => put('', '');
 }
 // ---------------------------------------------------------
 // DASHBOARD
@@ -1920,6 +1999,13 @@ async function renderDashboard(){
     sb.from('circulars').select('id, title, created_at').is('deleted_at', null).order('created_at', {ascending:false}).limit(4)
   ]);
 
+  let wTitle = '', wText = '', resetN = 0;
+  try { const r = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle(); if (r.data) { wTitle = r.data.welcome_title || ''; wText = r.data.welcome_text || ''; } } catch (_e) {}
+  state.qaPref = null;
+  try { const r = await sb.from('user_prefs').select('quick_actions').eq('user_id', uid).maybeSingle(); if (r.data && Array.isArray(r.data.quick_actions)) state.qaPref = r.data.quick_actions; } catch (_e) {}
+  if (!state.qaPref) { try { const l = JSON.parse(localStorage.getItem('fh_qa_' + uid) || 'null'); if (Array.isArray(l) && l.length) state.qaPref = l; } catch (_e) {} }
+  if (isSuperAdmin()) { try { const r = await sb.from('password_reset_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'); resetN = r.count || 0; } catch (_e) {} }
+  window._fhWel = { title: wTitle, text: wText };
   const bannerVisible = banner.data?.image_url && (!banner.data.expires_at || new Date(banner.data.expires_at) > new Date());
 
   let unacked = 0;
@@ -1944,10 +2030,10 @@ async function renderDashboard(){
     <div class="fh-hero">
       <div>
         <div class="hi">${fhGreeting()}, ${escapeHtml((state.profile.full_name || '').split(' ')[0])}</div>
-        <h2>Welcome, ${escapeHtml(state.profile.full_name)}</h2>
-        <p>Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.</p>
+        <h2>${escapeHtml(wTitle ? wTitle.replace(/\{name\}/gi, state.profile.full_name) : 'Welcome, ' + state.profile.full_name)}</h2>
+        <p>${escapeHtml(wText ? wText.replace(/\{name\}/gi, state.profile.full_name) : 'Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.')}</p>
       </div>
-      <div class="dt"><b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
+      <div class="dt">${isSuperAdmin() ? '<button type="button" id="wl-edit" class="btn small outline" style="margin-bottom:8px;background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.4)">✎ Edit banner</button>' : ''}<b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
     </div>
     <div class="grid grid-4 fh-stagger">
       ${[['clay','requests',openReq.count ?? 0,'Open requests','M9 12h6M9 16h6M9 8h6M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z'],
@@ -1959,6 +2045,9 @@ async function renderDashboard(){
         <div class="stat-number" data-count="${n}">${n}</div><div class="stat-label">${l}</div><span class="go">View ›</span>
       </div>`).join('')}
     </div>
+    ${resetN ? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-left:4px solid var(--clay);background:#FFF4F1">
+      <div><h3>🔑 Password reset requests</h3><p style="color:var(--muted); font-size:13.5px;margin:0;"><b>${resetN}</b> request${resetN === 1 ? ' is' : 's are'} waiting for you.</p></div>
+      <button class="btn small" onclick="navigateTo('team')">Open requests</button></div>` : ''}
     ${isAdmin() ? `
     <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
       <div>
@@ -1969,7 +2058,7 @@ async function renderDashboard(){
     </div>` : ''}
     <div class="fh-cols">
       <div class="card">
-        <h3>Quick actions</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h3 style="margin:0">Quick actions</h3><button type="button" class="btn small outline" id="qa-edit">✎ Customize</button></div>
         <div class="fh-quick">${fhQuickActions()}</div>
       </div>
       <div class="card">
@@ -1979,6 +2068,7 @@ async function renderDashboard(){
     </div>
   `;
 
+  { const w = document.getElementById('wl-edit'); if (w) w.onclick = () => fhEditWelcome(window._fhWel || {}); const q = document.getElementById('qa-edit'); if (q) q.onclick = fhEditQuickActions; }
   // numbers count up gently
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) main.querySelectorAll('[data-count]').forEach(el => {
     const to = Number(el.dataset.count) || 0; if (!to) return;
@@ -2922,6 +3012,24 @@ function openNewRequestModal(){
 // ---------------------------------------------------------
 // EXPIRY TRACKER
 // ---------------------------------------------------------
+// phones: turn a wide table into one card per row (no sideways scrolling, no overlapping text)
+function fhCardify(tbl){
+  if (!tbl || !tbl.tBodies[0]) return;
+  const heads = [...tbl.tHead.rows[0].cells].map(h => h.textContent.replace(/[↕▲▼]/g, '').trim());
+  const wrap = document.createElement('div'); wrap.className = 'fh-rowcards';
+  [...tbl.tBodies[0].rows].forEach(tr => {
+    const card = document.createElement('div'); card.className = 'card fh-rowcard';
+    [...tr.cells].forEach((td, i) => {
+      if (!heads[i]) { const act = document.createElement('div'); act.className = 'rc-act'; while (td.firstChild) act.appendChild(td.firstChild); if (act.textContent.trim() || act.querySelector('button')) card.appendChild(act); return; }
+      const f = document.createElement('div'); f.className = 'rc-f';
+      const l = document.createElement('span'); l.className = 'rc-l'; l.textContent = heads[i];
+      const v = document.createElement('span'); v.className = 'rc-v'; while (td.firstChild) v.appendChild(td.firstChild);
+      f.appendChild(l); f.appendChild(v); card.appendChild(f);
+    });
+    wrap.appendChild(card);
+  });
+  tbl.parentNode.replaceChild(wrap, tbl);
+}
 let FH_EXPF = 'open';
 async function renderExpiries(){
   const main = document.getElementById('main-content');
@@ -2953,8 +3061,8 @@ async function renderExpiries(){
   const canRemind = isAdmin() || state.profile.role === 'inventory_coordinator';
   const canEdit = isAdmin() || hasPermission('expiry_edit');
   const canDelete = isAdmin() || hasPermission('expiry_delete');
-  const showActionsCol = canRemind || canEdit || canDelete;
-  const canNotify = canRemind || canEdit;
+  const canNotify = canRemind || canEdit || ['regional_poc','team_lead','coordinator','inventory_coordinator','admin','super_admin'].includes(state.profile.role);
+  const showActionsCol = canRemind || canEdit || canDelete || canNotify;
   const today = new Date();
   main.innerHTML = `<div class="rq-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="exp-chips">${[['open','Open',nOpen],['closed','Closed',nClosed],['all','All',groupedItems.length]].map(([k,l,n]) => `<button type="button" class="btn small ${FH_EXPF===k?'':'outline'}" data-expf="${k}">${l} (${n})</button>`).join('')}</div>
   ${shownGroups.length ? '' : '<p class="hint">Nothing in this list.</p>'}<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
@@ -2992,34 +3100,41 @@ async function renderExpiries(){
   </tbody></table>`;
 
   main.querySelectorAll('[data-expf]').forEach(b => b.onclick = () => { FH_EXPF = b.dataset.expf; renderExpiries(); });
-  const expNotify = async (key, kind, note) => {
-    const { data, error } = await sb.rpc('fh_expiry_notify', { p_group: String(key), p_kind: kind, p_note: note || null });
-    if (error) { toast(/fh_expiry_notify|schema cache/i.test(error.message) ? 'Please run migration_47.sql in Supabase first, then try again.' : 'Could not send: ' + error.message); return null; }
+  const expNotify = async (key, kind, note, message) => {
+    const { data, error } = await sb.rpc('fh_expiry_notify', { p_group: String(key), p_kind: kind, p_note: note || null, p_message: message || null });
+    if (error) { toast(/fh_expiry_notify|schema cache/i.test(error.message) ? 'Please run migration_47.sql and migration_48.sql in Supabase first, then try again.' : 'Could not send: ' + error.message); return null; }
     return Number(data) || 0;
   };
-  main.querySelectorAll('[data-exp-remind]').forEach(btn => btn.onclick = async () => {
-    const g = groupedItems.find(x => String(x.first.group_id || x.first.id) === btn.dataset.expRemind);
+  const expMsg = (g, kind) => {
     const label = g.item_type + (g.item_label ? ' — ' + g.item_label : '');
-    if (!confirm(`Send a reminder to every rider this item applies to?\n\n${label} (expiry ${g.expiry_date})\n\nThey will get a notification asking them to hand over the vials.`)) return;
-    btn.disabled = true; const n = await expNotify(btn.dataset.expRemind, 'reminder'); btn.disabled = false;
-    if (n === null) return;
-    toast(n ? `Reminder sent to ${n} rider${n === 1 ? '' : 's'}` : 'No riders were found for this item (check its region / role).'); renderExpiries();
-  });
-  main.querySelectorAll('[data-exp-close]').forEach(btn => btn.onclick = () => {
-    const g = groupedItems.find(x => String(x.first.group_id || x.first.id) === btn.dataset.expClose);
+    return kind === 'reminder'
+      ? `Please hand over your expiring "${label}" (expiry ${g.expiry_date}) to your Area Incharge / coordinator as soon as possible.`
+      : `We are considering that you do not have any stock of "${label}" (expiry ${g.expiry_date}). If you still have it, please coordinate with your supervisor or inventory coordinator immediately; otherwise you will be responsible for any non-compliance.`;
+  };
+  const expSendModal = (key, kind) => {
+    const g = groupedItems.find(x => String(x.first.group_id || x.first.id) === String(key)); if (!g) return;
     const label = g.item_type + (g.item_label ? ' — ' + g.item_label : '');
-    openModal(`<h2>Mark expiry as closed</h2>
+    const isRem = kind === 'reminder';
+    openModal(`<h2>${isRem ? '🔔 Send reminder to riders' : '✔ Mark expiry as closed'}</h2>
       <p class="hint"><b>${escapeHtml(label)}</b> (expiry ${escapeHtml(g.expiry_date)})</p>
-      <p>Use this only when <b>all vials have been collected from all riders</b>. Every rider this item applies to will be told that it is now closed, and it moves to the “Closed” list (you can re-open it later).</p>
-      <div class="form-row"><label>Note to riders (optional)</label><input id="exp-cnote" maxlength="200" placeholder="e.g. Thank you, all vials received on 3 Nov"></div>
-      <button class="btn-primary" id="exp-cgo">Yes, all collected — close it</button>`);
-    document.getElementById('exp-cgo').onclick = async () => {
-      const b = document.getElementById('exp-cgo'); b.disabled = true;
-      const n = await expNotify(btn.dataset.expClose, 'closed', document.getElementById('exp-cnote').value.trim());
+      ${isRem ? '' : '<p>Use this only when <b>all vials have been collected</b>. The item moves to the “Closed” list (you can re-open it later) and every rider it applies to receives the message below.</p>'}
+      <div class="form-row"><label>Message to riders (you can change, add or remove any words)</label><textarea id="exp-msg" rows="5" maxlength="500" style="width:100%;box-sizing:border-box"></textarea>
+        <span class="field-hint"><a href="#" id="exp-msg-reset">Put back the standard message</a></span></div>
+      <button class="btn-primary" id="exp-go">${isRem ? 'Send reminder' : 'Close and notify riders'}</button>`);
+    const ta = document.getElementById('exp-msg'); ta.value = expMsg(g, kind);
+    document.getElementById('exp-msg-reset').onclick = (e) => { e.preventDefault(); ta.value = expMsg(g, kind); };
+    document.getElementById('exp-go').onclick = async () => {
+      const m = ta.value.trim(); if (!m) { toast('The message cannot be empty.'); return; }
+      const b = document.getElementById('exp-go'); b.disabled = true;
+      const n = await expNotify(key, kind, null, m);
       if (n === null) { b.disabled = false; return; }
-      closeModal(); toast(`Closed — ${n} rider${n === 1 ? '' : 's'} informed`); renderExpiries();
+      closeModal();
+      toast(isRem ? (n ? `Reminder sent to ${n} rider${n === 1 ? '' : 's'}` : 'No riders were found for this item (check its region / role).') : `Closed — ${n} rider${n === 1 ? '' : 's'} informed`);
+      renderExpiries();
     };
-  });
+  };
+  main.querySelectorAll('[data-exp-remind]').forEach(btn => btn.onclick = () => expSendModal(btn.dataset.expRemind, 'reminder'));
+  main.querySelectorAll('[data-exp-close]').forEach(btn => btn.onclick = () => expSendModal(btn.dataset.expClose, 'closed'));
   main.querySelectorAll('[data-exp-reopen]').forEach(btn => btn.onclick = async () => {
     if (!confirm('Re-open this expiry item? The riders will be told.')) return;
     const n = await expNotify(btn.dataset.expReopen, 'reopened'); if (n === null) return; toast('Re-opened'); renderExpiries();
@@ -3054,6 +3169,7 @@ async function renderExpiries(){
       toast('Reminder sent');
     };
   });
+  if (window.innerWidth <= 700) fhCardify(main.querySelector('table'));
 }
 
 async function openNewExpiryModal(){
@@ -7816,8 +7932,8 @@ async function fvPageAdd(body) {
         <div class="fv-seg" id="fv-a-type"><button type="button" class="t on" data-t="Onsite">On-site</button><button type="button" class="t" data-t="Online">Online</button></div></div></div>
     <div class="fv-panel" id="fv-a-locp"><h3>3 · Centre &amp; location</h3>
       <div class="fv-filters"><select id="fv-a-city" style="min-width:150px;"></select>
-        <input id="fv-a-csearch" type="search" placeholder="Search centre name, city or code…" style="min-width:210px;">
         <select id="fv-a-center" style="min-width:260px;"></select><button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
+      <div id="fv-a-near" style="margin-top:8px"></div>
       <div id="fv-a-geo" class="fv-note"></div></div>
     <div class="fv-panel" id="fv-a-cl"><h3>4 · Checklist <span class="fv-note">(${cps.length} checkpoints · ${fvNum(totalW)} points)</span></h3>
       ${cps.map((c, i) => `<div class="fv-cprow" data-c="${c.id}"><div class="hd"><div><strong>${i + 1}. ${escapeHtml(c.name)}</strong> <span class="fv-chip">${fvNum(c.weight)} pts</span></div>
@@ -7854,24 +7970,46 @@ async function fvPageAdd(body) {
   let centerId = '';
   const distTo = (c) => (geo.ok && c.latitude != null && c.longitude != null) ? hav(geo.lat, geo.lng, c.latitude, c.longitude) : null;
   const cityOf = (c) => (c.city && String(c.city).trim()) || 'Other / not set';
-  const citySel = body.querySelector('#fv-a-city'), csrch = body.querySelector('#fv-a-csearch');
+  const citySel = body.querySelector('#fv-a-city'), nearBox = body.querySelector('#fv-a-near');
   let cityVal = '';
   const fillCities = () => {
     const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
-    citySel.innerHTML = `<option value="">All cities (${centers.length})</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === cityVal ? 'selected' : ''}>${escapeHtml(n)} (${centers.filter(c => cityOf(c) === n).length})</option>`).join('');
+    citySel.innerHTML = `<option value="__find__">🔍 Search city…</option><option value="">All cities (${centers.length})</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === cityVal ? 'selected' : ''}>${escapeHtml(n)} (${centers.filter(c => cityOf(c) === n).length})</option>`).join('');
   };
   const fillCenters = () => {
-    const q = csrch.value.trim().toLowerCase();
-    const shown = centers.filter(c => (!cityVal || cityOf(c) === cityVal) && (!q || (c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase().includes(q)));
+    const shown = centers.filter(c => !cityVal || cityOf(c) === cityVal);
     if (centerId && !shown.some(c => c.id === centerId)) centerId = '';
     const list = shown.map(c => ({ c, d: distTo(c) })).sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.c.name.localeCompare(b.c.name));
     if (!centerId && geo.ok && list.length && list[0].d != null && list[0].d <= list[0].c.radius_m) centerId = list[0].c.id;
-    cSel.innerHTML = `<option value="">${centers.length ? ((geoReq() ? 'Select the centre you are visiting' : 'Centre (optional)') + ' — ' + shown.length + ' shown…') : 'No centres set up'}</option>` +
+    cSel.innerHTML = (centers.length ? '<option value="__find__">🔍 Search centre (name, city or code)…</option>' : '') + `<option value="">${centers.length ? ((geoReq() ? 'Select the centre you are visiting' : 'Centre (optional)') + ' — ' + shown.length + ' shown…') : 'No centres set up'}</option>` +
       list.map(x => `<option value="${x.c.id}" ${x.c.id === centerId ? 'selected' : ''}>${escapeHtml(x.c.name)} — ${escapeHtml(x.c.code)}${x.d != null ? ' · ' + fmtDist(x.d) + ' away' : ''}</option>`).join('');
   };
-  citySel.onchange = () => { cityVal = citySel.value; fillCenters(); paintGeo(); };
-  csrch.oninput = () => { fillCenters(); paintGeo(); };
+  // a search box that opens from the first entry of a list
+  const pickFrom = (title, items, onPick) => {
+    openModal(`<h2>${escapeHtml(title)}</h2><input id="fv-pk-q" type="search" placeholder="Type to search…" autocomplete="off" style="width:100%;box-sizing:border-box;margin:6px 0 8px"><div id="fv-pk-l" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px"></div>`);
+    const q = document.getElementById('fv-pk-q'), l = document.getElementById('fv-pk-l');
+    const draw = () => { const t = q.value.trim().toLowerCase(), list = items.filter(i => !t || i.hay.includes(t)).slice(0, 150);
+      l.innerHTML = list.map((i, k) => `<div data-pk="${k}" style="padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer"><b>${escapeHtml(i.label)}</b>${i.sub ? `<div class="fv-note" style="margin:2px 0 0">${escapeHtml(i.sub)}</div>` : ''}</div>`).join('') || '<div style="padding:12px;color:var(--muted)">Nothing matches.</div>';
+      l.querySelectorAll('[data-pk]').forEach(e => e.onclick = () => { closeModal(); onPick(list[+e.dataset.pk]); }); };
+    q.oninput = draw; draw(); setTimeout(() => q.focus(), 50);
+  };
+  citySel.onchange = () => {
+    if (citySel.value === '__find__') {
+      const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
+      citySel.value = cityVal;
+      pickFrom('Search city', [{ value: '', label: 'All cities', sub: centers.length + ' centres', hay: 'all cities' }].concat(names.map(n => ({ value: n, label: n, sub: centers.filter(c => cityOf(c) === n).length + ' centres', hay: n.toLowerCase() }))), (it) => { cityVal = it.value; fillCities(); fillCenters(); paintGeo(); });
+      return;
+    }
+    cityVal = citySel.value; fillCenters(); paintGeo();
+  };
+  const paintNear = () => {
+    if (!geo.ok || !centers.length) { nearBox.innerHTML = ''; return; }
+    const near = centers.map(c => ({ c, d: distTo(c) })).filter(x => x.d != null).sort((a, b) => a.d - b.d).slice(0, 3);
+    nearBox.innerHTML = near.length ? `<div class="fv-note" style="margin-bottom:4px"><b>Nearest centres to you</b> (tap to choose):</div><div style="display:flex;gap:6px;flex-wrap:wrap">${near.map(x => `<button type="button" class="fv-btn ghost" data-near="${x.c.id}" style="height:auto;padding:6px 10px;text-align:left">${escapeHtml(x.c.name)}<br><small>${escapeHtml(x.c.code)} · ${fmtDist(x.d)} away</small></button>`).join('')}</div>` : '';
+    nearBox.querySelectorAll('[data-near]').forEach(b => b.onclick = () => { centerId = b.dataset.near; cityVal = ''; fillCities(); fillCenters(); paintGeo(); });
+  };
   const paintGeo = () => {
+    paintNear();
     const req = geoReq(), c = centers.find(x => x.id === centerId), d = c ? distTo(c) : null;
     const box = (bg, fg, html) => `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:${bg};color:${fg};font-size:13px;">${html}</div>`;
     let html = '', blocked = false;
@@ -7894,6 +8032,7 @@ async function fvPageAdd(body) {
     } else {
       html = box('#e6f4ec', '#1d5a38', `✓ You are at <strong>${escapeHtml(c.name)}</strong> (${fmtDist(d)} from the centre${geo.acc != null ? ', GPS accuracy ±' + Math.round(geo.acc) + ' m' : ''}).`);
     }
+    if (geo.ok && c && c.latitude != null) html += `<div class="fv-note" style="margin-top:6px">Your position: <a href="https://www.google.com/maps?q=${geo.lat},${geo.lng}" target="_blank" rel="noopener">${(+geo.lat).toFixed(5)}, ${(+geo.lng).toFixed(5)}</a> · Centre as saved: <a href="https://www.google.com/maps?q=${c.latitude},${c.longitude}" target="_blank" rel="noopener">${(+c.latitude).toFixed(5)}, ${(+c.longitude).toFixed(5)}</a> — open both to compare. If the centre pin is not at the real centre, ask the Super Admin to correct its location.</div>`;
     gBox.innerHTML = html;
     const lock = blocked && req;
     ['#fv-a-cl', '.fv-sticky'].forEach(q => { const e = body.querySelector(q); if (e) { e.style.opacity = lock ? '.4' : ''; e.style.pointerEvents = lock ? 'none' : ''; } });
@@ -7903,7 +8042,16 @@ async function fvPageAdd(body) {
     const r = await readGeo(); geo = { ...geo, ...r, busy: false };
     fillCenters(); paintGeo();
   };
-  cSel.onchange = () => { centerId = cSel.value; paintGeo(); };
+  cSel.onchange = () => {
+    if (cSel.value === '__find__') {
+      cSel.value = centerId;
+      const items = centers.filter(c => !cityVal || cityOf(c) === cityVal).map(c => { const d = distTo(c); return { value: c.id, label: c.name, sub: c.code + ' · ' + cityOf(c) + (d != null ? ' · ' + fmtDist(d) + ' away' : ''), hay: (c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase(), d }; })
+        .sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.label.localeCompare(b.label));
+      pickFrom('Search centre' + (cityVal ? ' in ' + cityVal : ''), items, (it) => { centerId = it.value; fillCenters(); paintGeo(); });
+      return;
+    }
+    centerId = cSel.value; paintGeo();
+  };
   body.querySelector('#fv-a-loc').onclick = checkGeo;
   fillCities(); fillCenters(); paintGeo();
   if (geoReq()) checkGeo();
