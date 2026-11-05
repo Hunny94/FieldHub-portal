@@ -435,6 +435,18 @@ html.fh-dark .card .hint:not(.fv-note){background:#c9d4fc}
 html.fh-dark [style*="background:#fff"],html.fh-dark [style*="background: #fff"],html.fh-dark [style*="background:white"],html.fh-dark [style*="background:#FFF"]{background:#d3dbfe!important}
 html.fh-dark [style*="background:#f6f7fc"],html.fh-dark [style*="background:#f4f6fb"],html.fh-dark [style*="background:#eef1fb"],html.fh-dark [style*="background:#F6F8FC"],html.fh-dark [style*="background:#f5f6fa"],html.fh-dark [style*="background:var(--bg"]{background:#c9d4fc!important}
 html.fh-dark input[type=checkbox],html.fh-dark input[type=radio]{accent-color:#8f9bd0;color-scheme:light}
+
+/* narrow phones: keep the logo, the name FieldHub and all buttons visible */
+@media (max-width:480px){
+  .top-ribbon{padding-left:8px!important;padding-right:8px!important;gap:4px!important}
+  .top-ribbon-brand{gap:6px!important}
+  .top-ribbon-brand .ribbon-logo{height:30px!important;max-width:38px!important}
+  .ribbon-title{font-size:15px!important}
+  .top-ribbon-actions{gap:4px!important}
+  .top-ribbon-actions .ribbon-link,.top-ribbon-actions button{padding:6px 7px!important;min-width:32px!important;font-size:13px!important}
+  #fh-menu-btn{width:34px!important;height:34px!important;margin-right:0!important}
+  #notif-dropdown{z-index:10050!important}
+}
 `;
   document.head.appendChild(st);
   // title block with breadcrumb
@@ -975,6 +987,7 @@ async function afterLogin(user){
     loadAndShowNotifications();
     setupDesktopNotifications();
     fhSetupNativeApp();
+    setTimeout(fhExpiryPopup, 1500);
   }, 500));
 }
 
@@ -1231,6 +1244,13 @@ async function setupDesktopNotifications(){
     })
     .subscribe();
 
+  sb.channel('expiry-notify-' + state.user.id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expiry_notices', filter: `user_id=eq.${state.user.id}` }, (payload) => {
+      fire('FieldHub: ' + (payload.new.title || 'Expiry update'), payload.new.body || '');
+      pushNotification({ type: 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: 'expiries' });
+      fhExpiryPopup();
+    })
+    .subscribe();
   if (isSuperAdmin()) {
     sb.channel('pwreset-notify')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'password_reset_requests' }, () => { FH_LAST_RESET = (FH_LAST_RESET === null ? 0 : FH_LAST_RESET) ; fhRefreshNavBadges(); })
@@ -1241,6 +1261,23 @@ async function setupDesktopNotifications(){
   setInterval(async () => { ({ requestIds, taskIds } = await refreshMyIds(true)); }, 5*60*1000);
 }
 
+// expiry reminders / closures: a pop-up whenever the app or web is opened (until the person presses OK)
+async function fhExpiryPopup(){
+  if (!state.user || document.getElementById('exp-pop')) return;
+  let rows = [];
+  try {
+    const r = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).is('read_at', null).gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString()).order('created_at', { ascending: false }).limit(10);
+    if (r.error) return; rows = r.data || [];
+  } catch (_e) { return; }
+  if (!rows.length) return;
+  openModal(`<div id="exp-pop"><h2>⚠ Expiry notice${rows.length > 1 ? 's' : ''}</h2>
+    ${rows.map(n => `<div style="padding:10px 12px;margin:8px 0;border-radius:10px;border-left:4px solid ${n.kind === 'closed' ? '#1d7a47' : '#C1502E'};background:#f6f7fc"><b>${escapeHtml(n.title || 'Expiry update')}</b><div style="margin-top:4px;font-size:14px;line-height:1.45">${escapeHtml(n.body || '')}</div><div class="hint" style="margin:4px 0 0;font-size:12px">${formatDateTime(n.created_at)}</div></div>`).join('')}
+    <button class="btn-primary" id="exp-pop-ok" type="button" style="margin-top:6px">OK, I understand</button></div>`);
+  document.getElementById('exp-pop-ok').onclick = async () => {
+    try { await sb.from('expiry_notices').update({ read_at: new Date().toISOString() }).in('id', rows.map(x => x.id)); } catch (_e) {}
+    closeModal();
+  };
+}
 async function showLatestUnackedCircularPopup(){
   const { data: circulars } = await sb.from('circulars').select('*').is('deleted_at', null).order('created_at', {ascending:false}).limit(1);
   if (!circulars || !circulars.length) return;
@@ -1396,6 +1433,7 @@ function renderNotificationDropdown(bell){
     dropdown.id = 'notif-dropdown';
     dropdown.style.cssText = `position:fixed; top:${rect.bottom+6}px; right:${window.innerWidth-rect.right}px; width:340px; max-height:440px; overflow-y:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.15); z-index:5000; padding:10px;`;
     document.body.appendChild(dropdown);
+    if (window.innerWidth <= 520) { dropdown.style.left = '8px'; dropdown.style.right = '8px'; dropdown.style.width = 'auto'; dropdown.style.maxHeight = '72vh'; dropdown.style.boxSizing = 'border-box'; }
   }
 
   const groups = new Map();
@@ -7588,6 +7626,41 @@ function fvVisitsToRows(rows) {
     'Sub-Region': v.sub_region_name || '', 'Visit Type': fvTypeLabel(v.visit_type), 'Score %': fvNum(v.score), 'OK': v.ok_count, 'Issues': v.issue_count,
     'Visited By': v.submitted_by_name || '', 'Centre': v.center_name || '', 'Centre Code': v.center_code || '' }));
 }
+// ---- downloads: visit list + rider-wise / region-wise / area-incharge-wise / centre-wise summaries ----
+function fvAggRows(rows, kind) {
+  const avg = (a) => a.length ? Math.round(a.reduce((x, y) => x + (Number(y) || 0), 0) / a.length * 10) / 10 : '';
+  const group = (keyFn) => { const m = new Map(); rows.forEach(v => { const k = keyFn(v); if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(v); }); return [...m.entries()]; };
+  const base = (list) => ({ Visits: list.length, 'On-site': list.filter(v => v.visit_type === 'Onsite').length, Online: list.filter(v => v.visit_type === 'Online').length, 'Average Score %': avg(list.map(v => v.score)), 'Issues Found': list.reduce((s, v) => s + (Number(v.issue_count) || 0), 0) });
+  const last = (list) => list.map(v => v.visit_date).sort().pop() || '';
+  const lastBy = (list) => { const l = list.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date))).pop(); return l ? (l.submitted_by_name || '') : ''; };
+  if (kind === 'rider') return group(v => v.rider_id || v.rider_employee_id || v.rider_name).map(([, l]) => ({ Rider: l[0].rider_name, 'Employee ID': l[0].rider_employee_id || '', 'Team / Region': l[0].region_name || '', ...base(l), 'Lowest Score %': Math.min(...l.map(v => Number(v.score) || 0)), 'Last Visit': last(l), 'Last Visited By': lastBy(l) })).sort((a, b) => String(a['Team / Region']).localeCompare(b['Team / Region']) || String(a.Rider).localeCompare(b.Rider));
+  if (kind === 'region') return group(v => v.region_name || '—').map(([k, l]) => ({ 'Team / Region': k, ...base(l), 'Riders Visited': new Set(l.map(v => v.rider_id || v.rider_name)).size, 'Visited By (Area Incharges)': new Set(l.map(v => v.submitted_by_name).filter(Boolean)).size, 'Last Visit': last(l) })).sort((a, b) => String(a['Team / Region']).localeCompare(b['Team / Region']));
+  if (kind === 'ai') return group(v => v.submitted_by || v.submitted_by_name).map(([, l]) => ({ 'Area Incharge': l[0].submitted_by_name || '', ...base(l), 'Riders Visited': new Set(l.map(v => v.rider_id || v.rider_name)).size, 'Centres Visited': new Set(l.map(v => v.center_name).filter(Boolean)).size, 'First Visit': l.map(v => v.visit_date).sort()[0] || '', 'Last Visit': last(l) })).sort((a, b) => String(a['Area Incharge']).localeCompare(b['Area Incharge']));
+  if (kind === 'centre') return group(v => v.center_name || '').map(([k, l]) => ({ Centre: k, 'Centre Code': l[0].center_code || '', ...base(l), 'Last Visit': last(l) })).sort((a, b) => String(a.Centre).localeCompare(b.Centre));
+  return fvVisitsToRows(rows);
+}
+function fvDownloadMenu(current) {
+  const opts = [['list', 'Visit list (every visit)'], ['rider', 'Rider-wise summary'], ['region', 'Team / Region-wise summary'], ['ai', 'Area Incharge-wise summary'], ['centre', 'Centre-wise summary']];
+  openModal(`<h2>Download visit report</h2>
+    <p class="hint">Uses the filters currently chosen on the page (<b>${current.length}</b> visit${current.length === 1 ? '' : 's'}). Change the filters first if you need a different month, region or person.</p>
+    <div style="display:grid;gap:8px;margin:10px 0">${opts.map(([k, l]) => `<button type="button" class="btn outline" data-dl="${k}" style="text-align:left">⬇ ${l} <span class="hint" style="margin:0">(CSV)</span></button>`).join('')}</div>
+    <button type="button" class="btn" data-dl="xlsx" style="width:100%">⬇ Everything in one Excel file (5 sheets)</button>`);
+  document.querySelectorAll('[data-dl]').forEach(b => b.onclick = async () => {
+    if (!current.length) { toast('Nothing to download.'); return; }
+    const k = b.dataset.dl, stamp = fvToday();
+    if (k === 'xlsx') {
+      try {
+        await ensureXLSX(); const wb = XLSX.utils.book_new();
+        [['Visits', 'list'], ['Rider-wise', 'rider'], ['Region-wise', 'region'], ['Area Incharge-wise', 'ai'], ['Centre-wise', 'centre']].forEach(([n, kind]) => { const r = fvAggRows(current, kind); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r.length ? r : [{ Note: 'No data' }]), n); });
+        XLSX.writeFile(wb, `field-visit-report-${stamp}.xlsx`);
+      } catch (e) { toast('Could not make the Excel file: ' + e.message); return; }
+    } else {
+      const r = fvAggRows(current, k); if (!r.length) { toast('Nothing to download for this view.'); return; }
+      downloadCSV(`field-visits-${({ list: 'list', rider: 'rider-wise', region: 'region-wise', ai: 'area-incharge-wise', centre: 'centre-wise' })[k]}-${stamp}.csv`, toCSV(r));
+    }
+    closeModal();
+  });
+}
 async function fvPageVisits(host) {
   const rider = fvIsRider();
   let shown = 50, current = [], ctx = null;
@@ -7599,7 +7672,7 @@ async function fvPageVisits(host) {
     afterFilters: (fh, c) => {
       ctx = c;
       const b = fh.querySelector('[data-export]');
-      if (b) b.onclick = () => { if (!current.length) { toast('Nothing to download.'); return; } downloadCSV(`field-visits-${fvToday()}.csv`, toCSV(fvVisitsToRows(current))); };
+      if (b) b.onclick = () => { if (!current.length) { toast('Nothing to download.'); return; } fvDownloadMenu(current); };
     },
     draw: (data, f, res) => {
       current = fvFilterVisits(data, f);
@@ -10170,6 +10243,48 @@ async function renderRosterMain(){
   bindRowActions();
 }
 
+// "Move to roster" for a trainee who has no active login yet: find / approve / create it right here
+async function fhOjtLoginFix(prefill, riders, applyRiderDefaults){
+  const box = document.getElementById('ro-loginfix'); if (!box) return;
+  const norm = (x) => String(x || '').replace(/\D/g, '').slice(-10), low = (x) => String(x || '').trim().toLowerCase();
+  const find = () => state.profilesInScope.find(p => (prefill.employee_id && p.employee_id && low(p.employee_id) === low(prefill.employee_id)) || (prefill.mobile && p.phone && norm(p.phone) === norm(prefill.mobile)));
+  const done = (p) => {
+    if (!riders.some(x => x.id === p.id)) riders.push(p);
+    const sel = document.getElementById('ro-rider');
+    if (sel && !sel.querySelector(`option[value="${p.id}"]`)) sel.insertAdjacentHTML('beforeend', `<option value="${p.id}">${escapeHtml(p.full_name)} (${escapeHtml(p.employee_id || '—')})</option>`);
+    if (sel) { sel.value = p.id; applyRiderDefaults(p.id); }
+    box.innerHTML = `<p class="hint" style="color:#1d7a47"><b>✓ Login ready:</b> ${escapeHtml(p.full_name)}${p.employee_id ? ' (' + escapeHtml(p.employee_id) + ')' : ''}. Check the details below and press Save.</p>`;
+  };
+  const known = find();
+  const btn = (id, label) => `<button type="button" class="btn small" id="${id}">${label}</button>`;
+  if (known && known.role !== 'rider') { box.innerHTML = `<p class="hint" style="color:#b3321b">This Employee ID / mobile belongs to <b>${escapeHtml(known.full_name)}</b>, who is not a rider login (${escapeHtml(known.role || '—')}). Please correct the trainee's Employee ID or mobile.</p>`; return; }
+  if (known) {
+    const st = known.status;
+    box.innerHTML = `<p class="hint">A login for <b>${escapeHtml(known.full_name)}</b> exists but is <b>${escapeHtml(st === 'pending' ? 'waiting for approval' : st)}</b>.</p>${btn('ro-fix-go', st === 'pending' ? 'Approve this login now' : 'Re-activate this login')}`;
+    document.getElementById('ro-fix-go').onclick = async () => {
+      const b = document.getElementById('ro-fix-go'); b.disabled = true;
+      const upd = { status: 'active', role: 'rider' }; if (!known.region_id && prefill.region_id) upd.region_id = prefill.region_id;
+      const { error } = await sb.from('profiles').update(upd).eq('id', known.id);
+      if (error) { b.disabled = false; toast('Could not approve: ' + error.message); return; }
+      await loadScopedProfiles(); const p = state.profilesInScope.find(x => x.id === known.id) || { ...known, ...upd }; done(p);
+    };
+    return;
+  }
+  box.innerHTML = `<p class="hint">No login exists for this person yet.</p>${btn('ro-fix-go', 'Create login now (and continue)')}<span class="hint"> The login uses the mobile number and Employee ID; the standard first password applies and they must change it.</span>`;
+  document.getElementById('ro-fix-go').onclick = async () => {
+    const b = document.getElementById('ro-fix-go');
+    if (!prefill.mobile) { toast('This trainee has no mobile number — edit the trainee first.'); return; }
+    b.disabled = true; b.textContent = 'Creating…';
+    const resp = await callEdgeFunction('bulk_create_riders', { rows: [{ phone: prefill.mobile, employee_id: prefill.employee_id || '', full_name: toProperCase(prefill.full_name || ''), region_id: prefill.region_id || null }], region_id: prefill.region_id || (state.regions[0] && state.regions[0].id) });
+    if (resp.skipped || resp.error) { b.disabled = false; b.textContent = 'Create login now (and continue)'; toast(resp.error || 'The login service is not set up yet.'); return; }
+    const r0 = (resp.results || [])[0]; if (r0 && !r0.ok) { b.disabled = false; b.textContent = 'Create login now (and continue)'; toast('Could not create the login: ' + (r0.error || 'unknown reason')); return; }
+    await loadScopedProfiles(); const p = find();
+    if (!p) { toast('The login was created but could not be found yet — press “Sync” or reopen this window.'); return; }
+    const { error } = await sb.from('profiles').update({ status: 'active', role: 'rider', ...(p.region_id || !prefill.region_id ? {} : { region_id: prefill.region_id }) }).eq('id', p.id);
+    if (error) { toast('Login created, but approval failed: ' + error.message); return; }
+    await loadScopedProfiles(); done(state.profilesInScope.find(x => x.id === p.id) || p);
+  };
+}
 async function openRosterModal(entry, prefill){
   await loadScopedProfiles();
   const riders = state.profilesInScope.filter(p=>p.role==='rider' && (fhLive(p) || p.id===entry?.rider_id));
@@ -10249,7 +10364,8 @@ async function openRosterModal(entry, prefill){
       }
       if (prefill.mobile) document.getElementById('ro-official').value = toLocalPhone(prefill.mobile) || prefill.mobile;
       const h = document.querySelector('#roster-form h2, #active-modal h2');
-      if (h) h.insertAdjacentHTML('afterend', `<p class="hint">Moving <strong>${escapeHtml(prefill.full_name)}</strong> from On Job Training. ${match ? 'Their login was matched automatically.' : '<b style="color:#b3321b">No active login was found for this Employee ID / mobile.</b> Create and approve their login on the Team page first, then come back — or search the list below for the right person.'}</p>`);
+      if (h) h.insertAdjacentHTML('afterend', `<p class="hint">Moving <strong>${escapeHtml(prefill.full_name)}</strong> from On Job Training. ${match ? 'Their login was matched automatically.' : '<b style="color:#b3321b">No active login was found for this Employee ID / mobile.</b>'}</p><div id="ro-loginfix"></div>`);
+      if (!match) fhOjtLoginFix(prefill, riders, applyRiderDefaults);
     }
   }
 
@@ -10289,6 +10405,15 @@ async function openRosterModal(entry, prefill){
       ? await sb.from('roster_entries').update(payload).eq('id', entry.id)
       : await sb.from('roster_entries').insert({ ...payload, created_by: state.user.id });
     if (error){ toast('Could not save: ' + error.message); return; }
+    if (!entry && !prefill) {
+      // added straight to the roster: if he is on On Job Training (same Employee ID / mobile) mark him as moved
+      try {
+        const pr = state.profilesInScope.find(p => p.id === riderId), norm = (x) => String(x || '').replace(/\D/g, '').slice(-10);
+        const { data: ojs } = await sb.from('roster_ojt').select('id, employee_id, mobile').eq('status', 'in_training');
+        const hit = (ojs || []).filter(o => pr && ((o.employee_id && pr.employee_id && String(o.employee_id).trim().toLowerCase() === String(pr.employee_id).trim().toLowerCase()) || (o.mobile && pr.phone && norm(o.mobile) === norm(pr.phone))));
+        for (const o of hit) await sb.from('roster_ojt').update({ status: 'moved', moved_rider_id: riderId, moved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', o.id);
+      } catch (_e) {}
+    }
     if (prefill && !entry && prefill.id){
       await sb.from('roster_ojt').update({ status: 'moved', moved_rider_id: riderId, moved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', prefill.id);
     }
@@ -10357,7 +10482,21 @@ async function renderRosterOjt(){
     main.querySelectorAll('[data-ojt-edit]').forEach(b => b.onclick = () => openOjtModal(byId(b.dataset.ojtEdit)));
     main.querySelectorAll('[data-ojt-move]').forEach(b => b.onclick = () => openRosterModal(null, byId(b.dataset.ojtMove)));
     const setStatus = async (id, status, msg) => { const { error: e } = await sb.from('roster_ojt').update({ status, updated_at: new Date().toISOString() }).eq('id', id); if (e){ toast('Could not save: ' + e.message); return; } toast(msg); renderRosterOjt(); };
-    main.querySelectorAll('[data-ojt-drop]').forEach(b => b.onclick = () => { if (confirm('Mark this trainee as dropped / left?')) setStatus(b.dataset.ojtDrop, 'dropped', 'Marked as dropped'); });
+    main.querySelectorAll('[data-ojt-drop]').forEach(b => b.onclick = async () => {
+      if (!confirm('Mark this trainee as dropped / left?')) return;
+      const r = byId(b.dataset.ojtDrop);
+      // if he already has a login (and is not on the roster) the login is switched off too
+      try {
+        await loadScopedProfiles();
+        const norm = (x) => String(x || '').replace(/\D/g, '').slice(-10), low = (x) => String(x || '').trim().toLowerCase();
+        const p = state.profilesInScope.find(x => x.role === 'rider' && x.status !== 'disabled' && ((r.employee_id && x.employee_id && low(x.employee_id) === low(r.employee_id)) || (r.mobile && x.phone && norm(x.phone) === norm(r.mobile))));
+        if (p) {
+          const { data: ents } = await sb.from('roster_entries').select('id').eq('rider_id', p.id).neq('status', 'removed').limit(1);
+          if (!(ents && ents.length) && confirm(`${p.full_name} has a login (${p.status}). Switch the login OFF too, since he has left?`)) await sb.from('profiles').update({ status: 'disabled' }).eq('id', p.id);
+        }
+      } catch (_e) {}
+      setStatus(b.dataset.ojtDrop, 'dropped', 'Marked as dropped');
+    });
     main.querySelectorAll('[data-ojt-back]').forEach(b => b.onclick = () => setStatus(b.dataset.ojtBack, 'in_training', 'Back in training'));
     main.querySelectorAll('[data-ojt-revert]').forEach(b => b.onclick = async () => {
       const r = byId(b.dataset.ojtRevert);
@@ -10437,6 +10576,17 @@ async function openOjtModal(row){
       notes: document.getElementById('oj-notes').value.trim() || null,
       updated_at: new Date().toISOString()
     };
+    if (payload.employee_id) {
+      const e0 = payload.employee_id;
+      const { data: dupO } = await sb.from('roster_ojt').select('id, full_name, status').ilike('employee_id', e0).in('status', ['in_training']).limit(5);
+      const o2 = (dupO || []).find(x => !row || x.id !== row.id);
+      if (o2) { toast(`Employee ID ${e0} is already on On Job Training (${o2.full_name}). Each Employee ID can be used once.`); return; }
+      const pr = (state.profilesInScope || []).find(p => p.employee_id && String(p.employee_id).trim().toLowerCase() === e0.toLowerCase());
+      if (pr) {
+        const { data: onRoster } = await sb.from('roster_entries').select('id').eq('rider_id', pr.id).neq('status', 'removed').limit(1);
+        if (onRoster && onRoster.length) { toast(`Employee ID ${e0} already belongs to ${pr.full_name}, who is on the Roster. Each Employee ID can be used once.`); return; }
+      }
+    }
     const { error } = row ? await sb.from('roster_ojt').update(payload).eq('id', row.id) : await sb.from('roster_ojt').insert({ ...payload, created_by: state.user.id });
     if (error){ toast('Could not save: ' + error.message); return; }
     closeModal(); toast('Saved'); renderRosterOjt();
