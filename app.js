@@ -381,14 +381,13 @@ input[type=checkbox],input[type=radio]{accent-color:#1E2A6E}
 @media(prefers-reduced-motion:reduce){.fh-stagger>*,.stat-card.attn .stat-number:after,.fh-loadbars i,.modal{animation:none!important}.card,.fh-quick button{transition:none!important}}
 /* ----- dark mode: the page is inverted, then the parts that must keep their own colours are inverted back (exact undo) ----- */
 html.fh-dark{filter:invert(1) hue-rotate(180deg);background:#fff}
-html.fh-dark body{background:#c9cfe2}
-html.fh-dark img,html.fh-dark video,html.fh-dark canvas,html.fh-dark .top-ribbon,html.fh-dark .sidebar,html.fh-dark .toast,html.fh-dark .modal-overlay,html.fh-dark .modal,html.fh-dark #fh-upd-screen,html.fh-dark .fh-hero,html.fh-dark #fh-progress{filter:invert(1) hue-rotate(180deg)}
+html.fh-dark body{background:#dfe6ff}
+html.fh-dark img,html.fh-dark video,html.fh-dark canvas,html.fh-dark .top-ribbon,html.fh-dark .sidebar,html.fh-dark .toast,html.fh-dark #fh-upd-screen,html.fh-dark .fh-hero,html.fh-dark #fh-progress{filter:invert(1) hue-rotate(180deg)}
 html.fh-dark .top-ribbon img,html.fh-dark .sidebar img,html.fh-dark .fh-hero img{filter:none}
-html.fh-dark .modal-overlay .modal{filter:invert(1) hue-rotate(180deg)}
-html.fh-dark .modal-overlay{background:rgba(15,22,70,.45)!important}
-html.fh-dark .main-area{background:#c9cfe2}
-html.fh-dark .topbar{background:#eceffa}
-html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-card2,html.fh-dark .fv-panel,html.fh-dark .modal,html.fh-dark .fh-quick button{background:#eceffa}
+html.fh-dark .modal-overlay{background:rgba(235,238,250,.62)!important}
+html.fh-dark .main-area{background:#dfe6ff}
+html.fh-dark .topbar{background:#d3dbfe}
+html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-card2,html.fh-dark .fv-panel,html.fh-dark .modal,html.fh-dark .fh-quick button{background:#d3dbfe}
 /* ----- print / PDF ----- */
 @media print{
   .top-ribbon,.sidebar,#fh-sb-zone,#fh-menu-btn,#fh-backdrop,#topbar-actions,.toast,#fh-progress,.fh-qf,.fh-quick,.fh-crumb,#ribbon-reload,#ribbon-theme,#ribbon-print,.modal-close{display:none!important}
@@ -413,7 +412,29 @@ html.fh-dark .card,html.fh-dark .fh-qf,html.fh-dark .rq-bar,html.fh-dark .fv-car
 .fh-rowcard .rc-v{font-size:14px;color:#1c2b6e;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
 .fh-rowcard .rc-act{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #e3e8f2}
 .fh-rowcard .rc-act .btn{flex:1 1 auto}
-html.fh-dark .fh-rowcard{background:#eceffa}
+html.fh-dark .fh-rowcard{background:#d3dbfe}
+
+.fv-pickbtn{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;min-height:40px;padding:8px 12px;border:1px solid #d3dbea;border-radius:10px;background:#fff;color:#1c2b6e;font:inherit;font-size:14px;text-align:left;cursor:pointer;max-width:100%}
+.fv-pickbtn:hover{border-color:#9aa8d8}
+html.fh-dark .fv-pickbtn{background:#c7d1fd}
+
+/* softer, navy dark theme (colours are pre-inverted because dark mode is a colour filter) */
+html.fh-dark{--line:#b7c3f7;--fh-line:#b7c3f7}
+html.fh-dark input:not([type=checkbox]):not([type=radio]):not([type=range]),html.fh-dark select,html.fh-dark textarea{background:#c7d1fd!important;border-color:#b7c3f7!important}
+html.fh-dark .form-row input:not([type=checkbox]):not([type=radio]),html.fh-dark .form-row select,html.fh-dark .form-row textarea{border-color:#b7c3f7!important}
+html.fh-dark table thead th,html.fh-dark .fh-tscroll th,html.fh-dark #fvc-tw thead th{background:#c9d4fc!important}
+html.fh-dark table tbody tr:hover td{background:#c3cefb}
+html.fh-dark .fh-stk td:first-child,html.fh-dark .fh-stk th:first-child{background:#d3dbfe}
+html.fh-dark .btn.outline,html.fh-dark .btn-secondary{background:transparent}
+html.fh-dark .fv-note,html.fh-dark .hint{color:#4b5787}
+html.fh-dark .card,html.fh-dark .fv-panel,html.fh-dark .modal{border-color:#b7c3f7!important;box-shadow:0 1px 0 rgba(255,255,255,.3),0 8px 24px rgba(140,150,200,.28)}
+html.fh-dark ::-webkit-scrollbar-thumb{background:#8f9bd0}
+
+html.fh-dark .hint,html.fh-dark p.hint,html.fh-dark .field-hint{background-color:transparent}
+html.fh-dark .card .hint:not(.fv-note){background:#c9d4fc}
+html.fh-dark [style*="background:#fff"],html.fh-dark [style*="background: #fff"],html.fh-dark [style*="background:white"],html.fh-dark [style*="background:#FFF"]{background:#d3dbfe!important}
+html.fh-dark [style*="background:#f6f7fc"],html.fh-dark [style*="background:#f4f6fb"],html.fh-dark [style*="background:#eef1fb"],html.fh-dark [style*="background:#F6F8FC"],html.fh-dark [style*="background:#f5f6fa"],html.fh-dark [style*="background:var(--bg"]{background:#c9d4fc!important}
+html.fh-dark input[type=checkbox],html.fh-dark input[type=radio]{accent-color:#8f9bd0;color-scheme:light}
 `;
   document.head.appendChild(st);
   // title block with breadcrumb
@@ -1867,6 +1888,7 @@ function bindProfileMenu(){
 
 async function navigateTo(view){
   fhCloseDrawer();
+  if (view !== state.view) ROSTER_F = null;
   if (view === 'fieldvisits') view = 'fv_report';   // old bookmark
   if (state.profile && !getAllowedViews().includes(view) && view === 'dashboard') view = getAllowedViews()[0] || 'dashboard';   // view-only logins have no Dashboard
   if (location.hash !== '#'+view) history.pushState(null, '', '#'+view);
@@ -1967,20 +1989,6 @@ function fhEditQuickActions(){
   };
   document.getElementById('qa-reset').onclick = () => save(null);
 }
-function fhEditWelcome(cur){
-  openModal(`<h2>Edit the Welcome banner</h2>
-    <p class="hint">Everyone sees this on their Dashboard. Use <b>{name}</b> to show each person's own name. Leave a box empty to use the standard text.</p>
-    <div class="form-row"><label>Heading</label><input id="wl-t" maxlength="120" placeholder="Welcome, {name}" value="${escapeHtml(cur.title || '')}"></div>
-    <div class="form-row"><label>Message</label><textarea id="wl-x" rows="4" maxlength="400" placeholder="Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries." style="width:100%;box-sizing:border-box">${escapeHtml(cur.text || '')}</textarea></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-primary" id="wl-save" type="button">Save</button><button class="btn outline" id="wl-reset" type="button">Back to standard text</button></div>`);
-  const put = async (t, x) => {
-    const { error } = await sb.from('system_settings').update({ welcome_title: t || null, welcome_text: x || null }).eq('id', 1);
-    if (error) { toast(/welcome_/i.test(error.message) ? 'Please run migration_48.sql in Supabase first.' : 'Could not save: ' + error.message); return; }
-    closeModal(); toast('Welcome banner saved'); renderDashboard();
-  };
-  document.getElementById('wl-save').onclick = () => put(document.getElementById('wl-t').value.trim(), document.getElementById('wl-x').value.trim());
-  document.getElementById('wl-reset').onclick = () => put('', '');
-}
 // ---------------------------------------------------------
 // DASHBOARD
 // ---------------------------------------------------------
@@ -2033,7 +2041,7 @@ async function renderDashboard(){
         <h2>${escapeHtml(wTitle ? wTitle.replace(/\{name\}/gi, state.profile.full_name) : 'Welcome, ' + state.profile.full_name)}</h2>
         <p>${escapeHtml(wText ? wText.replace(/\{name\}/gi, state.profile.full_name) : 'Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.')}</p>
       </div>
-      <div class="dt">${isSuperAdmin() ? '<button type="button" id="wl-edit" class="btn small outline" style="margin-bottom:8px;background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.4)">✎ Edit banner</button>' : ''}<b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
+      <div class="dt"><b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
     </div>
     <div class="grid grid-4 fh-stagger">
       ${[['clay','requests',openReq.count ?? 0,'Open requests','M9 12h6M9 16h6M9 8h6M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z'],
@@ -2068,7 +2076,7 @@ async function renderDashboard(){
     </div>
   `;
 
-  { const w = document.getElementById('wl-edit'); if (w) w.onclick = () => fhEditWelcome(window._fhWel || {}); const q = document.getElementById('qa-edit'); if (q) q.onclick = fhEditQuickActions; }
+  { const q = document.getElementById('qa-edit'); if (q) q.onclick = fhEditQuickActions; }
   // numbers count up gently
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) main.querySelectorAll('[data-count]').forEach(el => {
     const to = Number(el.dataset.count) || 0; if (!to) return;
@@ -4033,6 +4041,10 @@ let settingsTab = 'categories';
 async function renderSettings(){
   const main = document.getElementById('main-content');
   document.getElementById('topbar-actions').innerHTML = '';
+  // switching tabs must not throw the list back to the start
+  const _ma = document.querySelector('.main-area'), _pn = document.querySelector('.fh-set-nav');
+  const _keep = _pn ? { top: _ma ? _ma.scrollTop : 0, x: _pn.scrollLeft, y: _pn.scrollTop, h: main.offsetHeight } : null;
+  if (_keep) main.style.minHeight = _keep.h + 'px';
   const groups = [
     { label: 'Workflow', items: [
       ['categories','Request Categories', () => isAdmin() || hasPermission('categories_add') || hasPermission('categories_edit') || hasPermission('categories_remove')],
@@ -4058,6 +4070,7 @@ async function renderSettings(){
       ['branding','Login Page Branding', () => isSuperAdmin()],
       ['menuicons','Menu Icons', () => isSuperAdmin()],
       ['homebanner','Home Banner', () => isSuperAdmin()],
+      ['welcome','Welcome Banner Text', () => isSuperAdmin()],
       ['popups','Popup Announcements', () => isSuperAdmin()],
     ]},
     { label: 'System', items: [
@@ -4091,6 +4104,15 @@ async function renderSettings(){
     btn.onclick = () => { settingsTab = btn.dataset.settingsTab; renderSettings(); };
   });
   const body = document.getElementById('settings-body');
+  const _restore = () => {
+    if (!_keep) return;
+    const nv = document.querySelector('.fh-set-nav'); if (nv) { nv.scrollLeft = _keep.x; nv.scrollTop = _keep.y; }
+    if (_ma) _ma.scrollTop = _keep.top;
+    const act = nv && nv.querySelector('[data-settings-tab]:not(.outline)');
+    if (act && nv.scrollWidth > nv.clientWidth) { const a = act.getBoundingClientRect(), n = nv.getBoundingClientRect(); if (a.right > n.right - 8 || a.left < n.left + 8) nv.scrollLeft += (a.left - n.left) - (n.width - a.width) / 2; }
+  };
+  _restore();
+  try {
   if (settingsTab === 'categories') await renderCategoriesInto(body);
   else if (settingsTab === 'warningtypes') await renderSimpleTypeList(body, 'warning_types', 'Warning Type');
   else if (settingsTab === 'expirytypes') await renderSimpleTypeList(body, 'expiry_item_types', 'Expiry Item Type');
@@ -4114,6 +4136,26 @@ async function renderSettings(){
   else if (settingsTab === 'fv_centers') await renderFvCentersSettings(body);
   else if (settingsTab === 'appupdate') await renderAppUpdateSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
+  else if (settingsTab === 'welcome') await renderWelcomeSettings(body);
+  } finally { main.style.minHeight = ''; _restore(); setTimeout(_restore, 120); }
+}
+// ---------------- Settings: Welcome banner text (Super Admin only) ----------------
+async function renderWelcomeSettings(body){
+  if (!isSuperAdmin()) { body.innerHTML = '<p class="hint">Only the Super Admin can change this.</p>'; return; }
+  const { data, error } = await sb.from('system_settings').select('*').eq('id', 1).maybeSingle();
+  if (error || !data || !('welcome_title' in data)) { body.innerHTML = '<h3>Welcome Banner</h3><p class="hint">Please run <b>migration_48.sql</b> in Supabase (SQL Editor) first, then reopen this page.</p>'; return; }
+  body.innerHTML = `<h3>Welcome Banner (top of everyone's Dashboard)</h3>
+    <p class="hint">Change the heading and message shown in the dark blue banner. Use <b>{name}</b> to show each person's own name. Leave a box empty to use the standard text. Only the Super Admin can change this.</p>
+    <div class="form-row"><label>Heading</label><input id="wl-t" maxlength="120" placeholder="Welcome, {name}" value="${escapeHtml(data.welcome_title || '')}"></div>
+    <div class="form-row"><label>Message</label><textarea id="wl-x" rows="4" maxlength="400" placeholder="Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries." style="width:100%;box-sizing:border-box">${escapeHtml(data.welcome_text || '')}</textarea></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="wl-save" type="button">Save</button><button class="btn outline" id="wl-reset" type="button">Back to standard text</button></div>`;
+  const put = async (t, x) => {
+    const r = await sb.from('system_settings').update({ welcome_title: t || null, welcome_text: x || null }).eq('id', 1);
+    if (r.error) { toast('Could not save: ' + r.error.message); return; }
+    toast('Welcome banner saved'); renderWelcomeSettings(body);
+  };
+  document.getElementById('wl-save').onclick = () => put(document.getElementById('wl-t').value.trim(), document.getElementById('wl-x').value.trim());
+  document.getElementById('wl-reset').onclick = () => put('', '');
 }
 
 // ---------------- Settings: Field Visit centres, location rule, wild cards ----------------
@@ -4250,7 +4292,7 @@ async function renderFvCentersSettings(body){
       <div id="fvc-wl"></div>
     </div>
     <div class="card" id="fvc-sec-centers">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small outline" id="fvc-bulk">⬆ Bulk upload (Excel / CSV)</button><button class="btn small outline" id="fvc-dl">⬇ Download list</button><button class="btn small" id="fvc-add">+ Add Center</button></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h3 style="margin:0">Centers (${centers.length})</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small outline" id="fvc-bulk">⬆ Bulk upload (Excel / CSV)</button><button class="btn small outline" id="fvc-dl">⬇ Download list</button>${dupN ? '<button class="btn small outline" id="fvc-dldup">⬇ Download shared-location centers to fix</button>' : ''}<button class="btn small" id="fvc-add">+ Add Center</button></div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:10px;background:#f6f7fc;border-radius:10px">
         <b style="font-size:13px">Set the allowed distance (radius)</b>
         <input type="number" id="fvc-rall" min="30" max="5000" placeholder="metres e.g. 200" style="width:130px;padding:7px 8px;border:1px solid var(--line);border-radius:7px">
@@ -4262,7 +4304,7 @@ async function renderFvCentersSettings(body){
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:10px;background:#f6f7fc;border-radius:10px"><b style="font-size:13px">City</b><input id="fvc-cityin" list="fvc-citylist" placeholder="e.g. Lahore" style="width:150px;padding:7px 8px;border:1px solid var(--line);border-radius:7px"><datalist id="fvc-citylist">${cityNames.map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist><button class="btn small" id="fvc-citysel" type="button">Set city for selected (0)</button><span class="hint" style="margin:0">Tick the centers (tick-box at the left of each row), type the city, press the button.</span></div>
       <style>#fvc-tw thead th{position:sticky;top:0;background:#f6f7fc;z-index:2}</style>
       <div id="fvc-tw" style="overflow:auto;max-height:52vh;margin-top:8px;border:1px solid var(--line);border-radius:8px"><table><thead><tr><th><input type="checkbox" id="fvc-selall" title="Select all shown"></th><th>Name</th><th>Code</th><th>City</th><th>Location</th><th>Radius (m)</th><th>Status</th><th></th></tr></thead><tbody>
-      ${centers.map(c => `<tr data-fvc-row="${c.id}" data-city="${escapeHtml((c.city || '').trim())}" data-dup="${isDup(c) ? 1 : 0}" data-q="${escapeHtml((c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase())}"><td><input type="checkbox" data-fvc-sel="${c.id}"></td><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${c.city ? escapeHtml(c.city) : '<span style="color:var(--muted)">—</span>'}</td><td>${gmap(c)}${isDup(c) ? ' <span title="Same location as another center" style="color:#b87e17">⚠</span>' : ''}</td><td><input type="number" min="30" max="5000" value="${c.radius_m}" data-fvc-rad="${c.id}" style="width:80px;padding:5px 6px;border:1px solid var(--line);border-radius:6px"></td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+      ${centers.map(c => `<tr data-fvc-row="${c.id}" data-city="${escapeHtml((c.city || '').trim())}" data-dup="${isDup(c) ? 1 : 0}" data-q="${escapeHtml((c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase())}"><td><input type="checkbox" data-fvc-sel="${c.id}"></td><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.code)}</td><td>${c.city ? escapeHtml(c.city) : '<span style="color:var(--muted)">—</span>'}</td><td>${gmap(c)}${isDup(c) ? ` <span title="Same location as: ${escapeHtml(centers.filter(x => x.id !== c.id && ckey(x) === ckey(c)).slice(0, 6).map(x => x.name).join(' | '))}" style="color:#b87e17;cursor:help">⚠ shared</span>` : ''}</td><td><input type="number" min="30" max="5000" value="${c.radius_m}" data-fvc-rad="${c.id}" style="width:80px;padding:5px 6px;border:1px solid var(--line);border-radius:6px"></td><td>${c.active ? 'Active' : '<span style="color:var(--muted)">Inactive</span>'}</td>
         <td style="white-space:nowrap"><button class="btn small outline" data-fvc-edit="${c.id}">Edit</button> <button class="btn small outline" data-fvc-tog="${c.id}">${c.active ? 'Disable' : 'Enable'}</button> <button class="btn small danger" data-fvc-del="${c.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--muted)">No centers yet.</td></tr>'}
       </tbody></table></div>
     </div>
@@ -4350,6 +4392,7 @@ async function renderFvCentersSettings(body){
     c.radius_m = r; toast(`${c.name}: ${r} m saved`);
   });
   document.getElementById('fvc-dl').onclick = () => downloadCSV('fv-centers.csv', toCSV(centers.length ? centers.map(c => ({ 'Center Name': c.name, 'Code': c.code, 'City': c.city || '', 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No' })) : [{ 'Center Name': 'Example Centre', 'Code': 'EX-01', 'City': 'Lahore', 'Latitude': 24.8607, 'Longitude': 67.0011, 'Radius (m)': 200, 'Active': 'Yes' }]));
+  { const d = document.getElementById('fvc-dldup'); if (d) d.onclick = () => downloadCSV('fv-centers-to-fix.csv', toCSV(centers.filter(isDup).sort((a, b) => ckey(a).localeCompare(ckey(b))).map(c => ({ 'Center Name': c.name, 'Code': c.code, 'City': c.city || '', 'Latitude': c.latitude, 'Longitude': c.longitude, 'Radius (m)': c.radius_m, 'Active': c.active ? 'Yes' : 'No', 'Shared with (count)': kcount.get(ckey(c)) - 1 })))); }
   document.getElementById('fvc-bulk').onclick = () => fvCentersBulk(centers, () => renderFvCentersSettings(body));
   body.querySelectorAll('[data-fvc-edit]').forEach(b => b.onclick = () => openCenter(centers.find(x => x.id === b.dataset.fvcEdit)));
   body.querySelectorAll('[data-fvc-tog]').forEach(b => b.onclick = async () => { const c = centers.find(x => x.id === b.dataset.fvcTog); const { error } = await sb.from('fv_centers').update({ active: !c.active }).eq('id', c.id); if (error) { toast(error.message); return; } renderFvCentersSettings(body); });
@@ -7931,8 +7974,10 @@ async function fvPageAdd(body) {
       <div class="fv-filters"><label>Visit date <input type="date" id="fv-a-date" value="${fvToday()}" max="${fvToday()}"></label>
         <div class="fv-seg" id="fv-a-type"><button type="button" class="t on" data-t="Onsite">On-site</button><button type="button" class="t" data-t="Online">Online</button></div></div></div>
     <div class="fv-panel" id="fv-a-locp"><h3>3 · Centre &amp; location</h3>
-      <div class="fv-filters"><select id="fv-a-city" style="min-width:150px;"></select>
-        <select id="fv-a-center" style="min-width:260px;"></select><button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
+      <div class="fv-filters"><button type="button" class="fv-pickbtn" id="fv-a-citybtn"></button>
+        <button type="button" class="fv-pickbtn" id="fv-a-centerbtn" style="min-width:240px;"></button>
+        <select id="fv-a-city" hidden></select><select id="fv-a-center" hidden></select>
+        <button type="button" class="fv-btn ghost" id="fv-a-loc" style="height:34px;">📍 Check my location</button></div>
       <div id="fv-a-near" style="margin-top:8px"></div>
       <div id="fv-a-geo" class="fv-note"></div></div>
     <div class="fv-panel" id="fv-a-cl"><h3>4 · Checklist <span class="fv-note">(${cps.length} checkpoints · ${fvNum(totalW)} points)</span></h3>
@@ -7974,33 +8019,22 @@ async function fvPageAdd(body) {
   let cityVal = '';
   const fillCities = () => {
     const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
-    citySel.innerHTML = `<option value="__find__">🔍 Search city…</option><option value="">All cities (${centers.length})</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === cityVal ? 'selected' : ''}>${escapeHtml(n)} (${centers.filter(c => cityOf(c) === n).length})</option>`).join('');
+    citySel.innerHTML = `<option value="">All cities (${centers.length})</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === cityVal ? 'selected' : ''}>${escapeHtml(n)} (${centers.filter(c => cityOf(c) === n).length})</option>`).join('');
+  };
+  const syncBtns = () => {
+    const cb = body.querySelector('#fv-a-citybtn'), xb = body.querySelector('#fv-a-centerbtn'), cc = centers.find(c => c.id === centerId);
+    cb.innerHTML = '🏙 ' + escapeHtml(cityVal || 'All cities') + ' <span style="opacity:.6">▾</span>';
+    const n = centers.filter(c => !cityVal || cityOf(c) === cityVal).length;
+    xb.innerHTML = cc ? '🏥 ' + escapeHtml(cc.name) + ' — ' + escapeHtml(cc.code) + ' <span style="opacity:.6">▾</span>' : '🔍 ' + (centers.length ? (geoReq() ? 'Search / select centre' : 'Search / select centre (optional)') + ' (' + n + ')' : 'No centres set up') + ' <span style="opacity:.6">▾</span>';
   };
   const fillCenters = () => {
     const shown = centers.filter(c => !cityVal || cityOf(c) === cityVal);
     if (centerId && !shown.some(c => c.id === centerId)) centerId = '';
     const list = shown.map(c => ({ c, d: distTo(c) })).sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.c.name.localeCompare(b.c.name));
     if (!centerId && geo.ok && list.length && list[0].d != null && list[0].d <= list[0].c.radius_m) centerId = list[0].c.id;
-    cSel.innerHTML = (centers.length ? '<option value="__find__">🔍 Search centre (name, city or code)…</option>' : '') + `<option value="">${centers.length ? ((geoReq() ? 'Select the centre you are visiting' : 'Centre (optional)') + ' — ' + shown.length + ' shown…') : 'No centres set up'}</option>` +
+    cSel.innerHTML = `<option value="">${centers.length ? ((geoReq() ? 'Select the centre you are visiting' : 'Centre (optional)') + ' — ' + shown.length + ' shown…') : 'No centres set up'}</option>` +
       list.map(x => `<option value="${x.c.id}" ${x.c.id === centerId ? 'selected' : ''}>${escapeHtml(x.c.name)} — ${escapeHtml(x.c.code)}${x.d != null ? ' · ' + fmtDist(x.d) + ' away' : ''}</option>`).join('');
-  };
-  // a search box that opens from the first entry of a list
-  const pickFrom = (title, items, onPick) => {
-    openModal(`<h2>${escapeHtml(title)}</h2><input id="fv-pk-q" type="search" placeholder="Type to search…" autocomplete="off" style="width:100%;box-sizing:border-box;margin:6px 0 8px"><div id="fv-pk-l" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px"></div>`);
-    const q = document.getElementById('fv-pk-q'), l = document.getElementById('fv-pk-l');
-    const draw = () => { const t = q.value.trim().toLowerCase(), list = items.filter(i => !t || i.hay.includes(t)).slice(0, 150);
-      l.innerHTML = list.map((i, k) => `<div data-pk="${k}" style="padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer"><b>${escapeHtml(i.label)}</b>${i.sub ? `<div class="fv-note" style="margin:2px 0 0">${escapeHtml(i.sub)}</div>` : ''}</div>`).join('') || '<div style="padding:12px;color:var(--muted)">Nothing matches.</div>';
-      l.querySelectorAll('[data-pk]').forEach(e => e.onclick = () => { closeModal(); onPick(list[+e.dataset.pk]); }); };
-    q.oninput = draw; draw(); setTimeout(() => q.focus(), 50);
-  };
-  citySel.onchange = () => {
-    if (citySel.value === '__find__') {
-      const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
-      citySel.value = cityVal;
-      pickFrom('Search city', [{ value: '', label: 'All cities', sub: centers.length + ' centres', hay: 'all cities' }].concat(names.map(n => ({ value: n, label: n, sub: centers.filter(c => cityOf(c) === n).length + ' centres', hay: n.toLowerCase() }))), (it) => { cityVal = it.value; fillCities(); fillCenters(); paintGeo(); });
-      return;
-    }
-    cityVal = citySel.value; fillCenters(); paintGeo();
+    syncBtns();
   };
   const paintNear = () => {
     if (!geo.ok || !centers.length) { nearBox.innerHTML = ''; return; }
@@ -8008,6 +8042,7 @@ async function fvPageAdd(body) {
     nearBox.innerHTML = near.length ? `<div class="fv-note" style="margin-bottom:4px"><b>Nearest centres to you</b> (tap to choose):</div><div style="display:flex;gap:6px;flex-wrap:wrap">${near.map(x => `<button type="button" class="fv-btn ghost" data-near="${x.c.id}" style="height:auto;padding:6px 10px;text-align:left">${escapeHtml(x.c.name)}<br><small>${escapeHtml(x.c.code)} · ${fmtDist(x.d)} away</small></button>`).join('')}</div>` : '';
     nearBox.querySelectorAll('[data-near]').forEach(b => b.onclick = () => { centerId = b.dataset.near; cityVal = ''; fillCities(); fillCenters(); paintGeo(); });
   };
+  const sharedN = (c) => c && c.latitude != null ? centers.filter(x => x.id !== c.id && x.latitude != null && (+x.latitude).toFixed(5) === (+c.latitude).toFixed(5) && (+x.longitude).toFixed(5) === (+c.longitude).toFixed(5)).length : 0;
   const paintGeo = () => {
     paintNear();
     const req = geoReq(), c = centers.find(x => x.id === centerId), d = c ? distTo(c) : null;
@@ -8033,7 +8068,14 @@ async function fvPageAdd(body) {
       html = box('#e6f4ec', '#1d5a38', `✓ You are at <strong>${escapeHtml(c.name)}</strong> (${fmtDist(d)} from the centre${geo.acc != null ? ', GPS accuracy ±' + Math.round(geo.acc) + ' m' : ''}).`);
     }
     if (geo.ok && c && c.latitude != null) html += `<div class="fv-note" style="margin-top:6px">Your position: <a href="https://www.google.com/maps?q=${geo.lat},${geo.lng}" target="_blank" rel="noopener">${(+geo.lat).toFixed(5)}, ${(+geo.lng).toFixed(5)}</a> · Centre as saved: <a href="https://www.google.com/maps?q=${c.latitude},${c.longitude}" target="_blank" rel="noopener">${(+c.latitude).toFixed(5)}, ${(+c.longitude).toFixed(5)}</a> — open both to compare. If the centre pin is not at the real centre, ask the Super Admin to correct its location.</div>`;
+    if (c && sharedN(c)) html += `<div style="margin-top:8px;padding:9px 12px;border-radius:10px;background:#fff3d6;color:#7a5a00;font-size:13px">⚠ The saved location of this centre is <b>exactly the same as ${sharedN(c)} other centre${sharedN(c) === 1 ? '' : 's'}</b>, so it is only approximate and the distance shown may be wrong. Please ask the Super Admin to correct it (Settings → Field Visit Centers).</div>`;
+    if (isSuperAdmin() && geo.ok && c) html += `<div style="margin-top:8px"><button type="button" class="fv-btn ghost" id="fv-a-fixc" style="height:auto;padding:6px 10px">🛠 Super Admin: save my current position as this centre's location</button></div>`;
     gBox.innerHTML = html;
+    { const fx = gBox.querySelector('#fv-a-fixc'); if (fx) fx.onclick = async () => {
+      if (!confirm(`Replace the saved location of "${c.name}" with the position of this phone right now (GPS accuracy ±${Math.round(geo.acc || 0)} m)?\n\nDo this only while you are standing at the centre.`)) return;
+      const r = await sb.from('fv_centers').update({ latitude: geo.lat, longitude: geo.lng }).eq('id', c.id);
+      if (r.error) { toast('Could not save: ' + r.error.message); return; }
+      c.latitude = geo.lat; c.longitude = geo.lng; toast('Centre location updated'); fillCenters(); paintGeo(); } }
     const lock = blocked && req;
     ['#fv-a-cl', '.fv-sticky'].forEach(q => { const e = body.querySelector(q); if (e) { e.style.opacity = lock ? '.4' : ''; e.style.pointerEvents = lock ? 'none' : ''; } });
   };
@@ -8042,15 +8084,24 @@ async function fvPageAdd(body) {
     const r = await readGeo(); geo = { ...geo, ...r, busy: false };
     fillCenters(); paintGeo();
   };
-  cSel.onchange = () => {
-    if (cSel.value === '__find__') {
-      cSel.value = centerId;
-      const items = centers.filter(c => !cityVal || cityOf(c) === cityVal).map(c => { const d = distTo(c); return { value: c.id, label: c.name, sub: c.code + ' · ' + cityOf(c) + (d != null ? ' · ' + fmtDist(d) + ' away' : ''), hay: (c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase(), d }; })
-        .sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.label.localeCompare(b.label));
-      pickFrom('Search centre' + (cityVal ? ' in ' + cityVal : ''), items, (it) => { centerId = it.value; fillCenters(); paintGeo(); });
-      return;
-    }
-    centerId = cSel.value; paintGeo();
+  // a search box that opens from the first entry of a list
+  const pickFrom = (title, items, onPick) => {
+    openModal(`<h2>${escapeHtml(title)}</h2><input id="fv-pk-q" type="search" placeholder="Type to search…" autocomplete="off" style="width:100%;box-sizing:border-box;margin:6px 0 8px"><div id="fv-pk-l" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px"></div>`);
+    const q = document.getElementById('fv-pk-q'), l = document.getElementById('fv-pk-l');
+    const draw = () => { const t = q.value.trim().toLowerCase(), list = items.filter(i => !t || i.hay.includes(t)).slice(0, 150);
+      l.innerHTML = list.map((i, k) => `<div data-pk="${k}" style="padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer"><b>${escapeHtml(i.label)}</b>${i.sub ? `<div class="fv-note" style="margin:2px 0 0">${escapeHtml(i.sub)}</div>` : ''}</div>`).join('') || '<div style="padding:12px;color:var(--muted)">Nothing matches.</div>';
+      l.querySelectorAll('[data-pk]').forEach(e => e.onclick = () => { closeModal(); onPick(list[+e.dataset.pk]); }); };
+    q.oninput = draw; draw(); setTimeout(() => q.focus(), 50);
+  };
+  body.querySelector('#fv-a-citybtn').onclick = () => {
+    const names = [...new Set(centers.map(cityOf))].sort((a, b) => a.localeCompare(b));
+    pickFrom('Search city', [{ value: '', label: 'All cities', sub: centers.length + ' centres', hay: 'all cities' }].concat(names.map(n => ({ value: n, label: n, sub: centers.filter(c => cityOf(c) === n).length + ' centres', hay: n.toLowerCase() }))), (it) => { cityVal = it.value; fillCities(); fillCenters(); paintGeo(); });
+  };
+  body.querySelector('#fv-a-centerbtn').onclick = () => {
+    if (!centers.length) return;
+    const items = centers.filter(c => !cityVal || cityOf(c) === cityVal).map(c => { const d = distTo(c); return { value: c.id, label: c.name, sub: c.code + ' · ' + cityOf(c) + (d != null ? ' · ' + fmtDist(d) + ' away' : ''), hay: (c.name + ' ' + c.code + ' ' + (c.city || '')).toLowerCase(), d }; })
+      .sort((a, b) => (a.d == null) - (b.d == null) || (a.d - b.d) || a.label.localeCompare(b.label));
+    pickFrom('Search centre' + (cityVal ? ' in ' + cityVal : '') + ' — name, city or code', items, (it) => { centerId = it.value; fillCenters(); paintGeo(); });
   };
   body.querySelector('#fv-a-loc').onclick = checkGeo;
   fillCities(); fillCenters(); paintGeo();
@@ -9753,8 +9804,10 @@ function fhAddOjtButton(){
   bar.insertBefore(b, bar.firstChild);
 }
 
+let ROSTER_F = null;
 async function renderRosterMain(){
   const main = document.getElementById('main-content');
+  const _rsc = document.querySelector('.main-area'), _rkeep = (main.querySelector('#roster-list') && _rsc) ? _rsc.scrollTop : 0;
   const canManage = isAdmin() || hasPermission('roster_manage');
   const canBulkAdd = isAdmin() || hasPermission('roster_bulk_add') || canManage;
   const canBulkUpdate = isAdmin() || hasPermission('roster_bulk_update') || canManage;
@@ -9970,6 +10023,7 @@ async function renderRosterMain(){
     const status = document.getElementById('rf-status').value;
     const reason = document.getElementById('rf-reason')?.value || '';
     const q = document.getElementById('rf-search').value.toLowerCase();
+    ROSTER_F = { region, desig, shift, dayOff, status, reason, q: document.getElementById('rf-search').value };
     const filtered = entries.filter(e =>
       (!region || e.region_id === region) &&
       (!desig || entryDesig(e) === desig) &&
@@ -9991,6 +10045,13 @@ async function renderRosterMain(){
     if (el) el.onchange = applyFilters;
   });
   document.getElementById('rf-search').oninput = applyFilters;
+  // coming back from an edit: keep the same filters and the same place on the page
+  if (ROSTER_F) {
+    const f = ROSTER_F, set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    set('rf-region', f.region); set('rf-designation', f.desig); set('rf-shift', f.shift); set('rf-dayoff', f.dayOff); set('rf-status', f.status); set('rf-reason', f.reason); set('rf-search', f.q);
+    if (f.region || f.desig || f.shift || f.dayOff || f.status || f.reason || f.q) applyFilters();
+  }
+  if (_rkeep && _rsc) { _rsc.scrollTop = _rkeep; setTimeout(() => { _rsc.scrollTop = _rkeep; }, 60); setTimeout(() => { _rsc.scrollTop = _rkeep; }, 300); }
 
   (function freezeRosterStats(){
     const el = document.getElementById('roster-stats');
