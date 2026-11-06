@@ -242,6 +242,23 @@ function fhUiPass(){
       if (!el.children.length && /^Loading(…|\.\.\.)$/.test(el.textContent.trim()) && !el.dataset.fhL) { el.dataset.fhL = 1; el.innerHTML = '<span class="fh-loadbars"><i></i><i></i><i></i></span>'; }
     });
     fhAddQuickFilter(main);
+    if (!main.querySelector('.fh-tall')) main.classList.remove('fh-wide');
+    // desktop: a table wider than the page scrolls on its own (header row stays visible, side-scroll bar always in view)
+    if (window.innerWidth > 900) {
+      main.querySelectorAll('table').forEach(t => {
+        if (t.dataset.fhW || t.closest('.ft-wrap, .fh-tscroll, .fh-tall, .modal, details, #fv-a-cl')) return;
+        t.dataset.fhW = 1;
+        const par = t.parentNode;
+        if (!par || t.rows.length < 3) return;
+        const pov = getComputedStyle(par).overflowX;
+        if (/(auto|scroll)/.test(pov)) return;
+        if (t.scrollWidth <= par.clientWidth + 2 && t.rows.length < 14) return;
+        const w = document.createElement('div'); w.className = 'fh-tall';
+        par.insertBefore(w, t); w.appendChild(t);
+        if (t.scrollWidth > par.clientWidth + 2) main.classList.add('fh-wide');
+      });
+    }
+    fhTopBtn();
     // phones: tables that scroll sideways keep their first column visible
     if (window.innerWidth <= 700) {
       main.querySelectorAll('table').forEach(t => {
@@ -258,6 +275,16 @@ function fhUiPass(){
       });
     }
   } catch (e) { console.warn(e); } finally { _fhUiBusy = false; }
+}
+// round "back to top" button: appears on any long page
+function fhTopBtn(){
+  if (document.getElementById('fh-totop')) return;
+  const b = document.createElement('button'); b.id = 'fh-totop'; b.type = 'button'; b.title = 'Back to top'; b.setAttribute('aria-label', 'Back to top'); b.textContent = '↑';
+  document.body.appendChild(b);
+  const sc = () => document.querySelector('.main-area');
+  const pos = () => { const m = sc(); const y = Math.max(m ? m.scrollTop : 0, window.scrollY || 0); b.classList.toggle('show', y > 400 && !!state.user); };
+  document.addEventListener('scroll', pos, { passive: true, capture: true });
+  b.onclick = () => { const m = sc(); if (m) m.scrollTo({ top: 0, behavior: 'smooth' }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 }
 function fhInstallUI(){
   if (document.getElementById('fh-ui')) return;
@@ -738,6 +765,10 @@ function fhInstallSidebar(){
 @keyframes fhRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes fhPulse{0%{box-shadow:0 0 0 0 rgba(30,42,110,.4)}100%{box-shadow:0 0 0 9px rgba(30,42,110,0)}}
 #main-content>*{animation:fhRise .28s ease-out backwards}
+#fh-totop{position:fixed;right:18px;bottom:20px;z-index:9000;width:44px;height:44px;border-radius:50%;border:0;cursor:pointer;color:#fff;font-size:20px;line-height:1;background:linear-gradient(135deg,#1E2A6E,#2C3B8F);box-shadow:0 6px 18px rgba(20,30,90,.35);opacity:0;transform:translateY(12px) scale(.9);pointer-events:none;transition:opacity .2s,transform .2s;display:flex;align-items:center;justify-content:center}
+#fh-totop.show{opacity:1;transform:none;pointer-events:auto}
+#fh-totop:hover{filter:brightness(1.15)}
+@media print{#fh-totop{display:none!important}}
 .fh-pulse{animation:fhPulse .5s ease-out}
 @media (min-width:901px){
   :root{--fh-sbw:272px;--fh-ease:cubic-bezier(.22,1,.36,1)}
@@ -745,8 +776,13 @@ function fhInstallSidebar(){
   #fh-menu-btn:hover{background:rgba(255,255,255,.28)}
   body:not(.fh-sb-auto) #fh-menu-btn{transform:rotate(90deg)}
   .app-body{display:block!important;position:relative;overflow:hidden}
+  .main-content.fh-wide{max-width:none!important}
+  .fh-tall{overflow:auto;max-width:100%;max-height:calc(100vh - 300px);min-height:min(420px,70vh);-webkit-overflow-scrolling:touch;border-radius:10px}
+  .fh-tall>table{min-width:100%}
+  .fh-tall thead th{position:sticky;top:0;z-index:3;box-shadow:0 1px 0 #E3E8F2}
+  #fh-totop{right:22px!important}
   .sidebar{position:fixed!important;top:var(--fh-top,60px);bottom:0;left:0;height:auto!important;width:var(--fh-sbw)!important;max-width:none!important;margin:0!important;z-index:60;overflow-y:auto;overflow-x:hidden;transform:none;box-shadow:none;transition:transform .42s var(--fh-ease),box-shadow .42s var(--fh-ease);will-change:transform}
-  .main-area{margin-left:var(--fh-sbw)!important;width:auto!important;max-width:none!important;height:100%;overflow-y:auto;overflow-x:hidden;transition:margin-left .42s var(--fh-ease)}
+  .main-area{margin-left:var(--fh-sbw)!important;width:auto!important;max-width:none!important;height:calc(100vh - var(--fh-top,60px));overflow-y:auto;overflow-x:auto;transition:margin-left .42s var(--fh-ease)}
   body.fh-sb-auto .main-area{margin-left:0!important}
   body.fh-sb-auto .sidebar{transform:translateX(-104%)}
   body.fh-sb-auto.fh-sb-peek .sidebar{transform:none;box-shadow:12px 0 34px rgba(10,15,45,.38)}
@@ -2733,13 +2769,19 @@ async function renderRequests(){
   if (state.profile.role === 'rider'){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-request-btn">+ New Request</button>`;
     document.getElementById('new-request-btn').onclick = openNewRequestModal;
+  } else if (isSuperAdmin()){
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="rq-recheck-btn" title="Re-checks the handler of every open request against the routing rules">Re-check handlers</button>`;
+    document.getElementById('rq-recheck-btn').onclick = fhRecheckHandlers;
   }
 
-  const { data: rawRequests } = await sb.from('requests')
+  const { data: rawRequests0 } = await sb.from('requests')
     .select('*, rider:profiles!rider_id(full_name, employee_id), poc:profiles!assigned_poc_id(full_name, employee_id)')
     .is('deleted_at', null)
     .order('created_at', {ascending:false});
 
+  // an Inventory Coordinator sees the requests that are his (handler), in his own region(s), his own, or not yet assigned to anyone
+  const rawRequests = (rawRequests0 || []).filter(r => state.profile.role !== 'inventory_coordinator'
+    || r.assigned_poc_id === state.user.id || r.rider_id === state.user.id || !r.assigned_poc_id || (r.region_id && state.myRegionIds.includes(r.region_id)));
   const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3, cancelled:4 };
   const requests = (rawRequests||[]).slice().sort((a,b) => (STATUS_WEIGHT[a.status]??9) - (STATUS_WEIGHT[b.status]??9) || new Date(b.created_at)-new Date(a.created_at));
 
@@ -2985,8 +3027,8 @@ function requestActionControls(r){
   if (isRider && r.status==='resolved'){
     html += `<button class="btn small success" data-req-id="${r.id}" data-req-status="closed">Accept &amp; Close</button>`;
   }
-  // Cancel: handler / region staff / admin / inventory coordinator, or the rider while it is still open
-  if (['open','in_progress'].includes(r.status) && (canAct || state.profile.role === 'inventory_coordinator' || (isRider && r.status === 'open'))){
+  // Cancel: handler / region staff / admin, or the rider while it is still open
+  if (['open','in_progress'].includes(r.status) && (canAct || (isRider && r.status === 'open'))){
     html += `<button class="btn small danger" data-req-id="${r.id}" data-req-status="cancelled">Cancel Request</button>`;
   }
   return html;
@@ -3008,6 +3050,82 @@ async function loadThread(requestId){
   `).join('');
 }
 
+// ---------------------------------------------------------
+// REQUEST ROUTING — who should handle a request.
+//  1) the rider's REAL region: his Roster entry first, then his profile regions
+//  2) the Super Admin routing rule for that region + category, then the region-wide rule, then the old category override, then the category's own role
+//  3) the person with that role who is linked to THAT region. Nobody from another region is ever picked; if no one is linked,
+//     a person with that role who has no region at all (company-wide) is used, otherwise the request stays Unassigned for the Admin.
+// ---------------------------------------------------------
+async function fhRiderRegionIds(riderId){
+  const ids = [];
+  try {
+    const { data } = await sb.from('roster_entries').select('region_id').eq('rider_id', riderId).neq('status', 'removed').order('created_at', { ascending: false }).limit(1);
+    if (data && data[0] && data[0].region_id) ids.push(data[0].region_id);
+  } catch (_e) {}
+  try {
+    const { data } = await sb.from('profile_regions').select('region_id').eq('profile_id', riderId);
+    (data || []).forEach(r => { if (!ids.includes(r.region_id)) ids.push(r.region_id); });
+  } catch (_e) {}
+  if (!ids.length){
+    try { const { data } = await sb.from('profiles').select('region_id').eq('id', riderId).maybeSingle(); if (data && data.region_id) ids.push(data.region_id); } catch (_e) {}
+  }
+  return ids;
+}
+async function fhPickHandler(riderId, categoryId, ctx){
+  ctx = ctx || {};
+  const category = state.categories.find(c => c.id === categoryId);
+  const regionIds = ctx.regionIds || await fhRiderRegionIds(riderId);
+  const myRegionId = regionIds[0] || null;
+  let targetRole = category?.primary_role;
+  if (myRegionId){
+    const { data: rules } = await sb.from('request_routing_rules').select('category_id, target_role').eq('region_id', myRegionId);
+    const specific = (rules||[]).find(r => r.category_id === categoryId);
+    const regionWide = (rules||[]).find(r => !r.category_id);
+    if (specific) targetRole = specific.target_role;
+    else if (regionWide) targetRole = regionWide.target_role;
+    else {
+      const { data: override } = await sb.from('category_region_overrides').select('role').eq('category_id', categoryId).eq('region_id', myRegionId).maybeSingle();
+      if (override?.role) targetRole = override.role;
+    }
+  }
+  if (!targetRole) return null;
+  const [{ data: candidates }, { data: links }] = await Promise.all([
+    sb.from('profiles').select('id, region_id').eq('role', targetRole).eq('status', 'active').order('full_name'),
+    sb.from('profile_regions').select('profile_id, region_id')
+  ]);
+  const byP = new Map();
+  (links||[]).forEach(l => { if (!byP.has(l.profile_id)) byP.set(l.profile_id, []); byP.get(l.profile_id).push(l.region_id); });
+  const regionsOf = (p) => { const l = byP.get(p.id); return (l && l.length) ? l : (p.region_id ? [p.region_id] : []); };
+  const list = candidates || [];
+  const inRegion = list.filter(p => regionIds.some(r => regionsOf(p).includes(r)));
+  if (inRegion.length) return inRegion[0].id;
+  const wide = list.filter(p => regionsOf(p).length === 0);
+  return wide.length ? wide[0].id : null;
+}
+
+async function fhRecheckHandlers(){
+  const { data: open } = await sb.from('requests').select('id, rider_id, category_id, assigned_poc_id, status, category, poc:profiles!assigned_poc_id(full_name)').is('deleted_at', null).in('status', ['open', 'in_progress']);
+  const rows = open || [];
+  if (!rows.length){ toast('There are no open requests.'); return; }
+  const changes = [], cache = new Map();
+  for (const r of rows){
+    if (!r.category_id) continue;
+    const key = r.rider_id;
+    if (!cache.has(key)) cache.set(key, await fhRiderRegionIds(r.rider_id));
+    const want = await fhPickHandler(r.rider_id, r.category_id, { regionIds: cache.get(key) });
+    if (want !== (r.assigned_poc_id || null)) changes.push({ r, want });
+  }
+  if (!changes.length){ toast('All ' + rows.length + ' open requests already have the correct handler.'); return; }
+  const names = new Map();
+  const ids = [...new Set(changes.map(c => c.want).filter(Boolean))];
+  if (ids.length){ const { data } = await sb.from('profiles').select('id, full_name').in('id', ids); (data || []).forEach(p => names.set(p.id, p.full_name)); }
+  const list = changes.slice(0, 12).map(c => `${c.r.category}: ${c.r.poc?.full_name || 'Unassigned'} → ${c.want ? (names.get(c.want) || 'new handler') : 'Unassigned'}`).join('\n');
+  if (!confirm(`${changes.length} of ${rows.length} open requests have a handler that does not match the routing rules.\n\n${list}${changes.length > 12 ? '\n…' : ''}\n\nCorrect them now?`)) return;
+  let ok = 0;
+  for (const c of changes){ const { error } = await sb.from('requests').update({ assigned_poc_id: c.want }).eq('id', c.r.id); if (!error) ok++; }
+  toast(`Updated the handler on ${ok} request(s).`); renderRequests();
+}
 function openNewRequestModal(){
   const options = state.categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   openModal(`
@@ -3022,41 +3140,7 @@ function openNewRequestModal(){
     e.preventDefault();
     const categoryId = document.getElementById('r-category').value;
     const category = state.categories.find(c=>c.id===categoryId);
-    const myRegionId = (state.myRegionIds && state.myRegionIds[0]) || state.profile.region_id;
-
-    // Work out who should handle this. Priority: a specific Super-Admin
-    // configured routing rule for this region+category, then a region-wide
-    // rule (no category), then the old category-region override, then the
-    // category's own default role.
-    let targetRole = category?.primary_role;
-    if (myRegionId){
-      const { data: rules } = await sb.from('request_routing_rules').select('category_id, target_role').eq('region_id', myRegionId);
-      const specific = (rules||[]).find(r => r.category_id === categoryId);
-      const regionWide = (rules||[]).find(r => !r.category_id);
-      if (specific) targetRole = specific.target_role;
-      else if (regionWide) targetRole = regionWide.target_role;
-      else {
-        const { data: override } = await sb.from('category_region_overrides')
-          .select('role').eq('category_id', categoryId).eq('region_id', myRegionId).maybeSingle();
-        if (override?.role) targetRole = override.role;
-      }
-    }
-    let assignedPocId = null;
-    if (targetRole){
-      const [{ data: candidates }, { data: allLinksForRole }] = await Promise.all([
-        sb.from('profiles').select('id, region_id').eq('role', targetRole).eq('status', 'active'),
-        sb.from('profile_regions').select('profile_id, region_id')
-      ]);
-      const linksByCandidate = new Map();
-      (allLinksForRole||[]).forEach(l => { if (!linksByCandidate.has(l.profile_id)) linksByCandidate.set(l.profile_id, []); linksByCandidate.get(l.profile_id).push(l.region_id); });
-      const candidateRegionIds = (p) => {
-        const links = linksByCandidate.get(p.id);
-        if (links && links.length) return links;
-        return p.region_id ? [p.region_id] : [];
-      };
-      const inRegion = (candidates||[]).find(p => myRegionId && candidateRegionIds(p).includes(myRegionId));
-      assignedPocId = (inRegion || candidates?.[0])?.id || null;
-    }
+    const assignedPocId = await fhPickHandler(state.user.id, categoryId);
 
     const { data: inserted, error } = await sb.from('requests').insert({
       rider_id: state.user.id,
@@ -10959,7 +11043,7 @@ function toast(msg){
   let box = document.getElementById('fh-toasts');
   if (!box){
     box = document.createElement('div'); box.id = 'fh-toasts';
-    box.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:100000;display:flex;flex-direction:column;gap:8px;align-items:flex-end;max-width:min(420px,calc(100vw - 24px));pointer-events:none;';
+    box.style.cssText = 'position:fixed;right:16px;bottom:76px;z-index:100000;display:flex;flex-direction:column;gap:8px;align-items:flex-end;max-width:min(420px,calc(100vw - 24px));pointer-events:none;';
     document.body.appendChild(box);
     if (window.matchMedia && window.matchMedia('(max-width:480px)').matches){ box.style.left = '12px'; box.style.right = '12px'; box.style.alignItems = 'stretch'; box.style.maxWidth = 'none'; }
   }
