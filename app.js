@@ -172,7 +172,17 @@ function fhApplyTheme(){
   const b = document.getElementById('ribbon-theme');
   if (b){ b.textContent = fhTheme() === 'dark' ? '☀' : '🌙'; b.title = fhTheme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; b.setAttribute('aria-label', b.title); }
 }
-function fhToggleTheme(){ try{ localStorage.setItem('fh_theme', fhTheme() === 'dark' ? 'light' : 'dark'); }catch(_e){} fhApplyTheme(); }
+function fhToggleTheme(){
+  try{ localStorage.setItem('fh_theme', fhTheme() === 'dark' ? 'light' : 'dark'); }catch(_e){}
+  fhApplyTheme();
+  // charts paint their own colours, so a page with charts is drawn again in the new theme (scroll position is kept)
+  try {
+    if (document.querySelector('#main-content .js-plotly-plot') && state.view){
+      const sc = document.querySelector('.main-area'), y = sc ? sc.scrollTop : 0;
+      Promise.resolve(navigateTo(state.view)).then(() => { setTimeout(() => { if (sc) sc.scrollTop = y; }, 400); });
+    }
+  } catch (_e) {}
+}
 function fhSetCrumb(view){
   const el = document.getElementById('fh-crumb'); if (!el) return;
   let grp = '';
@@ -10384,8 +10394,9 @@ async function renderRosterMain(){
     <style>
       /* Frozen summary bar. The colour "bleed" (box-shadow + clip-path) makes the bar's background
          stretch the full width of the page, so wide table content can never show beside it. */
-      #roster-stats { position: sticky; top: 0; z-index: 30; padding: 10px 0 12px;
+      #roster-stats { --rs-bg: #f4f6fb; background: var(--rs-bg); position: sticky; top: 0; z-index: 30; padding: 10px 0 12px;
         box-shadow: 0 0 0 100vmax var(--rs-bg, #f4f6fb); clip-path: inset(0 -100vmax -1px 0); }
+      html.fh-dark #roster-stats { --rs-bg: #0d1230; }
       #roster-stats.stuck { box-shadow: 0 0 0 100vmax var(--rs-bg, #f4f6fb), 0 1px 0 100vmax rgba(30,42,110,.16); }
       .roster-stat-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(130px, 1fr); gap: 10px; overflow-x: auto; padding: 4px 2px 6px; scrollbar-width: thin; }
       .roster-stat-row .stat-card { min-width: 0; padding: 9px 12px !important; background: #fff; border: 1px solid rgba(30,42,110,.10);
@@ -10498,14 +10509,7 @@ async function renderRosterMain(){
   (function freezeRosterStats(){
     const el = document.getElementById('roster-stats');
     if (!el) return;
-    let bg = '', n = el.parentElement;
-    while (n){
-      const c = getComputedStyle(n).backgroundColor;
-      if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent'){ bg = c; break; }
-      n = n.parentElement;
-    }
-    el.style.background = bg || '#f4f6fb';
-    el.style.setProperty('--rs-bg', bg || '#f4f6fb');
+    // the bar's backing colour comes from the stylesheet, so it follows light/dark instantly
     const tb = document.querySelector('.topbar');
     let off = 0;
     if (tb){ const pos = getComputedStyle(tb).position; if (pos === 'sticky' || pos === 'fixed') off = tb.offsetHeight; }
