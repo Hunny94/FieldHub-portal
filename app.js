@@ -633,7 +633,8 @@ function fhWatchAccount(){
     try {
       const { data, error } = await sb.from('profiles').select('status').eq('id', state.user.id).maybeSingle();
       if (error) return;
-      if (!data || data.status !== 'active'){
+      if (!data){ try { await sb.auth.refreshSession(); } catch (_) {} return; }   // no row = most likely an expired token, never treat as disabled
+      if (data.status === 'disabled'){
         toast('Your account is disabled. Signing you out…');
         setTimeout(async () => { try { await sb.auth.signOut(); } catch (_) {} location.reload(); }, 1200);
       }
@@ -641,6 +642,22 @@ function fhWatchAccount(){
   };
   setInterval(check, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
+// Keeps the sign-in alive: when the app/tab comes back (or the phone comes online) the session is renewed instead of dropping to the login page.
+function fhKeepSession(){
+  if (window.__fhKeep) return; window.__fhKeep = 1;
+  const renew = async () => {
+    if (!state.user) return;
+    try {
+      const { data } = await sb.auth.getSession();
+      const exp = data && data.session ? data.session.expires_at * 1000 : 0;
+      if (!data || !data.session || exp - Date.now() < 10 * 60 * 1000) await sb.auth.refreshSession();
+    } catch (_) {}
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) renew(); });
+  window.addEventListener('online', renew);
+  window.addEventListener('focus', renew);
+  setInterval(renew, 10 * 60 * 1000);
 }
 
 
@@ -864,7 +881,14 @@ async function init(){
   }
 
   sb.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_OUT'){ showAuthScreen(); }
+    if (event === 'SIGNED_OUT'){
+      // an unexpected sign-out (token could not be renewed) gets one quiet retry before the login page is shown
+      if (!window.__fhUserLogout && state.user){
+        setTimeout(async () => { try { const { data } = await sb.auth.getSession(); if (!data || !data.session){ state.user = null; showAuthScreen(); toast('Please sign in again — your session expired.'); } } catch (_) { showAuthScreen(); } }, 1500);
+        return;
+      }
+      window.__fhUserLogout = false; showAuthScreen();
+    }
   });
 }
 
@@ -942,7 +966,7 @@ async function afterLogin(user){
     return;
   }
 
-  fhWatchAccount();
+  fhWatchAccount(); fhKeepSession();
   if (profile.must_change_password){
     showForcedPasswordChange();
     return;
@@ -1636,7 +1660,8 @@ function clearAuthMessage(){
   el.style.display = 'none'; el.textContent = '';
 }
 async function doLogout(){
-  await fhUnregisterPush();
+  // the phone keeps its alert registration on purpose, so alerts still reach it after signing out
+  window.__fhUserLogout = true;
   await sb.auth.signOut();
   state.user = null; state.profile = null;
   const phoneEl = document.getElementById('login-phone');
@@ -6521,7 +6546,10 @@ async function renderTools(){
   const ackMap = new Map((acks||[]).map(a => [a.tool_issuance_id, a]));
 
   const today = new Date();
-  const renderRows = (list) => `<table><thead><tr><th>Rider</th><th>Employee ID</th><th>Tool</th><th>Serial No.</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
+  const TI_SEL = new Set();
+  const toolNames = [...new Set(issuances.map(i => i.tool_types?.name).filter(Boolean))].sort();
+  const riderNames = [...new Map(issuances.filter(i => i.rider_id).map(i => [i.rider_id, i.profiles?.full_name || '—'])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const renderRows = (list) => `<table><thead><tr>${isSuperAdmin()?'<th style="width:28px"><input type="checkbox" id="ti-all" title="Select all shown"></th>':''}<th>Rider</th><th>Employee ID</th><th>Tool</th><th>Serial No.</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
     ${list.map(i => {
       const due = new Date(i.next_due_date);
       const daysLeft = Math.ceil((due-today)/(1000*60*60*24));
@@ -6539,6 +6567,7 @@ async function renderTools(){
         ackCell = `<span class="badge pending">Awaiting rider</span>`;
       }
       return `<tr>
+        ${isSuperAdmin()?`<td><input type="checkbox" class="ti-sel" data-id="${i.id}" ${TI_SEL.has(i.id)?'checked':''}></td>`:''}
         <td>${escapeHtml(i.profiles?.full_name||'—')}</td>
         <td class="mono">${escapeHtml(i.profiles?.employee_id||'—')}</td>
         <td>${escapeHtml(i.tool_types?.name||'—')}</td>
@@ -6555,21 +6584,66 @@ async function renderTools(){
     }).join('')}
   </tbody></table>`;
 
-  main.innerHTML = `<div class="form-row" style="max-width:320px;"><input type="text" id="tool-issuance-search" placeholder="Search by rider name, Employee ID or serial number…"></div><div id="tool-issuance-list">${renderRows(issuances)}</div>`;
+  main.innerHTML = `<div class="fv-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <input type="text" id="tool-issuance-search" placeholder="Search by rider name, Employee ID or serial number…" style="min-width:240px;flex:1;max-width:340px;">
+      <select id="ti-f-ack"><option value="">Acknowledgment: All</option><option value="yes">Acknowledged</option><option value="no">Not acknowledged</option></select>
+      <select id="ti-f-tool"><option value="">Tool: All</option>${toolNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
+      <select id="ti-f-rider"><option value="">Rider: All</option>${riderNames.map(([id, n]) => `<option value="${id}">${escapeHtml(n)}</option>`).join('')}</select>
+      <select id="ti-f-status"><option value="">Status: All</option><option value="ok">OK</option><option value="due">Due within 30 days</option><option value="over">Overdue for reissue</option></select>
+      <button class="btn small outline" id="ti-f-clear" type="button">Clear</button>
+      ${isSuperAdmin() ? `<button class="btn small danger" id="ti-del-sel" type="button" style="margin-left:auto;display:none;"></button>` : ''}
+    </div>
+    <div class="hint" id="ti-count" style="margin-bottom:6px;"></div>
+    <div id="tool-issuance-list">${renderRows(issuances)}</div>`;
 
+  const daysLeftOf = (i) => Math.ceil((new Date(i.next_due_date) - today) / 86400000);
+  let shown = issuances;
+  const refreshSel = () => {
+    const b = document.getElementById('ti-del-sel');
+    if (b){ b.style.display = TI_SEL.size ? '' : 'none'; b.textContent = `Delete selected (${TI_SEL.size})`; }
+    const all = document.getElementById('ti-all');
+    if (all){ all.checked = shown.length > 0 && shown.every(i => TI_SEL.has(i.id)); }
+  };
   const applyFilters = () => {
     const q = document.getElementById('tool-issuance-search').value.trim().toLowerCase();
-    const filtered = !q ? issuances : issuances.filter(i =>
-      (i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q) || (i.serial_number||'').toLowerCase().includes(q)
-    );
-    document.getElementById('tool-issuance-list').innerHTML = renderRows(filtered);
+    const ack = document.getElementById('ti-f-ack').value, tool = document.getElementById('ti-f-tool').value,
+          rid = document.getElementById('ti-f-rider').value, st = document.getElementById('ti-f-status').value;
+    shown = issuances.filter(i => {
+      if (q && !((i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q) || (i.serial_number||'').toLowerCase().includes(q))) return false;
+      if (ack === 'yes' && !ackMap.has(i.id)) return false;
+      if (ack === 'no' && ackMap.has(i.id)) return false;
+      if (tool && (i.tool_types?.name || '') !== tool) return false;
+      if (rid && i.rider_id !== rid) return false;
+      if (st){ const d = daysLeftOf(i); if (st === 'over' && !(d < 0)) return false; if (st === 'due' && !(d >= 0 && d <= 30)) return false; if (st === 'ok' && !(d > 30)) return false; }
+      return true;
+    });
+    document.getElementById('tool-issuance-list').innerHTML = renderRows(shown);
+    document.getElementById('ti-count').textContent = `Showing ${shown.length} of ${issuances.length} records`;
     bindAckButtons();
     bindSuperAdminActions();
+    refreshSel();
   };
-  document.getElementById('tool-issuance-search').oninput = applyFilters;
+  ['tool-issuance-search'].forEach(id => document.getElementById(id).oninput = applyFilters);
+  ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status'].forEach(id => document.getElementById(id).onchange = applyFilters);
+  document.getElementById('ti-f-clear').onclick = () => { document.getElementById('tool-issuance-search').value = ''; ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status'].forEach(id => document.getElementById(id).value = ''); applyFilters(); };
+  const delSel = document.getElementById('ti-del-sel');
+  if (delSel) delSel.onclick = async () => {
+    const ids = [...TI_SEL]; if (!ids.length) return;
+    if (!confirm(`Permanently delete ${ids.length} tool issuance record(s)? This cannot be undone.`)) return;
+    let failed = 0;
+    for (let k = 0; k < ids.length; k += 100){
+      const { error } = await sb.from('tool_issuances').delete().in('id', ids.slice(k, k + 100));
+      if (error){ failed += ids.slice(k, k + 100).length; toast('Could not delete: ' + error.message); }
+    }
+    if (failed < ids.length) toast(`Deleted ${ids.length - failed} record(s)`);
+    renderTools();
+  };
 
   function bindSuperAdminActions(){
     if (!isSuperAdmin()) return;
+    document.querySelectorAll('.ti-sel').forEach(cb => { cb.onchange = () => { cb.checked ? TI_SEL.add(cb.dataset.id) : TI_SEL.delete(cb.dataset.id); refreshSel(); }; });
+    const allCb = document.getElementById('ti-all');
+    if (allCb) allCb.onchange = () => { shown.forEach(i => allCb.checked ? TI_SEL.add(i.id) : TI_SEL.delete(i.id)); document.querySelectorAll('.ti-sel').forEach(cb => { cb.checked = TI_SEL.has(cb.dataset.id); }); refreshSel(); };
     document.querySelectorAll('[data-edit-issuance]').forEach(btn => {
       btn.onclick = () => openEditToolIssuanceModal(issuances.find(i=>i.id===btn.dataset.editIssuance));
     });
@@ -6582,8 +6656,6 @@ async function renderTools(){
       };
     });
   }
-  bindSuperAdminActions();
-
   function bindAckButtons(){
     document.querySelectorAll('[data-ack-tool]').forEach(btn => {
       btn.onclick = async () => {
@@ -6593,7 +6665,7 @@ async function renderTools(){
       };
     });
   }
-  bindAckButtons();
+  applyFilters();
 }
 
 function openToolTypeModal(row){
@@ -7282,12 +7354,20 @@ async function fvLoadScope() {
 }
 // Riders = the Roster (working entries only) joined to an active login. Switched-off riders/teams are left out unless all=true.
 async function fvLoadRiders(all = false) {
+  // always start from the live Roster and the live Teams, so a rider added a minute ago is already here
+  try { await loadRegions(); } catch (_e) {}
+  try {
+    const mr = await sb.from('profile_regions').select('region_id').eq('profile_id', state.user.id);
+    if (!mr.error && mr.data && mr.data.length) state.myRegionIds = mr.data.map(r => r.region_id);
+  } catch (_e) {}
+  FV.hidden = [];
   const rows = await fvFetchAll(() => sb.from('roster_entries')
     .select('rider_id, region_id, sub_region_id, status, created_at, profiles!rider_id(full_name, employee_id, status, role, designation_id), regions(name, active), sub_regions(name)')
     .neq('status', 'removed').order('created_at', { ascending: false }).order('id'));
   const seen = new Set(), out = [];
   rows.forEach(e => {
-    if (seen.has(e.rider_id) || !e.profiles || e.profiles.status !== 'active') return;
+    if (seen.has(e.rider_id)) return;
+    if (!e.profiles || e.profiles.status !== 'active'){ seen.add(e.rider_id); FV.hidden.push({ name: e.profiles?.full_name || '—', emp: e.profiles?.employee_id || '', why: !e.profiles ? 'login not visible' : e.profiles.status === 'pending' ? 'login waiting for approval' : 'login deactivated' }); return; }
     seen.add(e.rider_id);
     out.push({ id: e.rider_id, name: e.profiles.full_name, emp: e.profiles.employee_id || '',
       region_id: e.region_id, region_name: e.regions?.name || '—', region_active: e.regions?.active !== false,
@@ -8042,7 +8122,7 @@ async function fvPageAdd(body) {
         <select id="fv-a-region"><option value="">All my Teams / Regions</option>${regions.map(r => fvOpt(r.id, r.name, '')).join('')}</select>
         <input id="fv-a-search" type="search" placeholder="Search rider name or ID…" style="min-width:210px;">
         <select id="fv-a-rider" style="min-width:260px;"></select></div>
-      <div id="fv-a-info" class="fv-note">Only active riders from the Roster are listed. Deactivated riders cannot be visited.</div></div>
+      <div id="fv-a-info" class="fv-note">Only active riders from the Roster are listed. Deactivated riders cannot be visited.${FV.hidden && FV.hidden.length && (isAdmin() || fvCanManage()) ? `<br><span style="color:#b45309">${FV.hidden.length} Roster rider(s) are not listed because their login is not active: ${escapeHtml(FV.hidden.slice(0, 6).map(h => h.name + (h.emp ? ' (' + h.emp + ')' : '') + ' – ' + h.why).join('; '))}${FV.hidden.length > 6 ? '…' : ''}</span>` : ''}</div></div>
     <div class="fv-panel"><h3>2 · Visit details</h3>
       <div class="fv-filters"><label>Visit date <input type="date" id="fv-a-date" value="${fvToday()}" max="${fvToday()}"></label>
         <div class="fv-seg" id="fv-a-type"><button type="button" class="t on" data-t="Onsite">On-site</button><button type="button" class="t" data-t="Online">Online</button></div></div></div>
@@ -10874,13 +10954,25 @@ window.addEventListener('keydown', (e) => {
   }
 });
 function toast(msg){
-  const t = document.createElement('div');
-  t.className = 'toast';
   const m = String(msg || '');
+  // one stack for all pop-ups so several messages sit one above the other and never overlap
+  let box = document.getElementById('fh-toasts');
+  if (!box){
+    box = document.createElement('div'); box.id = 'fh-toasts';
+    box.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:100000;display:flex;flex-direction:column;gap:8px;align-items:flex-end;max-width:min(420px,calc(100vw - 24px));pointer-events:none;';
+    document.body.appendChild(box);
+    if (window.matchMedia && window.matchMedia('(max-width:480px)').matches){ box.style.left = '12px'; box.style.right = '12px'; box.style.alignItems = 'stretch'; box.style.maxWidth = 'none'; }
+  }
+  const same = Array.from(box.children).find(x => x.dataset.msg === m);
+  if (same){ same.remove(); }
+  while (box.children.length >= 4) box.firstChild.remove();
+  const t = document.createElement('div');
+  t.className = 'toast'; t.dataset.msg = m;
+  t.style.cssText = 'position:relative!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;margin:0!important;pointer-events:auto;';
   const kind = /could not|can.?t |cannot|failed|error|denied|blocked|invalid|not allowed|unable|wrong|required|please run|must /i.test(m) ? 'err' : /saved|updated|added|created|submitted|deleted|enabled|disabled|applied|recorded|acknowledged|done|restored|sent|set to|assigned|issued|marked|cancelled|resolved|published|uploaded|copied|filled/i.test(m) ? 'ok' : '';
   if (kind) t.classList.add(kind);
   t.innerHTML = `<span class="ti">${kind === 'err' ? '⚠️' : kind === 'ok' ? '✅' : 'ℹ️'}</span><span style="flex:1">${escapeHtml(m)}</span><button class="toast-close" aria-label="Dismiss">✕</button>`;
-  document.body.appendChild(t);
+  box.appendChild(t);
   const timer = setTimeout(()=>t.remove(), 12000);
   t.querySelector('.toast-close').onclick = () => { clearTimeout(timer); t.remove(); };
 }
