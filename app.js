@@ -292,7 +292,7 @@ function fhTopBtn(){
   const b = document.createElement('button'); b.id = 'fh-totop'; b.type = 'button'; b.title = 'Back to top'; b.setAttribute('aria-label', 'Back to top'); b.textContent = '↑';
   document.body.appendChild(b);
   const sc = () => document.querySelector('.main-area');
-  const pos = () => { const m = sc(); const y = Math.max(m ? m.scrollTop : 0, window.scrollY || 0); b.classList.toggle('show', y > 400 && !!state.user); };
+  const pos = () => { const m = sc(); const y = Math.max(m ? m.scrollTop : 0, window.scrollY || 0); b.classList.toggle('show', y > 400 && !!state.user && document.body.classList.contains('fh-app')); };
   document.addEventListener('scroll', pos, { passive: true, capture: true });
   b.onclick = () => { const m = sc(); if (m) m.scrollTo({ top: 0, behavior: 'smooth' }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 }
@@ -514,7 +514,7 @@ html.fh-dark .fv-stat .l{color:#93a0d4}
 html.fh-dark .fv-chart{background:#171e46}
 html.fh-dark .fv-chart h4{color:#dfe5ff}
 html.fh-dark .fv-chart .s{color:#93a0d4}
-html.fh-dark .fv-expand{background:#171e46;color:#dfe5ff;border-color:#262f62}
+html.fh-dark .fv-expand,html.fh-dark .fv-png{background:#171e46;color:#dfe5ff;border-color:#262f62}
 html.fh-dark .fv-expand:hover{background:#1b2350}
 html.fh-dark .fv-legend{color:#93a0d4}
 html.fh-dark .fv-table td{background:#171e46;border-color:#262f62}
@@ -1186,6 +1186,7 @@ function paintBranding(data){
 
 function showAuthScreen(){
   document.body.classList.remove('fh-app');
+  fhApplyTheme();   // the sign-in page is always light
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('pending-screen').style.display = 'none';
   document.getElementById('force-password-screen').style.display = 'none';
@@ -1242,6 +1243,7 @@ async function afterLogin(user){
   document.getElementById('maintenance-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'flex';
   document.body.classList.add('fh-app');
+  fhApplyTheme();
 
   state.systemSettings = sysSettings || {};
   // all reference lists load together instead of one after another
@@ -7547,6 +7549,7 @@ function fvEnsureStyle() {
 .fv-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:16px}
 .fv-chart{background:#fff;border:1px solid rgba(30,42,110,.06);border-radius:12px;padding:12px 14px 10px;box-shadow:0 1px 3px rgba(30,42,110,.06);position:relative}
 .fv-chart h4{margin:0;font-size:13px;color:#1c2b6e}.fv-chart .s{font-size:11px;color:#8b92ad;margin-bottom:4px}
+.fv-png{position:absolute;top:10px;right:44px;border:1px solid #e0e4f0;background:#fff;border-radius:8px;width:28px;height:26px;cursor:pointer;color:#46506e;font-size:13px}
 .fv-expand{position:absolute;top:10px;right:10px;border:1px solid #e0e4f0;background:#fff;border-radius:8px;width:28px;height:26px;cursor:pointer;color:#46506e;font-size:13px}
 .fv-expand:hover{background:#f3f5fb}
 .fv-legend{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;font-size:11px;color:#6b7390;margin-top:2px}
@@ -7899,7 +7902,7 @@ async function fvPageReport(host) {
         score: { title: 'Average Score Trend', sub: `Average score · ${unit}`, labels: t.labels, o: { max: 100, suffix: '%', legend: true },
           series: [{ name: 'Average Score', color: '#e0a21b', values: t.avg }] }
       };
-      const box = (id) => { const c = charts[id]; return `<div class="fv-chart"><button class="fv-expand" data-expand="${id}" title="Expand" type="button">⛶</button><h4>${c.title}</h4><div class="s">${c.sub}</div>${fvMultiLine(c.labels, c.series, c.o)}</div>`; };
+      const box = (id) => { const c = charts[id]; return `<div class="fv-chart"><button class="fv-png" data-png="${id}" title="Download this graph as a picture" type="button">⬇</button><button class="fv-expand" data-expand="${id}" title="Expand" type="button">⛶</button><h4>${c.title}</h4><div class="s">${c.sub}</div>${fvMultiLine(c.labels, c.series, c.o)}</div>`; };
 
       // ----- By Team table -----
       let teamHtml = '';
@@ -7936,6 +7939,19 @@ async function fvPageReport(host) {
           <p class="fv-note" style="margin-top:8px;">A <strong>visit</strong> is one Area Incharge visit on one date — checking several riders in it still counts as <strong>1 visit</strong>; the riders are counted in <em>Rider count</em>. Visit counts show <em>visits / target</em>, where the target is the sum of the monthly KPIs of the Area Incharges working in that team (× the months in the selected dates). KPI status judges the <strong>month shown in its heading</strong> (the month you selected, or the current month when your dates span several months); the current month shows <em>In progress</em> until the KPI is met.</p></div>`;
       }
 
+      // ----- By Area Incharge: visits done and riders checked in the chosen dates -----
+      let aiHtml = '', aiList = [];
+      if (!rider) {
+        aiList = fvAiRows(visits, issues);
+        const tot = { on: fvVisitCount(onRows), off: fvVisitCount(offRows), tv: totalVisits, r: ridersChecked, c: visits.length };
+        aiHtml = `<div class="fv-card2"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;"><h3 style="margin:0;">By Area Incharge <span class="fv-chip">${aiList.length}</span></h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="fv-btn ghost" data-aidl="pdf" type="button">PDF</button><button class="fv-btn ghost" data-aidl="xlsx" type="button">Excel</button><button class="fv-btn ghost" data-aidl="csv" type="button">CSV</button></div></div>
+          <div style="overflow-x:auto;"><table class="fv-table"><thead><tr><th>Area Incharge</th><th class="c">On-site visits</th><th class="c">Online visits</th><th class="c">Total visits</th><th class="c">Riders checked</th><th class="c">Centres</th><th class="c g-red">Issues</th><th class="c">Avg score</th><th>First</th><th>Last</th></tr></thead>
+          <tbody>${aiList.map(a => `<tr><td><strong>${escapeHtml(a.name)}</strong></td><td class="c">${a.on}</td><td class="c">${a.off}</td><td class="c">${a.tv}</td><td class="c"><strong>${a.riders}</strong></td><td class="c">${a.centres}</td><td class="c" style="color:#c0392b;font-weight:600;">${a.issues}</td><td class="c" style="font-weight:600;color:${a.avg === null ? '#999' : fvScoreColor(a.avg)};">${a.avg === null ? '—' : fvNum(a.avg) + '%'}</td><td>${fvFmtDate(a.first)}</td><td>${fvFmtDate(a.last)}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td>Total</td><td class="c">${tot.on}</td><td class="c">${tot.off}</td><td class="c">${tot.tv}</td><td class="c">${tot.r}</td><td class="c"></td><td class="c">${issues.length}</td><td class="c">${avg === null ? '—' : fvNum(avg) + '%'}</td><td></td><td></td></tr></tfoot></table></div>
+          <p class="fv-note" style="margin-top:8px;">Shows what each Area Incharge did in the dates selected above. <strong>Riders checked</strong> counts each rider once, however many times he was visited.</p></div>`;
+      }
+
       // ----- Issue Category table -----
       const byCp = new Map();
       issues.forEach(i => byCp.set(i.checkpoint_text, (byCp.get(i.checkpoint_text) || 0) + 1));
@@ -7946,12 +7962,22 @@ async function fvPageReport(host) {
         </tbody></table></div>` : '<div class="fv-note">No issues were raised in this period. 🎉</div>'}</div>`;
 
       res.innerHTML = `<div class="fv-stats">${stats}</div>
-        <div class="fv-charts">${box('volume')}${box('issues')}${box('score')}</div>${teamHtml}${catHtml}`;
+        <div class="fv-charts">${box('volume')}${box('issues')}${box('score')}</div>${teamHtml}${aiHtml}${catHtml}`;
       res.querySelectorAll('[data-expand]').forEach(b => b.onclick = () => {
         const c = charts[b.dataset.expand];
-        openModal(`<button class="modal-close" onclick="requestCloseModal()">✕</button><h2 style="margin:0 0 2px;">${c.title}</h2><div class="fv-note" style="margin-bottom:10px;">${c.sub}</div><div class="fv-go">${fvMultiLine(c.labels, c.series, { ...c.o, w: 900, h: 400 })}</div>`);
+        openModal(`<h2 style="margin:0 0 2px;">${c.title}</h2><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><div class="fv-note">${c.sub}</div><button class="fv-btn ghost" data-chart-png type="button">⬇ Download picture</button></div><div class="fv-go">${fvMultiLine(c.labels, c.series, { ...c.o, w: 900, h: 400 })}</div>`);
         const m = document.querySelector('#active-modal .modal'); m.classList.add('fv-wide'); fvGo(m);
+        m.querySelector('[data-chart-png]').onclick = () => fvPdfBtn(() => fvChartPng(c));
       });
+      res.querySelectorAll('[data-aidl]').forEach(b => b.onclick = async () => {
+        const k = b.dataset.aidl;
+        try {
+          if (k === 'pdf') await fvPdfBtn(() => fvPdfVisits(visits, 'overall'));
+          else if (k === 'xlsx') await fvXlsxVisits(visits);
+          else { const t = fvAiTable(aiList); downloadCSV(`field-visit-area-incharge-wise-${fvToday()}.csv`, toCSV(aiList.map(a => Object.fromEntries(t.head.map((h, i) => [h, t.body[aiList.indexOf(a)][i]]))))); }
+        } catch (e) { toast('Could not make the file: ' + (e.message || e)); }
+      });
+      res.querySelectorAll('[data-png]').forEach(b => b.onclick = () => fvPdfBtn(() => fvChartPng(charts[b.dataset.png])));
     }
   });
   await fvKpiBoard(host.querySelector('#fv-kpi'));
@@ -8014,30 +8040,272 @@ function fvAggRows(rows, kind) {
   const lastBy = (list) => { const l = list.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date))).pop(); return l ? (l.submitted_by_name || '') : ''; };
   if (kind === 'rider') return group(v => v.rider_id || v.rider_employee_id || v.rider_name).map(([, l]) => ({ Rider: l[0].rider_name, 'Employee ID': l[0].rider_employee_id || '', 'Team / Region': l[0].region_name || '', ...base(l), 'Lowest Score %': Math.min(...l.map(v => Number(v.score) || 0)), 'Last Visit': last(l), 'Last Visited By': lastBy(l) })).sort((a, b) => String(a['Team / Region']).localeCompare(b['Team / Region']) || String(a.Rider).localeCompare(b.Rider));
   if (kind === 'region') return group(v => v.region_name || '—').map(([k, l]) => ({ 'Team / Region': k, ...base(l), 'Riders Visited': new Set(l.map(v => v.rider_id || v.rider_name)).size, 'Visited By (Area Incharges)': new Set(l.map(v => v.submitted_by_name).filter(Boolean)).size, 'Last Visit': last(l) })).sort((a, b) => String(a['Team / Region']).localeCompare(b['Team / Region']));
-  if (kind === 'ai') return group(v => v.submitted_by || v.submitted_by_name).map(([, l]) => ({ 'Area Incharge': l[0].submitted_by_name || '', ...base(l), 'Riders Visited': new Set(l.map(v => v.rider_id || v.rider_name)).size, 'Centres Visited': new Set(l.map(v => v.center_name).filter(Boolean)).size, 'First Visit': l.map(v => v.visit_date).sort()[0] || '', 'Last Visit': last(l) })).sort((a, b) => String(a['Area Incharge']).localeCompare(b['Area Incharge']));
+  if (kind === 'ai') return fvAiRows(rows, null).map(a => ({ 'Area Incharge': a.name, 'On-site Visits': a.on, 'Online Visits': a.off, 'Total Visits': a.tv, 'Riders Checked': a.riders, 'Rider Checks': a.checks, 'Centres Visited': a.centres, 'Issues Found': a.issues, 'Average Score %': a.avg === null ? '' : fvNum(a.avg), 'First Visit': a.first, 'Last Visit': a.last }));
   if (kind === 'centre') return group(v => v.center_name || '').map(([k, l]) => ({ Centre: k, 'Centre Code': l[0].center_code || '', ...base(l), 'Last Visit': last(l) })).sort((a, b) => String(a.Centre).localeCompare(b.Centre));
   return fvVisitsToRows(rows);
 }
+// =====================================================================
+// PDF / EXCEL / PICTURE DOWNLOADS (Field Visits)
+// =====================================================================
+function fhLoadScript(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = src; s.onload = resolve;
+    s.onerror = () => reject(new Error('Could not load the PDF maker. Please check your internet connection.'));
+    document.head.appendChild(s);
+  });
+}
+async function fhEnsurePdf(){
+  if (!(window.jspdf && window.jspdf.jsPDF)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+  if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js');
+}
+// saves a finished file: a normal download on the web, the phone's Share sheet inside the Android app
+async function fhSaveBlob(blob, filename){
+  const type = blob.type || 'application/octet-stream';
+  if (fhIsNativeApp()){
+    try {
+      const file = new File([blob], filename, { type });
+      if (navigator.canShare && navigator.canShare({ files: [file] })){ await navigator.share({ files: [file], title: filename }); return true; }
+    } catch (e) { if (e && e.name === 'AbortError') return true; }
+    toast('This phone could not save the file from inside the app. Open the portal in Chrome on the phone to download it.');
+    return false;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2500);
+  return true;
+}
+function fhSaveXlsx(wb, filename){
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  return fhSaveBlob(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
+}
+function fvPeriodText(){
+  const r = fvRange(FV.f), a = r.from === '2000-01-01', b = r.to === '2999-12-31';
+  if (a && b) return 'All dates';
+  return (a ? 'Up to ' : fvFmtDate(r.from) + ' to ') + (b ? 'today' : fvFmtDate(r.to));
+}
+function fvFilterText(){
+  const f = FV.f, bits = [];
+  if (f.region){ const n = (state.regions.find(x => x.id === f.region) || {}).name; if (n) bits.push('Team: ' + n); }
+  if (f.type) bits.push('Type: ' + fvTypeLabel(f.type));
+  if (f.q) bits.push('Rider search: ' + f.q);
+  return bits.join('  |  ');
+}
+// Builds a branded A4 PDF.  o = { title, subtitle, stats:[[value,label,[r,g,b]]], sections:[{title, head:[], body:[[]], foot:[], note, widths:{colIndex:pts}}], landscape, file }
+async function fhPdf(o){
+  await fhEnsurePdf();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: o.landscape === false ? 'p' : 'l', unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 32;
+  const NAVY = [30, 42, 110], GREY = [96, 106, 140];
+  const T = (s) => String(s == null ? '' : s).replace(/[^\n\x20-\x7E\u00A0-\u00FF\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g, '?');
+  const done = new Set();
+  const banner = () => {
+    const n = doc.internal.getCurrentPageInfo().pageNumber; if (done.has(n)) return; done.add(n);
+    doc.setFillColor(...NAVY); doc.rect(0, 0, W, 46, 'F');
+    doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.text('FieldHub', M, 22);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.text('Home Sampling Operations  -  Chughtai Lab', M, 36);
+    doc.setFontSize(9); doc.text(T(o.title), W - M, 28, { align: 'right' });
+  };
+  banner();
+  let y = 70;
+  doc.setTextColor(...NAVY); doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text(T(o.title), M, y); y += 16;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...GREY);
+  (Array.isArray(o.subtitle) ? o.subtitle : [o.subtitle]).filter(Boolean).forEach(line => { const parts = doc.splitTextToSize(T(line), W - 2 * M); doc.text(parts, M, y); y += 12 * parts.length; });
+  y += 4;
+  if (o.stats && o.stats.length){
+    const per = Math.min(o.stats.length, 6), gap = 8, tw = (W - 2 * M - gap * (per - 1)) / per;
+    o.stats.forEach((s, i) => {
+      const col = i % per, row = Math.floor(i / per), x = M + col * (tw + gap), yy = y + row * 50;
+      doc.setFillColor(244, 246, 252); doc.setDrawColor(222, 227, 242); doc.roundedRect(x, yy, tw, 42, 6, 6, 'FD');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...(s[2] || NAVY)); doc.text(T(s[0]), x + 10, yy + 20);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY); doc.text(T(s[1]), x + 10, yy + 34);
+    });
+    y += Math.ceil(o.stats.length / per) * 50 + 4;
+  }
+  (o.sections || []).forEach(sec => {
+    if (!sec.body || !sec.body.length) return;
+    if (y > H - 130){ doc.addPage(); y = 64; }
+    if (sec.title){ doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...NAVY); doc.text(T(sec.title), M, y); y += 8; }
+    const heads = sec.head.map(T);
+    const colStyles = {};
+    Object.entries(sec.widths || {}).forEach(([k, w]) => { colStyles[k] = { cellWidth: w }; });
+    doc.autoTable({
+      startY: y, head: [heads], body: sec.body.map(r => r.map(T)), foot: sec.foot ? [sec.foot.map(T)] : undefined,
+      margin: { top: 62, left: M, right: M, bottom: 36 }, theme: 'grid',
+      styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 4, lineColor: [225, 229, 242], lineWidth: 0.5, textColor: [30, 40, 90], overflow: 'linebreak' },
+      headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold', fontSize: 8 },
+      footStyles: { fillColor: [236, 240, 252], textColor: NAVY, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [248, 249, 253] }, columnStyles: colStyles,
+      didParseCell: (d) => {
+        if (d.section !== 'body') return;
+        const h = String(heads[d.column.index] || '').toLowerCase(), v = String(d.cell.raw || '');
+        if (/score/.test(h)){ const n = parseFloat(v); if (!isNaN(n)){ d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = n >= 90 ? [46, 125, 79] : n >= 75 ? [185, 119, 14] : [192, 83, 47]; } }
+        else if (/status|result/.test(h)){ if (/^(open|issue)/i.test(v)){ d.cell.styles.textColor = [192, 57, 43]; d.cell.styles.fontStyle = 'bold'; } else if (/^(resolved|ok)/i.test(v)){ d.cell.styles.textColor = [15, 122, 86]; d.cell.styles.fontStyle = 'bold'; } }
+      },
+      didDrawPage: banner
+    });
+    y = doc.lastAutoTable.finalY + 8;
+    if (sec.note){ doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(...GREY); const p = doc.splitTextToSize(T(sec.note), W - 2 * M); doc.text(p, M, y + 4); y += 10 * p.length + 4; }
+    y += 12;
+  });
+  const pages = doc.internal.getNumberOfPages(), who = (state.profile && state.profile.full_name) || '';
+  for (let p = 1; p <= pages; p++){
+    doc.setPage(p); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+    doc.text(T('Generated ' + new Date().toLocaleString('en-GB') + (who ? ' by ' + who : '')), M, H - 16);
+    doc.text('Page ' + p + ' of ' + pages, W - M, H - 16, { align: 'right' });
+  }
+  return fhSaveBlob(doc.output('blob'), o.file || 'fieldhub-report.pdf');
+}
+const fvPdfBtn = async (fn) => { try { toast('Preparing the PDF…'); await fn(); } catch (e) { console.error(e); toast('Could not make the PDF: ' + (e.message || e)); } };
+const fvRows2 = (rows) => ({ head: rows.length ? Object.keys(rows[0]) : [], body: rows.map(r => Object.values(r)) });
+
+// Area Incharge-wise table: visits done and riders checked in the chosen dates
+function fvAiRows(visits, issues) {
+  const m = new Map();
+  visits.forEach(v => { const k = v.submitted_by || v.submitted_by_name || '—'; if (!m.has(k)) m.set(k, []); m.get(k).push(v); });
+  const iss = issues || [];
+  return [...m.entries()].map(([k, l]) => {
+    const ids = new Set(l.map(v => v.id)), is = iss.filter(i => ids.has(i.visit_id));
+    const dates = l.map(v => v.visit_date).sort();
+    return { id: k, name: l[0].submitted_by_name || 'Unknown', on: fvVisitCount(l.filter(v => v.visit_type === 'Onsite')), off: fvVisitCount(l.filter(v => v.visit_type !== 'Onsite')),
+      tv: fvVisitCount(l), riders: fvRiderCount(l), checks: l.length, centres: new Set(l.map(v => v.center_name).filter(Boolean)).size,
+      issues: is.length, open: is.filter(i => i.status === 'open').length, avg: fvAvg(l), first: dates[0] || '', last: dates[dates.length - 1] || '', list: l };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+const fvAiTable = (rows) => ({
+  head: ['Area Incharge', 'On-site visits', 'Online visits', 'Total visits', 'Riders checked', 'Rider checks', 'Centres visited', 'Issues found', 'Open issues', 'Average score %', 'First visit', 'Last visit'],
+  body: rows.map(r => [r.name, r.on, r.off, r.tv, r.riders, r.checks, r.centres, r.issues, r.open, r.avg === null ? '' : fvNum(r.avg), r.first, r.last])
+});
+function fvVisitDetailTable(list) {
+  const s = list.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date)) || String(a.rider_name).localeCompare(String(b.rider_name)));
+  return { head: ['Date', 'Rider', 'Employee ID', 'Team / Region', 'Visit type', 'Score %', 'OK', 'Issues', 'Centre'],
+    body: s.map(v => [v.visit_date, v.rider_name, v.rider_employee_id || '', v.region_name || '', fvTypeLabel(v.visit_type), fvNum(v.score), v.ok_count, v.issue_count, v.center_name || '']) };
+}
+// every download of the Field Visit report uses these
+async function fvPdfVisits(current, kind) {
+  const title = ({ list: 'Visit List', rider: 'Rider-wise Visit Summary', region: 'Team / Region-wise Visit Summary', ai: 'Area Incharge-wise Visit Summary', centre: 'Centre-wise Visit Summary', overall: 'Overall Field Visit Report' })[kind];
+  const sub = ['Period: ' + fvPeriodText(), fvFilterText()];
+  const avg = fvAvg(current);
+  const stats = [[fvVisitCount(current), 'Total visits'], [fvRiderCount(current), 'Riders checked'], [avg === null ? '-' : fvNum(avg) + '%', 'Average score', avg === null ? null : (avg >= 90 ? [46, 125, 79] : avg >= 75 ? [185, 119, 14] : [192, 83, 47])],
+    [current.reduce((s, v) => s + (Number(v.issue_count) || 0), 0), 'Issues found', [192, 57, 43]], [new Set(current.map(v => v.submitted_by || v.submitted_by_name)).size, 'Area Incharges']];
+  if (kind === 'overall') {
+    const ai = fvAiRows(current, null), t = fvAiTable(ai);
+    const sections = [{ title: 'Area Incharge-wise summary', head: t.head, body: t.body, note: 'A visit is one Area Incharge visit on one date. Checking several riders in it counts as one visit; the riders are counted under Riders checked.' }];
+    ai.forEach(a => { const d = fvVisitDetailTable(a.list); sections.push({ title: 'Visits by ' + a.name + '  (' + a.tv + ' visits, ' + a.riders + ' riders)', head: d.head, body: d.body }); });
+    const rr = fvAggRows(current, 'rider'), rt = fvRows2(rr);
+    sections.push({ title: 'Rider-wise summary', head: rt.head, body: rt.body });
+    return fhPdf({ title, subtitle: sub, stats, sections, file: `field-visit-overall-report-${fvToday()}.pdf` });
+  }
+  if (kind === 'list') { const d = fvVisitDetailTable(current); d.head.push('Visited by'); d.body.forEach((r, i) => r.push(current.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date)) || String(a.rider_name).localeCompare(String(b.rider_name)))[i].submitted_by_name || '')); return fhPdf({ title, subtitle: sub, stats, sections: [{ head: d.head, body: d.body }], file: `field-visit-list-${fvToday()}.pdf` }); }
+  if (kind === 'ai') { const t = fvAiTable(fvAiRows(current, null)); return fhPdf({ title, subtitle: sub, stats, sections: [{ head: t.head, body: t.body }], file: `field-visit-area-incharge-wise-${fvToday()}.pdf` }); }
+  const t = fvRows2(fvAggRows(current, kind));
+  return fhPdf({ title, subtitle: sub, stats, sections: [{ head: t.head, body: t.body }], file: `field-visit-${kind}-wise-${fvToday()}.pdf` });
+}
+function fvIssueTables(current) {
+  const grp = (keyFn, label) => { const m = new Map(); current.forEach(i => { const k = keyFn(i) || '-'; if (!m.has(k)) m.set(k, []); m.get(k).push(i); }); return [...m.entries()].map(([k, l]) => [k, l.length, l.filter(i => i.status === 'open').length, l.filter(i => i.status !== 'open').length]).sort((a, b) => b[1] - a[1]); };
+  return {
+    list: { head: ['Visit date', 'Rider', 'Employee ID', 'Team', 'Point', 'Observed', 'Status', 'Resolved date', 'Resolved by', 'Resolution note'],
+      body: current.map(i => [i.visit_date, i.rider_name, i.rider_employee_id || '', i.region_name || '', i.checkpoint_text, i.observation || '', i.status === 'open' ? 'Open' : 'Resolved', i.resolved_at ? i.resolved_at.slice(0, 10) : '', i.resolved_by_name || '', i.resolution_note || '']) },
+    point: { head: ['Issue point', 'Issues', 'Open', 'Resolved'], body: grp(i => i.checkpoint_text) },
+    team: { head: ['Team / Region', 'Issues', 'Open', 'Resolved'], body: grp(i => i.region_name) },
+    rider: { head: ['Rider', 'Issues', 'Open', 'Resolved'], body: grp(i => (i.rider_name || '-') + (i.rider_employee_id ? ' (' + i.rider_employee_id + ')' : '')) }
+  };
+}
+async function fvPdfIssues(current, withSummary) {
+  const t = fvIssueTables(current), open = current.filter(i => i.status === 'open').length;
+  const stats = [[current.length, 'Issues'], [open, 'Open', [192, 57, 43]], [current.length - open, 'Resolved', [15, 122, 86]]];
+  const L = t.list;
+  const sections = [{ title: 'Issues', head: ['Visit date', 'Rider', 'Team', 'Point', 'Observed', 'Status', 'Resolved date'],
+    body: current.map(i => [fvFmtDate(i.visit_date), (i.rider_name || '') + (i.rider_employee_id ? '\n' + i.rider_employee_id : ''), i.region_name || '', i.checkpoint_text, i.observation || '', i.status === 'open' ? 'Open' : 'Resolved',
+      i.resolved_at ? fvFmtDate(i.resolved_at.slice(0, 10)) + (i.resolved_by_name ? '\n' + i.resolved_by_name : '') : '-']), widths: { 0: 64, 2: 70, 5: 52, 6: 78 } }];
+  if (withSummary) { sections.push({ title: 'Issue summary by point', head: t.point.head, body: t.point.body }, { title: 'Issue summary by team', head: t.team.head, body: t.team.body }, { title: 'Issue summary by rider', head: t.rider.head, body: t.rider.body }); }
+  return fhPdf({ title: withSummary ? 'Issues Report and Summary' : 'Issues Report', subtitle: ['Period: ' + fvPeriodText(), fvFilterText()], stats, sections, file: `field-visit-issues-${fvToday()}.pdf` });
+}
+// one visit, laid out like the visit report on screen
+async function fvPdfOneVisit(v, issues) {
+  const issueBy = new Map((issues || []).map(i => [i.cp_key, i]));
+  const sc = Number(v.score), col = sc >= 90 ? [46, 125, 79] : sc >= 75 ? [185, 119, 14] : [192, 83, 47];
+  return fhPdf({ title: 'Visit Report', landscape: false, file: `visit-${String(v.rider_name || 'rider').replace(/[^\w]+/g, '-')}-${v.visit_date}.pdf`,
+    subtitle: [`${v.rider_name || ''}  (${v.rider_employee_id || '-'})`, `${v.region_name || '-'}${v.sub_region_name ? ' / ' + v.sub_region_name : ''}`, v.center_name ? 'Centre: ' + v.center_name + (v.center_code ? ' (' + v.center_code + ')' : '') : '', `${fvFmtDate(v.visit_date)}  |  ${fvTypeLabel(v.visit_type)}  |  Visited by ${v.submitted_by_name || '-'}`],
+    stats: [[fvNum(v.score) + '%', 'Score', col], [fvNum(v.earned_weight) + ' / ' + fvNum(v.total_weight), 'Points'], [v.ok_count, 'OK', [46, 125, 79]], [v.issue_count, 'Issues', [192, 57, 43]]],
+    sections: [{ title: 'Checkpoints', head: ['#', 'Checkpoint', 'Weight', 'Result', 'Observation'],
+      body: v.answers.map((a, i) => { const is = issueBy.get(a.cp); return [i + 1, a.text, fvNum(a.weight), a.status, (a.obs || '') + (is ? (a.obs ? '\n' : '') + (is.status === 'resolved' ? 'Issue resolved ' + String(is.resolved_at || '').slice(0, 10) : 'Open issue') : '')]; }), widths: { 0: 24, 2: 44, 3: 48 } }] });
+}
+// every visit and issue of one rider
+async function fvPdfVisitById(id) {
+  const { data: v, error } = await sb.from('fv_visits').select('*').eq('id', id).maybeSingle();
+  if (error || !v) throw new Error('Could not open this visit.');
+  const { data: iss } = await sb.from('fv_issues').select('cp_key, status, resolved_at').eq('visit_id', id);
+  return fvPdfOneVisit(v, iss || []);
+}
+async function fvPdfRider(id, name, emp) {
+  const [vs, is] = await Promise.all([
+    sb.from('fv_visits').select(FV_VISIT_COLS).eq('rider_id', id).order('visit_date', { ascending: false }).limit(500),
+    sb.from('fv_issues').select('*').eq('rider_id', id).order('visit_date', { ascending: false }).limit(500)]);
+  const visits = vs.data || [], issues = is.data || [], avg = fvAvg(visits), open = issues.filter(i => i.status === 'open').length;
+  const col = (s) => s >= 90 ? [46, 125, 79] : s >= 75 ? [185, 119, 14] : [192, 83, 47];
+  return fhPdf({ title: 'Rider Report', landscape: false, file: `rider-report-${String(name || 'rider').replace(/[^\w]+/g, '-')}-${fvToday()}.pdf`,
+    subtitle: [`${name || ''}  (${emp || '-'})`, 'All recorded visits'],
+    stats: [[fvVisitCount(visits), 'Visits'], [avg === null ? '-' : fvNum(avg) + '%', 'Average score', avg === null ? null : col(avg)], [visits.length ? fvNum(visits[0].score) + '%' : '-', 'Latest score', visits.length ? col(Number(visits[0].score)) : null], [open, 'Open issues', [192, 57, 43]], [issues.length - open, 'Resolved issues', [15, 122, 86]]],
+    sections: [
+      { title: 'Visits', head: ['Date', 'Team / Region', 'Type', 'Score %', 'OK', 'Issues', 'Visited by', 'Centre'], body: visits.map(v => [v.visit_date, v.region_name || '', fvTypeLabel(v.visit_type), fvNum(v.score), v.ok_count, v.issue_count, v.submitted_by_name || '', v.center_name || '']) },
+      { title: 'Issues', head: ['Date', 'Point', 'Observed', 'Status', 'Resolved date'], body: issues.map(i => [i.visit_date, i.checkpoint_text, i.observation || '', i.status === 'open' ? 'Open' : 'Resolved', i.resolved_at ? i.resolved_at.slice(0, 10) : '']) }] });
+}
+// Excel with several sheets
+async function fvXlsxVisits(current) {
+  await ensureXLSX(); const wb = XLSX.utils.book_new();
+  const ai = fvAiTable(fvAiRows(current, null));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([ai.head, ...ai.body]), 'Area Incharge-wise');
+  [['Visits', 'list'], ['Rider-wise', 'rider'], ['Region-wise', 'region'], ['Centre-wise', 'centre']].forEach(([n, kind]) => { const r = fvAggRows(current, kind); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r.length ? r : [{ Note: 'No data' }]), n); });
+  fvAiRows(current, null).forEach(a => { const d = fvVisitDetailTable(a.list); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([d.head, ...d.body]), String(a.name).replace(/[\[\]\*\?\/\\:]/g, ' ').slice(0, 28) || 'Incharge'); });
+  return fhSaveXlsx(wb, `field-visit-report-${fvToday()}.xlsx`);
+}
+async function fvXlsxIssues(current) {
+  await ensureXLSX(); const wb = XLSX.utils.book_new(), t = fvIssueTables(current);
+  [['Issues', t.list], ['By point', t.point], ['By team', t.team], ['By rider', t.rider]].forEach(([n, x]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([x.head, ...x.body]), n));
+  return fhSaveXlsx(wb, `field-visit-issues-${fvToday()}.xlsx`);
+}
+// charts as pictures
+async function fvChartPng(c) {
+  const W = 1000, H = 420, html = fvMultiLine(c.labels, c.series, { ...(c.o || {}), w: W, h: H });
+  const doc = new DOMParser().parseFromString(html, 'text/html'), svg = doc.querySelector('svg');
+  if (!svg) { toast('There is no chart data to download.'); return; }
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg'); svg.setAttribute('width', W); svg.setAttribute('height', H);
+  svg.querySelectorAll('path.fv-line').forEach(p => { p.setAttribute('fill', 'none'); p.setAttribute('stroke-width', '2.6'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke', p.style.stroke || '#1c2b6e'); p.removeAttribute('pathLength'); });
+  svg.querySelectorAll('text').forEach(t => t.setAttribute('font-family', 'Arial,Helvetica,sans-serif'));
+  const img = new Image(), url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
+  await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Could not draw the chart.')); img.src = url; });
+  const S = 2, top = 70, bottom = 46, cv = document.createElement('canvas'); cv.width = W * S; cv.height = (H + top + bottom) * S;
+  const g = cv.getContext('2d'); g.scale(S, S); g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H + top + bottom);
+  g.fillStyle = '#1e2a6e'; g.font = 'bold 22px Arial'; g.fillText(c.title, 24, 34);
+  g.fillStyle = '#6b7390'; g.font = '14px Arial'; g.fillText(c.sub + '   |   ' + fvPeriodText(), 24, 56);
+  g.drawImage(img, 0, top, W, H); URL.revokeObjectURL(url);
+  let x = 24; g.font = '13px Arial';
+  c.series.forEach(s => { g.fillStyle = s.color; g.fillRect(x, H + top + 16, 12, 12); g.fillStyle = '#46506e'; g.fillText(s.name, x + 18, H + top + 27); x += 40 + g.measureText(s.name).width; });
+  const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+  return fhSaveBlob(blob, `${c.title.replace(/[^\w]+/g, '-').toLowerCase()}-${fvToday()}.png`);
+}
 function fvDownloadMenu(current) {
-  const opts = [['list', 'Visit list (every visit)'], ['rider', 'Rider-wise summary'], ['region', 'Team / Region-wise summary'], ['ai', 'Area Incharge-wise summary'], ['centre', 'Centre-wise summary']];
+  const opts = [['list', 'Visit list (every visit, with score and date)'], ['ai', 'Area Incharge-wise (visits and riders checked)'], ['rider', 'Rider-wise summary'], ['region', 'Team / Region-wise summary'], ['centre', 'Centre-wise summary']];
   openModal(`<h2>Download visit report</h2>
-    <p class="hint">Uses the filters currently chosen on the page (<b>${current.length}</b> visit${current.length === 1 ? '' : 's'}). Change the filters first if you need a different month, region or person.</p>
-    <div style="display:grid;gap:8px;margin:10px 0">${opts.map(([k, l]) => `<button type="button" class="btn outline" data-dl="${k}" style="text-align:left">⬇ ${l} <span class="hint" style="margin:0">(CSV)</span></button>`).join('')}</div>
-    <button type="button" class="btn" data-dl="xlsx" style="width:100%">⬇ Everything in one Excel file (5 sheets)</button>`);
+    <p class="hint">Uses the filters chosen on the page: <b>${current.length}</b> rider check${current.length === 1 ? '' : 's'}, ${fvPeriodText()}. Change the dates, team or person first if you need something different.</p>
+    <div style="display:grid;gap:8px;margin:10px 0">${opts.map(([k, l]) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:190px;font-weight:600;">${l}</span><button type="button" class="btn small outline" data-dl="${k}" data-fmt="pdf">PDF</button><button type="button" class="btn small outline" data-dl="${k}" data-fmt="csv">CSV</button></div>`).join('')}</div>
+    <div style="display:grid;gap:8px;margin-top:12px;border-top:1px solid var(--line,#e3e8f2);padding-top:12px;">
+      <button type="button" class="btn" data-dl="overall" data-fmt="pdf">⬇ Full report as PDF (overall + by incharge + visit details)</button>
+      <button type="button" class="btn" data-dl="xlsx" data-fmt="xlsx">⬇ Full report as Excel (every incharge on its own sheet)</button></div>`);
   document.querySelectorAll('[data-dl]').forEach(b => b.onclick = async () => {
     if (!current.length) { toast('Nothing to download.'); return; }
-    const k = b.dataset.dl, stamp = fvToday();
-    if (k === 'xlsx') {
-      try {
-        await ensureXLSX(); const wb = XLSX.utils.book_new();
-        [['Visits', 'list'], ['Rider-wise', 'rider'], ['Region-wise', 'region'], ['Area Incharge-wise', 'ai'], ['Centre-wise', 'centre']].forEach(([n, kind]) => { const r = fvAggRows(current, kind); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(r.length ? r : [{ Note: 'No data' }]), n); });
-        XLSX.writeFile(wb, `field-visit-report-${stamp}.xlsx`);
-      } catch (e) { toast('Could not make the Excel file: ' + e.message); return; }
-    } else {
-      const r = fvAggRows(current, k); if (!r.length) { toast('Nothing to download for this view.'); return; }
-      downloadCSV(`field-visits-${({ list: 'list', rider: 'rider-wise', region: 'region-wise', ai: 'area-incharge-wise', centre: 'centre-wise' })[k]}-${stamp}.csv`, toCSV(r));
-    }
-    closeModal();
+    const k = b.dataset.dl, fmt = b.dataset.fmt, stamp = fvToday();
+    try {
+      if (fmt === 'xlsx') { await fvXlsxVisits(current); }
+      else if (fmt === 'pdf') { toast('Preparing the PDF…'); await fvPdfVisits(current, k); }
+      else {
+        const r = fvAggRows(current, k); if (!r.length) { toast('Nothing to download for this view.'); return; }
+        downloadCSV(`field-visits-${({ list: 'list', rider: 'rider-wise', region: 'region-wise', ai: 'area-incharge-wise', centre: 'centre-wise' })[k]}-${stamp}.csv`, toCSV(r));
+      }
+      closeModal();
+    } catch (e) { console.error(e); toast('Could not make the file: ' + (e.message || e)); }
   });
 }
 async function fvPageVisits(host) {
@@ -8075,10 +8343,11 @@ async function fvPageVisits(host) {
             <td><strong>${escapeHtml(v.rider_name)}</strong><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
             <td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td>
             <td>${escapeHtml(v.submitted_by_name || '—')}${v.edit_count ? ' <span class="fv-chip" title="Corrected by Super Admin">✎ edited</span>' : ''}</td>
-            <td class="c"><button class="fv-btn" data-vid="${v.id}" type="button">${canEdit ? 'Edit' : 'View'}</button></td></tr>`).join('')}
+            <td class="c" style="white-space:nowrap;"><button class="fv-btn" data-vid="${v.id}" type="button">${canEdit ? 'Edit' : 'View'}</button> <button class="fv-btn ghost" data-vpdf="${v.id}" type="button" title="Download this visit report as PDF">PDF</button></td></tr>`).join('')}
           </tbody></table></div></div>
           ${current.length > shown ? `<div style="text-align:center;margin-top:4px;"><button class="fv-btn ghost" data-more type="button">Show more (${current.length - shown} left)</button></div>` : ''}`;
         res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), canEdit));
+        res.querySelectorAll('[data-vpdf]').forEach(b => b.onclick = () => fvPdfBtn(() => fvPdfVisitById(b.dataset.vpdf)));
         res.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { if (c.checked) sel.add(c.dataset.sel); else sel.delete(c.dataset.sel); paint(); });
         const sall = res.querySelector('[data-selall]');
         if (sall) { sall.checked = current.slice(0, shown).every(v => sel.has(v.id)); sall.onchange = () => { current.slice(0, shown).forEach(v => sall.checked ? sel.add(v.id) : sel.delete(v.id)); paint(); }; }
@@ -8147,7 +8416,7 @@ async function fvOpenVisit(id, onChanged, startEditing) {
       <td>${escapeHtml(a.obs || '')}${is ? `<div class="fv-note">${is.status === 'resolved' ? '✔ Resolved ' + formatDate(is.resolved_at) : '● Open issue'}</div>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>
     <p class="fv-note" style="margin-top:8px;">Score ${fvNum(v.earned_weight)} of ${fvNum(v.total_weight)} points. Checkpoint names and weightages are shown as they were on the visit date.</p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">${isSuperAdmin() ? '<button class="fv-btn ghost" id="fv-del" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete permanently</button>' : ''}${canEdit ? '<button class="fv-btn" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap;"><button class="fv-btn ghost" id="fv-pdf" type="button">⬇ Download PDF</button>${isSuperAdmin() ? '<button class="fv-btn ghost" id="fv-del" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete permanently</button>' : ''}${canEdit ? '<button class="fv-btn" id="fv-edit" type="button">Edit / Correct</button>' : ''}</div>`;
 
   const editHtml = () => `${head(v.score)}
     <div class="fv-filters"><label>Visit date <input type="date" id="fv-e-date" value="${v.visit_date}" max="${fvToday()}"></label>
@@ -8165,6 +8434,7 @@ async function fvOpenVisit(id, onChanged, startEditing) {
   const paint = () => {
     modal.innerHTML = closeBtn + (editing ? editHtml() : viewHtml());
     if (!editing) { const b = modal.querySelector('#fv-edit'); if (b) b.onclick = () => { editing = true; paint(); };
+      const pdfb = modal.querySelector('#fv-pdf'); if (pdfb) pdfb.onclick = () => fvPdfBtn(() => fvPdfOneVisit(v, iss));
       const d = modal.querySelector('#fv-del'); if (d) d.onclick = () => fvDeleteVisits([v.id], `${v.rider_name} · ${fvFmtDate(v.visit_date)} · ${fvTypeLabel(v.visit_type)}`, () => { if (onChanged) onChanged(); }); }
     else {
       const upd = () => { const merged = v.answers.map((a, i) => ({ weight: a.weight, status: modal.querySelector(`[data-i="${i}"]`).value })); modal.querySelector('#fv-e-score').textContent = fvNum(calc(merged)) + '%'; };
@@ -8201,9 +8471,25 @@ async function fvPageIssues(host) {
       const b = fh.querySelector('[data-export]');
       if (b) b.onclick = () => {
         if (!current.length) { toast('Nothing to download.'); return; }
-        downloadCSV(`field-visit-issues-${fvToday()}.csv`, toCSV(current.map(i => ({ 'Visit Date': i.visit_date, Rider: i.rider_name, 'Employee ID': i.rider_employee_id || '',
-          'Team / Region': i.region_name || '', Point: i.checkpoint_text, Observed: i.observation || '', Status: i.status === 'open' ? 'Open' : 'Resolved',
-          'Resolved On': i.resolved_at ? i.resolved_at.slice(0, 10) : '', 'Resolved By': i.resolved_by_name || '', 'Resolution Note': i.resolution_note || '' }))));
+        openModal(`<h2>Download issues</h2>
+          <p class="hint"><b>${current.length}</b> issue${current.length === 1 ? '' : 's'} with the filters on the page (${fvPeriodText()}).</p>
+          <div style="display:grid;gap:8px;margin:10px 0;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:170px;font-weight:600;">Issues list, as shown on the page</span><button type="button" class="btn small outline" data-id="list-pdf">PDF</button><button type="button" class="btn small outline" data-id="list-csv">CSV</button></div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:170px;font-weight:600;">Issues summary (by point, team and rider)</span><button type="button" class="btn small outline" data-id="sum-pdf">PDF</button><button type="button" class="btn small outline" data-id="sum-csv">CSV</button></div>
+            <button type="button" class="btn" data-id="xlsx" style="margin-top:6px;">⬇ Everything as Excel (list + 3 summaries)</button>
+            <button type="button" class="btn" data-id="all-pdf">⬇ Issues list + summaries as one PDF</button></div>`);
+        document.querySelectorAll('[data-id]').forEach(x => x.onclick = async () => {
+          const k = x.dataset.id, t = fvIssueTables(current);
+          try {
+            if (k === 'list-csv') downloadCSV(`field-visit-issues-${fvToday()}.csv`, toCSV(current.map(i => ({ 'Visit Date': i.visit_date, Rider: i.rider_name, 'Employee ID': i.rider_employee_id || '', 'Team / Region': i.region_name || '', Point: i.checkpoint_text, Observed: i.observation || '', Status: i.status === 'open' ? 'Open' : 'Resolved', 'Resolved On': i.resolved_at ? i.resolved_at.slice(0, 10) : '', 'Resolved By': i.resolved_by_name || '', 'Resolution Note': i.resolution_note || '' }))));
+            else if (k === 'sum-csv') downloadCSV(`field-visit-issues-summary-${fvToday()}.csv`, toCSV([...t.point.body.map(r => ({ Group: 'Point', Name: r[0], Issues: r[1], Open: r[2], Resolved: r[3] })), ...t.team.body.map(r => ({ Group: 'Team', Name: r[0], Issues: r[1], Open: r[2], Resolved: r[3] })), ...t.rider.body.map(r => ({ Group: 'Rider', Name: r[0], Issues: r[1], Open: r[2], Resolved: r[3] }))]));
+            else if (k === 'xlsx') await fvXlsxIssues(current);
+            else if (k === 'list-pdf') { toast('Preparing the PDF…'); await fvPdfIssues(current, false); }
+            else if (k === 'all-pdf') { toast('Preparing the PDF…'); await fvPdfIssues(current, true); }
+            else if (k === 'sum-pdf') { toast('Preparing the PDF…'); await fhPdf({ title: 'Issues Summary', subtitle: ['Period: ' + fvPeriodText(), fvFilterText()], stats: [[current.length, 'Issues'], [current.filter(i => i.status === 'open').length, 'Open', [192, 57, 43]], [current.filter(i => i.status !== 'open').length, 'Resolved', [15, 122, 86]]], sections: [{ title: 'By point', head: t.point.head, body: t.point.body }, { title: 'By team', head: t.team.head, body: t.team.body }, { title: 'By rider', head: t.rider.head, body: t.rider.body }], landscape: false, file: `field-visit-issues-summary-${fvToday()}.pdf` }); }
+            closeModal();
+          } catch (e) { console.error(e); toast('Could not make the file: ' + (e.message || e)); }
+        });
       };
     },
     draw: (data, f, res) => {
@@ -8249,14 +8535,40 @@ async function fvPageIssues(host) {
 }
 
 // ---------------- RIDER SUMMARY ----------------
+let RIDERS_CUR = null;
+function fvRiderDownloads() {
+  const c = RIDERS_CUR; if (!c || !c.rows.length) { toast('Nothing to download.'); return; }
+  const visited = new Set(c.v.map(v => v.rider_id));
+  const not = c.riders.filter(r => !visited.has(r.id) && (!c.f.region || r.region_id === c.f.region) && fvMatchRider({ rider_name: r.name, rider_employee_id: r.emp }, c.f.q));
+  openModal(`<h2>Download rider summary</h2><p class="hint"><b>${c.rows.length}</b> rider check${c.rows.length === 1 ? '' : 's'}, ${fvPeriodText()}. ${not.length} rider(s) not visited.</p>
+    <div style="display:grid;gap:8px;margin:10px 0;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:170px;font-weight:600;">Rider-wise summary (visits, scores, issues)</span><button type="button" class="btn small outline" data-r="pdf">PDF</button><button type="button" class="btn small outline" data-r="csv">CSV</button></div>
+      <button type="button" class="btn" data-r="xlsx">⬇ Excel (summary, every visit, not visited)</button></div>`);
+  document.querySelectorAll('[data-r]').forEach(b => b.onclick = async () => {
+    try {
+      const rows = fvAggRows(c.rows, 'rider');
+      if (b.dataset.r === 'csv') downloadCSV(`field-visit-rider-summary-${fvToday()}.csv`, toCSV(rows));
+      else if (b.dataset.r === 'pdf') { toast('Preparing the PDF…'); const t = fvRows2(rows), n = not.map(r => [r.name, r.emp, r.region_name || '']);
+        await fhPdf({ title: 'Rider Summary', subtitle: ['Period: ' + fvPeriodText(), fvFilterText()], stats: [[fvRiderCount(c.rows), 'Riders visited'], [not.length, 'Not visited', [192, 57, 43]], [fvVisitCount(c.rows), 'Visits']],
+          sections: [{ title: 'Rider-wise summary', head: t.head, body: t.body }, { title: 'Not visited in this period', head: ['Rider', 'Employee ID', 'Team / Region'], body: n }], file: `field-visit-rider-summary-${fvToday()}.pdf` }); }
+      else { await ensureXLSX(); const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Rider-wise'); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(fvVisitsToRows(c.rows)), 'Every visit');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(not.length ? not.map(r => ({ Rider: r.name, 'Employee ID': r.emp, 'Team / Region': r.region_name || '' })) : [{ Note: 'Every rider was visited' }]), 'Not visited');
+        await fhSaveXlsx(wb, `field-visit-rider-summary-${fvToday()}.xlsx`); }
+      closeModal();
+    } catch (e) { console.error(e); toast('Could not make the file: ' + (e.message || e)); }
+  });
+}
 async function fvPageRiders(host) {
   let shown = 50, ctx = null;
   await fvListShell(host, {
     filters: { region: true, search: true },
+    extra: ' <button class="fv-btn ghost" data-rexport type="button" style="height:34px;">Download</button>',
     load: async (r) => { const [v, riders] = await Promise.all([fvLoadVisits(r), fvLoadRiders()]); return { v, riders }; },
-    afterFilters: (fh, c) => { ctx = c; },
+    afterFilters: (fh, c) => { ctx = c; const b = fh.querySelector('[data-rexport]'); if (b) b.onclick = () => fvRiderDownloads(); },
     draw: (d, f, res) => {
       const rows = fvFilterVisits(d.v, f).slice().sort((a, b) => Number(a.score) - Number(b.score) || (a.visit_date < b.visit_date ? 1 : -1));
+      RIDERS_CUR = { rows, riders: d.riders, v: d.v, f };
       shown = 50;
       const visitedIds = new Set(d.v.map(v => v.rider_id));
       const notVisited = d.riders.filter(r => !visitedIds.has(r.id) && (!f.region || r.region_id === f.region) && fvMatchRider({ rider_name: r.name, rider_employee_id: r.emp }, f.q));
@@ -8266,13 +8578,14 @@ async function fvPageRiders(host) {
           ${rows.slice(0, shown).map(v => `<tr><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td>
             <td><a href="#" data-rider="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" style="color:inherit;text-decoration:none;font-weight:600;">${escapeHtml(v.rider_name)}</a><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
             <td>${fvTypeBadge(v.visit_type)}</td><td style="font-weight:700;color:${fvScoreColor(v.score)};">${fvNum(v.score)}%</td>
-            <td class="c"><button class="fv-btn" data-vid="${v.id}" type="button">View</button></td></tr>`).join('')}
+            <td class="c" style="white-space:nowrap;"><button class="fv-btn" data-vid="${v.id}" type="button">View</button> <button class="fv-btn ghost" data-rpdf="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" type="button" title="Download this rider's full report as PDF">PDF</button></td></tr>`).join('')}
           </tbody></table></div>` : '<div style="padding:16px;">' + emptyState('No visits match these filters.') + '</div>'}</div>
           ${rows.length > shown ? `<div style="text-align:center;margin:-6px 0 14px;"><button class="fv-btn ghost" data-more type="button">Show more (${rows.length - shown} left)</button></div>` : ''}
           <div class="fv-card2"><h3>Not visited in this period <span class="fv-chip">${notVisited.length}</span></h3>
             ${notVisited.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;">${notVisited.map(r => `<span class="fv-chip" title="${escapeHtml(r.region_name)}">${escapeHtml(r.name)} · ${escapeHtml(r.emp)}</span>`).join('')}</div>
               <p class="fv-note" style="margin-top:8px;">Active riders from the Roster who have no visit in the selected dates.</p>` : '<div class="fv-note">Every active rider in view has been visited. 🎉</div>'}</div>`;
         res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), false));
+        res.querySelectorAll('[data-rpdf]').forEach(b => b.onclick = () => { if (b.dataset.rpdf) fvPdfBtn(() => fvPdfRider(b.dataset.rpdf, b.dataset.rn, b.dataset.re)); });
         res.querySelectorAll('[data-rider]').forEach(a => a.onclick = (e) => { e.preventDefault(); if (a.dataset.rider) fvOpenRider(a.dataset.rider, a.dataset.rn, a.dataset.re, () => ctx && ctx.reload()); });
         const more = res.querySelector('[data-more]');
         if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
@@ -8297,6 +8610,7 @@ async function fvOpenRider(id, name, emp, onChanged) {
     <div class="fv-cards">${fvCard(fvVisitCount(visits), 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
       ${fvCard(visits.length ? fvNum(visits[0].score) + '%' : '—', 'Latest score', 'green')}${fvCard(open, 'Open issues', 'red')}</div>
     <div class="fv-panel"><h3>Score trend (last 30 visits)</h3>${fvLineChart(trend)}</div>
+    <div style="text-align:right;margin-bottom:8px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;"><button class="fv-btn ghost" id="fv-pdf-rider" type="button">⬇ Download rider report (PDF)</button></div>
     ${isSuperAdmin() && visits.length ? '<div style="text-align:right;margin-bottom:8px;"><button class="fv-btn ghost" id="fv-del-rider" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete all visits of this rider</button></div>' : ''}
     <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
       ${visits.map(v => `<tr class="fv-row-click" data-vid="${v.id}"><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td><td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td><td>${escapeHtml(v.submitted_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No visits yet.</div>'}</div>
@@ -8304,6 +8618,7 @@ async function fvOpenRider(id, name, emp, onChanged) {
       ${issues.map(i => `<tr><td>${fvFmtDate(i.visit_date)}</td><td>${escapeHtml(i.checkpoint_text)}</td><td>${escapeHtml(i.observation || '')}</td>
         <td>${i.status === 'open' ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Open</span>' : `<span class="badge active">Resolved</span><div class="fv-note">${fvFmtDate((i.resolved_at || '').slice(0, 10))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No issues recorded.</div>'}</div>`;
   modal.querySelectorAll('[data-vid]').forEach(tr => tr.onclick = () => { closeModal(); fvOpenVisit(tr.dataset.vid, onChanged); });
+  const pr = modal.querySelector('#fv-pdf-rider'); if (pr) pr.onclick = () => fvPdfBtn(() => fvPdfRider(id, name, emp));
   const dr = modal.querySelector('#fv-del-rider'); if (dr) dr.onclick = () => fvDeleteVisits(visits.map(v => v.id), `All ${visits.length} visit report(s) of ${name} (${emp || ''}).`, () => { if (onChanged) onChanged(); });
   fvGo(modal);
 }
