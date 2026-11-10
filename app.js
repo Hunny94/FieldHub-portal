@@ -1985,7 +1985,7 @@ function fhRequireEmail(){
 }
 async function fhOtp(action, payload){
   try {
-    const res = await fetch(SUPABASE_URL + '/functions/v1/fieldhub-otp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY }, body: JSON.stringify({ action, ...(payload || {}) }) });
+    const res = await fetch(SUPABASE_URL + '/functions/v1/quick-function', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY }, body: JSON.stringify({ action, ...(payload || {}) }) });
     const out = await res.json().catch(() => null);
     return out || { ok: false, error: 'The server sent an unexpected answer. Please try again.' };
   } catch (_) { return { ok: false, error: 'No internet connection. Please connect and try again.', offline: true }; }
