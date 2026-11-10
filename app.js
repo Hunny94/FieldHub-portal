@@ -3343,18 +3343,29 @@ async function fhRecheckHandlers(){
   for (const c of changes){ const { error } = await sb.from('requests').update({ assigned_poc_id: c.want }).eq('id', c.r.id); if (!error) ok++; }
   toast(`Updated the handler on ${ok} request(s).`); renderRequests();
 }
-function openNewRequestModal(){
+const FH_REQ_BLOCKED_MSG = 'Currently users are not allowed to add request for this specific tool, please contact your supervisor.';
+async function openNewRequestModal(){
+  try { await loadCategories(); } catch (_) {}   // pick up the latest on/off switches from Settings
   const options = state.categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   openModal(`
     <h2>New request</h2>
     <form id="request-form">
       <div class="form-row"><label>Category</label><select id="r-category">${options}</select></div>
+      <div id="r-blocked" role="alert" style="display:none;margin:0 0 12px;padding:10px 12px;border-radius:9px;background:#fde7e1;color:#a63d1f;font-weight:600;line-height:1.45;border:1px solid #f0c0b2"></div>
       <div class="form-row"><label>Description</label><textarea id="r-desc" required placeholder="Describe the issue…"></textarea></div>
-      <button class="btn-primary" type="submit">Submit request</button>
+      <button class="btn-primary" type="submit" id="r-submit">Submit request</button>
     </form>
   `);
+  const isBlocked = () => { const c = state.categories.find(x => x.id === document.getElementById('r-category').value); return !!c && c.riders_can_request === false; };
+  const showBlocked = () => {
+    const b = isBlocked(), box = document.getElementById('r-blocked');
+    box.style.display = b ? 'block' : 'none'; box.textContent = b ? FH_REQ_BLOCKED_MSG : '';
+    document.getElementById('r-submit').disabled = b;
+  };
+  document.getElementById('r-category').onchange = showBlocked; showBlocked();
   document.getElementById('request-form').onsubmit = async (e) => {
     e.preventDefault();
+    if (isBlocked()){ showBlocked(); toast(FH_REQ_BLOCKED_MSG); return; }
     const categoryId = document.getElementById('r-category').value;
     const category = state.categories.find(c=>c.id===categoryId);
     const assignedPocId = await fhPickHandler(state.user.id, categoryId);
@@ -3437,7 +3448,7 @@ async function renderExpiries(){
   const showActionsCol = canRemind || canEdit || canDelete || canNotify;
   const today = new Date();
   main.innerHTML = `<div class="rq-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="exp-chips">${[['open','Open',nOpen],['closed','Closed',nClosed],['all','All',groupedItems.length]].map(([k,l,n]) => `<button type="button" class="btn small ${FH_EXPF===k?'':'outline'}" data-expf="${k}">${l} (${n})</button>`).join('')}</div>
-  ${shownGroups.length ? '' : '<p class="hint">Nothing in this list.</p>'}<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
+  ${shownGroups.length ? '' : '<p class="hint">Nothing in this list.</p>'}<table><thead><tr><th>Applies to</th><th>Item</th><th>Added by</th><th>Added on</th><th>Expiry date</th><th>Status</th>${showActionsCol?'<th></th>':''}</tr></thead><tbody>
     ${shownGroups.map(g=>{
       const d = new Date(g.expiry_date);
       const daysLeft = Math.ceil((d-today)/(1000*60*60*24));
@@ -3458,6 +3469,7 @@ async function renderExpiries(){
         <td>${appliesTo}</td>
         <td>${escapeHtml(g.item_type)}${g.item_label?' — '+escapeHtml(g.item_label):''}</td>
         <td>${escapeHtml(g.added_by?.full_name||'—')}</td>
+        <td class="mono">${g.first.created_at ? escapeHtml(formatDateTime(g.first.created_at)) : '—'}</td>
         <td class="mono">${g.expiry_date}</td>
         <td><span class="${badge}">${label}</span>${g.closed && g.first.closed_at ? `<div class="hint" style="margin:3px 0 0">Closed ${String(g.first.closed_at).slice(0,10)}</div>` : (g.remindCount ? `<div class="hint" style="margin:3px 0 0">Reminded ${g.remindCount}× · last ${String(g.lastRem||'').slice(0,10)}</div>` : '')}</td>
         ${showActionsCol ? `<td style="white-space:nowrap;">
@@ -3590,7 +3602,8 @@ async function openNewExpiryModal(){
       </div>
       <div class="form-row"><label>Item type</label><select id="e-type">${typeOptions}</select></div>
       <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="e-label"></div>
-      <div class="form-row"><label>Expiry date</label><input type="date" id="e-date" required></div>
+      <div class="form-row"><label>Expiry date</label><input type="date" id="e-date" required min="${fvToday()}">
+        <span class="field-hint">Must be today (${escapeHtml(fvFmtDate(fvToday()))}) or a later date. It cannot be earlier than the date you add it.</span></div>
       <button class="btn-primary" type="submit">Save</button>
     </form>
   `);
@@ -3664,6 +3677,7 @@ async function openNewExpiryModal(){
     const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || 'Other';
     const itemLabel = document.getElementById('e-label').value.trim();
     const expiryDate = document.getElementById('e-date').value;
+    if (expiryDate < fvToday()){ toast('The expiry date cannot be before today (' + fvFmtDate(fvToday()) + '). Please choose today or a later date.'); return; }
 
     // One row per selected region (roles are stored per-row as a joined
     // label), all sharing a group_id so they display/edit as one item.
@@ -3696,6 +3710,7 @@ function openEditExpiryModal(group){
   if (!group) return;
   const currentRegionIds = new Set(group.rows.map(r=>r.region_id));
   const currentRoles = new Set((group.first.applies_to_role||'').split(',').map(s=>s.trim()).filter(Boolean));
+  const addedDay = group.first.created_at ? fvIso(new Date(group.first.created_at)) : '';
   const regionChecks = state.regions.map(r=>`
     <div style="display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:6px 4px; text-align:left;">
       <input type="checkbox" class="ee-region-check" value="${r.id}" id="ee-region-${r.id}" ${currentRegionIds.has(r.id)?'checked':''}>
@@ -3721,7 +3736,8 @@ function openEditExpiryModal(group){
       </div>
       <div class="form-row"><label>Item type</label><select id="ee-type">${typeOptions}</select></div>
       <div class="form-row"><label>Label / notes (optional)</label><input type="text" id="ee-label" value="${escapeHtml(group.item_label||'')}"></div>
-      <div class="form-row"><label>Expiry date</label><input type="date" id="ee-date" value="${group.expiry_date}" required></div>
+      <div class="form-row"><label>Expiry date</label><input type="date" id="ee-date" value="${group.expiry_date}" required ${(addedDay && group.expiry_date >= addedDay) ? `min="${addedDay}"` : ''}>
+        ${addedDay ? `<span class="field-hint">Added on ${escapeHtml(fvFmtDate(addedDay))}. The expiry date cannot be earlier than that.</span>` : ''}</div>
       <button class="btn-primary" type="submit">Save changes</button>
     </form>
   `);
@@ -3736,6 +3752,8 @@ function openEditExpiryModal(group){
     const typeName = typeSelect.options[typeSelect.selectedIndex]?.dataset.name || group.item_type;
     const itemLabel = document.getElementById('ee-label').value.trim();
     const expiryDate = document.getElementById('ee-date').value;
+    // an item that was already saved with an older date can keep it; a changed date must not be before the day the item was added
+    if (addedDay && expiryDate !== group.expiry_date && expiryDate < addedDay){ toast('The expiry date cannot be before the date this item was added (' + fvFmtDate(addedDay) + ').'); return; }
     const groupId = group.first.group_id || group.first.id;
     // Keep a specific rider tied to this item only when it stays a single region
     const keptRider = (regionIds.length === 1 && group.rows.length === 1) ? group.first.rider_id : null;
@@ -3752,7 +3770,13 @@ function openEditExpiryModal(group){
       item_label: itemLabel,
       expiry_date: expiryDate,
       created_by: group.first.created_by || state.user.id,
-      group_id: groupId
+      group_id: groupId,
+      // keep the original "added on" time, and the closed / reminder history, when an item is edited
+      ...(group.first.created_at ? { created_at: group.first.created_at } : {}),
+      ...(group.first.status ? { status: group.first.status } : {}),
+      ...(group.first.closed_at ? { closed_at: group.first.closed_at } : {}),
+      ...(group.first.remind_count ? { remind_count: group.first.remind_count } : {}),
+      ...(group.first.last_reminded_at ? { last_reminded_at: group.first.last_reminded_at } : {})
     }));
     const { error } = await sb.from('expiry_items').insert(payloads);
     if (error){ toast('Could not save: ' + error.message); return; }
@@ -4781,12 +4805,14 @@ async function renderCategoriesInto(body){
   const canAdd = isAdmin() || hasPermission('categories_add');
   const canEdit = isAdmin() || hasPermission('categories_edit') || hasPermission('categories_remove');
   const { data: cats } = await sb.from('categories').select('*').order('name');
-  const renderRows = (list) => `<table><thead><tr><th>Category</th><th>Routes to</th><th>TAT (hrs)</th><th>Status</th>${canEdit?'<th></th>':''}</tr></thead><tbody>
+  const renderRows = (list) => `<table><thead><tr><th>Category</th><th>Routes to</th><th>TAT (hrs)</th><th>Status</th><th>Riders can add requests</th>${canEdit?'<th></th>':''}</tr></thead><tbody>
     ${list.map(c=>`<tr>
       <td>${escapeHtml(c.name)}</td>
       <td>${ROLE_LABEL[c.primary_role]||c.primary_role}</td>
       <td class="mono">${c.tat_hours ?? '—'}</td>
       <td><span class="badge ${c.active?'active':'closed'}">${c.active?'Active':'Inactive'}</span></td>
+      <td><span class="badge ${c.riders_can_request === false ? 'closed' : 'active'}">${c.riders_can_request === false ? 'Not allowed' : 'Allowed'}</span>
+        ${canEdit ? `<div style="margin-top:4px"><button class="btn small outline" data-toggle-req="${c.id}" data-allow="${c.riders_can_request === false ? '1' : '0'}">${c.riders_can_request === false ? 'Allow riders' : 'Stop riders'}</button></div>` : ''}</td>
       ${canEdit ? `<td><button class="btn small outline" data-edit-cat="${c.id}">Edit</button></td>` : ''}
     </tr>`).join('')}
   </tbody></table>`;
@@ -4817,6 +4843,19 @@ async function renderCategoriesInto(body){
   function bindActions(){
     document.querySelectorAll('[data-edit-cat]').forEach(btn => {
       btn.onclick = () => openCategoryModal((cats||[]).find(c=>c.id===btn.dataset.editCat));
+    });
+    // one-click switch: can riders raise a request for this category or not
+    document.querySelectorAll('[data-toggle-req]').forEach(btn => {
+      btn.onclick = async () => {
+        const c = (cats||[]).find(x => x.id === btn.dataset.toggleReq); if (!c) return;
+        const allow = btn.dataset.allow === '1';
+        if (!allow && !confirm('Stop riders from adding new requests for "' + c.name + '"?\n\nThey will see: "Currently users are not allowed to add request for this specific tool, please contact your supervisor." Requests already raised are not affected.')) return;
+        btn.disabled = true;
+        const { error } = await sb.from('categories').update({ riders_can_request: allow }).eq('id', c.id);
+        if (error){ btn.disabled = false; toast(/riders_can_request|schema cache/i.test(error.message) ? 'Please run migration_50.sql in Supabase first, then try again.' : 'Could not save: ' + error.message); return; }
+        toast(allow ? 'Riders can add requests for "' + c.name + '" again.' : 'Riders can no longer add requests for "' + c.name + '".');
+        await loadCategories(); renderSettings();
+      };
     });
   }
   bindActions();
@@ -4850,6 +4889,10 @@ async function openCategoryModal(cat){
         <option value="true" ${cat.active?'selected':''}>Active</option>
         <option value="false" ${!cat.active?'selected':''}>Inactive</option>
       </select></div>` : ''}
+      ${(cat && cat.riders_can_request !== undefined) ? `<div class="form-row"><label>Riders can add requests for this</label><select id="cat-rider-req">
+        <option value="true" ${cat.riders_can_request !== false?'selected':''}>Allowed</option>
+        <option value="false" ${cat.riders_can_request === false?'selected':''}>Not allowed (riders see a notice and are asked to contact their supervisor)</option>
+      </select></div>` : ''}
       ${cat ? `<div class="form-row"><label>Per-region overrides (optional)</label>
         <p class="hint" style="margin-bottom:8px;">e.g. this category routes to Area Incharge in Lahore, but Regional POC everywhere else.</p>
         ${overrideRows}
@@ -4866,6 +4909,7 @@ async function openCategoryModal(cat){
       tat_hours: tatVal ? parseInt(tatVal, 10) : null
     };
     if (cat) payload.active = document.getElementById('cat-active').value === 'true';
+    if (cat && document.getElementById('cat-rider-req')) payload.riders_can_request = document.getElementById('cat-rider-req').value === 'true';
     const { error } = cat
       ? await sb.from('categories').update(payload).eq('id', cat.id)
       : await sb.from('categories').insert(payload);
@@ -8139,6 +8183,7 @@ async function fhPdf(o){
       alternateRowStyles: { fillColor: [248, 249, 253] }, columnStyles: colStyles,
       didParseCell: (d) => {
         if (d.section !== 'body') return;
+        if (sec.marks && d.column.index >= 2){ const mv = String(d.cell.raw || ''); if (mv === 'Issue'){ d.cell.styles.textColor = [192, 57, 43]; d.cell.styles.fontStyle = 'bold'; } else if (mv === 'OK'){ d.cell.styles.textColor = [15, 122, 86]; } d.cell.styles.halign = 'center'; return; }
         const h = String(heads[d.column.index] || '').toLowerCase(), v = String(d.cell.raw || '');
         if (/score/.test(h)){ const n = parseFloat(v); if (!isNaN(n)){ d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = n >= 90 ? [46, 125, 79] : n >= 75 ? [185, 119, 14] : [192, 83, 47]; } }
         else if (/status|result/.test(h)){ if (/^(open|issue)/i.test(v)){ d.cell.styles.textColor = [192, 57, 43]; d.cell.styles.fontStyle = 'bold'; } else if (/^(resolved|ok)/i.test(v)){ d.cell.styles.textColor = [15, 122, 86]; d.cell.styles.fontStyle = 'bold'; } }
@@ -8252,6 +8297,156 @@ async function fvPdfRider(id, name, emp) {
       { title: 'Visits', head: ['Date', 'Team / Region', 'Type', 'Score %', 'OK', 'Issues', 'Visited by', 'Centre'], body: visits.map(v => [v.visit_date, v.region_name || '', fvTypeLabel(v.visit_type), fvNum(v.score), v.ok_count, v.issue_count, v.submitted_by_name || '', v.center_name || '']) },
       { title: 'Issues', head: ['Date', 'Point', 'Observed', 'Status', 'Resolved date'], body: issues.map(i => [i.visit_date, i.checkpoint_text, i.observation || '', i.status === 'open' ? 'Open' : 'Resolved', i.resolved_at ? i.resolved_at.slice(0, 10) : '']) }] });
 }
+// =====================================================================
+// HISTORY PACK: every report of ONE rider / Area Incharge / centre / team in the chosen dates,
+// with a score comparison and an issues summary (PDF or Excel)
+// =====================================================================
+const FV_HIST = {
+  rider:  { label: 'Rider',         idCol: 'rider_id',     nameCol: 'rider_name',        id: v => v.rider_id,     name: v => (v.rider_name || '') + (v.rider_employee_id ? ' (' + v.rider_employee_id + ')' : '') },
+  ai:     { label: 'Area Incharge', idCol: 'submitted_by', nameCol: 'submitted_by_name', id: v => v.submitted_by, name: v => v.submitted_by_name || 'Unknown' },
+  centre: { label: 'Centre',        idCol: null,           nameCol: 'center_name',       id: () => null,          name: v => v.center_name || '' },
+  region: { label: 'Team / Region', idCol: 'region_id',    nameCol: 'region_name',       id: v => v.region_id,    name: v => v.region_name || '' }
+};
+const fvDelta = (d) => (d === null || d === undefined) ? '-' : ((d > 0 ? '+' : '') + fvNum(d));
+const fvMonthLabel = (ym) => new Date(ym + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+const fvSafeName = (s) => String(s || 'report').replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'report';
+// loads the full reports (with every checkpoint answer) and their issues for one person / place in the page's dates
+async function fvLoadHistory(kind, item) {
+  const H = FV_HIST[kind], r = fvRange(FV.f);
+  const visits = await fvFetchAll(() => {
+    let q = sb.from('fv_visits').select('*').gte('visit_date', r.from).lte('visit_date', r.to);
+    q = (item.id && H.idCol) ? q.eq(H.idCol, item.id) : q.eq(H.nameCol, item.raw);
+    return q.order('visit_date', { ascending: true }).order('created_at', { ascending: true }).order('id');
+  });
+  const ids = visits.map(v => v.id), issues = [];
+  for (let i = 0; i < ids.length; i += 30) issues.push(...await fvFetchAll(() => sb.from('fv_issues').select('*').in('visit_id', ids.slice(i, i + 30)).order('id')));
+  return { visits, issues };
+}
+// all the tables the PDF and the Excel share
+function fvHistTables(kind, visits, issues) {
+  const vs = visits.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date)) || String(a.created_at).localeCompare(String(b.created_at)));
+  const sc = vs.map(v => Number(v.score) || 0), isRider = kind === 'rider';
+  const open = issues.filter(i => i.status === 'open').length;
+  const ds = (v) => fvFmtDate(v.visit_date);
+  // 1. visit by visit
+  const comp = isRider
+    ? { head: ['Date', 'Type', 'Score %', 'Change vs previous', 'OK', 'Issues', 'Visited by', 'Centre'],
+        body: vs.map((v, i) => [ds(v), fvTypeLabel(v.visit_type), fvNum(v.score), i ? fvDelta(sc[i] - sc[i - 1]) : '-', v.ok_count, v.issue_count, v.submitted_by_name || '', v.center_name || '']) }
+    : { head: ['Date', 'Rider', 'Employee ID', 'Team / Region', 'Type', 'Score %', 'OK', 'Issues', 'Visited by', 'Centre'],
+        body: vs.map(v => [ds(v), v.rider_name || '', v.rider_employee_id || '', v.region_name || '', fvTypeLabel(v.visit_type), fvNum(v.score), v.ok_count, v.issue_count, v.submitted_by_name || '', v.center_name || '']) };
+  // 2. month by month
+  const mm = new Map(); vs.forEach(v => { const k = String(v.visit_date).slice(0, 7); if (!mm.has(k)) mm.set(k, []); mm.get(k).push(v); });
+  let prev = null;
+  const months = { head: ['Month', isRider ? 'Visits' : 'Visits (days x incharge)', 'Rider checks', 'Average score %', 'Change vs previous month', 'Issues found'],
+    body: [...mm.entries()].map(([k, l]) => { const a = fvAvg(l), row = [fvMonthLabel(k), fvVisitCount(l), l.length, fvNum(a), prev === null ? '-' : fvDelta(a - prev), l.reduce((s, v) => s + (Number(v.issue_count) || 0), 0)]; prev = a; return row; }) };
+  // 3. rider by rider (when the pack is for an Area Incharge / centre / team)
+  const rm = new Map(); vs.forEach(v => { const k = v.rider_id || v.rider_name; if (!rm.has(k)) rm.set(k, []); rm.get(k).push(v); });
+  const riders = { head: ['Rider', 'Employee ID', 'Team / Region', 'Checks', 'First score %', 'Latest score %', 'Change', 'Average score %', 'Lowest score %', 'Issues found'],
+    body: [...rm.values()].map(l => { const s = l.map(v => Number(v.score) || 0); return [l[0].rider_name || '', l[0].rider_employee_id || '', l[l.length - 1].region_name || '', l.length, fvNum(s[0]), fvNum(s[s.length - 1]), l.length > 1 ? fvDelta(s[s.length - 1] - s[0]) : '-', fvNum(fvAvg(l)), Math.min(...s), l.reduce((t, v) => t + (Number(v.issue_count) || 0), 0)]; })
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))) };
+  // 4. checkpoint by checkpoint across the visits (rider packs): OK / Issue in every visit
+  const cps = new Map();
+  vs.forEach(v => (v.answers || []).forEach(a => { const k = a.cp || a.text; if (!cps.has(k)) cps.set(k, { text: a.text, weight: a.weight }); else cps.get(k).text = a.text; }));
+  const cell = (v, k) => { const a = (v.answers || []).find(x => (x.cp || x.text) === k); return a ? a.status : '-'; };
+  const cpRows = [...cps.entries()].map(([k, c]) => ({ text: c.text, weight: fvNum(c.weight), cells: vs.map(v => cell(v, k)) }));
+  cpRows.forEach(r => { r.times = r.cells.filter(x => x === 'Issue').length; });
+  const per = 8, chunks = [];
+  for (let i = 0; i < vs.length; i += per) {
+    const part = vs.slice(i, i + per);
+    chunks.push({ head: ['Checkpoint', 'Wt', ...part.map(v => fvShortDate(v.visit_date) + '\n' + fvTypeLabel(v.visit_type)), 'Issues (all visits)'],
+      body: cpRows.map(r => [r.text, r.weight, ...r.cells.slice(i, i + per), r.times]), n: part.length });
+  }
+  // 5. issues
+  const pm = new Map(); issues.forEach(i => { const k = i.checkpoint_text || '-'; if (!pm.has(k)) pm.set(k, []); pm.get(k).push(i); });
+  const issuePoint = { head: ['Issue point', 'Times raised', 'In how many visits', 'Open', 'Resolved', 'Last raised'],
+    body: [...pm.entries()].map(([k, l]) => [k, l.length, new Set(l.map(i => i.visit_id)).size + ' of ' + vs.length, l.filter(i => i.status === 'open').length, l.filter(i => i.status !== 'open').length, fvFmtDate(l.map(i => i.visit_date).sort().pop())])
+      .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))) };
+  const issueList = { head: ['Visit date', ...(isRider ? [] : ['Rider']), 'Point', 'Observed', 'Status', 'Resolved date', 'Resolved by'],
+    body: issues.slice().sort((a, b) => String(a.visit_date).localeCompare(String(b.visit_date))).map(i => [fvFmtDate(i.visit_date), ...(isRider ? [] : [i.rider_name || '']), i.checkpoint_text, i.observation || '', i.status === 'open' ? 'Open' : 'Resolved', i.resolved_at ? fvFmtDate(String(i.resolved_at).slice(0, 10)) : '', i.resolved_by_name || '']) };
+  const hi = sc.length ? Math.max(...sc) : null, lo = sc.length ? Math.min(...sc) : null, avg = fvAvg(vs);
+  return { vs, sc, comp, months, riders, chunks, cpRows, issuePoint, issueList, open, hi, lo, avg,
+    first: sc.length ? sc[0] : null, latest: sc.length ? sc[sc.length - 1] : null };
+}
+const fvScoreRgb = (s) => s >= 90 ? [46, 125, 79] : s >= 75 ? [185, 119, 14] : [192, 83, 47];
+async function fvPdfHistory(kind, item, d) {
+  const H = FV_HIST[kind], T = fvHistTables(kind, d.visits, d.issues), n = T.vs.length, issues = d.issues;
+  const stats = [[n, kind === 'rider' ? 'Times checked' : 'Rider checks'], [fvNum(T.avg) + '%', 'Average score', fvScoreRgb(T.avg)],
+    ...(kind === 'rider'
+      ? [[fvNum(T.first) + '% to ' + fvNum(T.latest) + '%', 'First to latest score'], [n > 1 ? fvDelta(T.latest - T.first) + ' pts' : '-', 'Change (first to latest)', n > 1 ? (T.latest - T.first >= 0 ? [15, 122, 86] : [192, 57, 43]) : null]]
+      : [[fvRiderCount(T.vs), 'Riders checked']]),
+    [fvNum(T.lo) + '% / ' + fvNum(T.hi) + '%', 'Lowest / highest'], [issues.length, 'Issues found', [192, 57, 43]], [T.open, 'Still open', [192, 57, 43]], [issues.length - T.open, 'Resolved', [15, 122, 86]]];
+  const sections = [{ title: 'Score comparison - report by report', head: T.comp.head, body: T.comp.body,
+    note: kind === 'rider' ? 'Change = this score minus the score of the previous visit. Scores are coloured: green 90% and above, amber 75% to 89%, red below 75%.' : 'Scores are coloured: green 90% and above, amber 75% to 89%, red below 75%.' },
+    { title: 'Month-by-month comparison', head: T.months.head, body: T.months.body }];
+  if (kind !== 'rider') sections.push({ title: 'Rider-by-rider comparison (first score to latest score)', head: T.riders.head, body: T.riders.body });
+  if (kind === 'rider') T.chunks.forEach((c, i) => sections.push({ title: 'Checkpoint comparison' + (T.chunks.length > 1 ? ' (' + (i + 1) + ' of ' + T.chunks.length + ')' : '') + ' - OK / Issue in every visit', head: c.head, body: c.body, marks: true, widths: { 0: 190, 1: 30, [c.head.length - 1]: 44 } }));
+  sections.push({ title: 'Issues summary by point (how often each point failed)', head: T.issuePoint.head, body: T.issuePoint.body, note: issues.length ? 'A point that fails in several visits is a repeated issue and needs follow-up.' : '' },
+    { title: 'All issues', head: T.issueList.head, body: T.issueList.body });
+  const full = n <= 40;
+  if (full) {
+    const issueBy = new Map(issues.map(i => [i.visit_id + '|' + i.cp_key, i]));
+    T.vs.forEach((v, i) => sections.push({ title: `Report ${i + 1} of ${n}:  ${fvFmtDate(v.visit_date)}  |  ${fvTypeLabel(v.visit_type)}  |  ${kind === 'rider' ? '' : (v.rider_name || '') + '  |  '}Score ${fvNum(v.score)}%  |  Visited by ${v.submitted_by_name || '-'}${v.center_name ? '  |  ' + v.center_name : ''}`,
+      head: ['#', 'Checkpoint', 'Weight', 'Result', 'Observation'],
+      body: (v.answers || []).map((a, j) => { const is = issueBy.get(v.id + '|' + a.cp); return [j + 1, a.text, fvNum(a.weight), a.status, (a.obs || '') + (is ? (a.obs ? '\n' : '') + (is.status === 'resolved' ? 'Issue resolved ' + String(is.resolved_at || '').slice(0, 10) : 'Open issue') : '')]; }),
+      widths: { 0: 24, 2: 44, 3: 48 } }));
+  } else sections.push({ title: 'Full checkpoint details', head: ['Note'], body: [['This pack covers ' + n + ' reports, which is too many to print page by page. The Excel download of the same pack has every checkpoint of every report on its "All report details" sheet.']] });
+  const who = H.name(d.visits[0]);
+  return fhPdf({ title: 'History Report - ' + H.label, landscape: true, file: `field-visit-history-${kind}-${fvSafeName(who)}-${fvToday()}.pdf`,
+    subtitle: [H.label + ': ' + who, 'Period: ' + fvPeriodText() + '  |  ' + n + ' report' + (n === 1 ? '' : 's') + (kind === 'rider' ? '' : ', ' + fvRiderCount(T.vs) + ' riders')], stats, sections });
+}
+async function fvXlsxHistory(kind, item, d) {
+  await ensureXLSX();
+  const H = FV_HIST[kind], T = fvHistTables(kind, d.visits, d.issues), n = T.vs.length, who = H.name(d.visits[0]);
+  const wb = XLSX.utils.book_new(), add = (name, head, body) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...(body.length ? body : [['No data']])]), name);
+  add('Summary', ['Item', 'Value'], [[H.label, who], ['Period', fvPeriodText()], ['Reports', n], ['Average score %', fvNum(T.avg)],
+    ...(kind === 'rider' ? [['First score %', fvNum(T.first)], ['Latest score %', fvNum(T.latest)], ['Change first to latest (points)', n > 1 ? fvNum(T.latest - T.first) : '']] : [['Riders checked', fvRiderCount(T.vs)]]),
+    ['Lowest score %', fvNum(T.lo)], ['Highest score %', fvNum(T.hi)], ['Issues found', d.issues.length], ['Still open', T.open], ['Resolved', d.issues.length - T.open]]);
+  add('Score comparison', T.comp.head, T.comp.body);
+  add('Monthly comparison', T.months.head, T.months.body);
+  if (kind !== 'rider') add('Rider comparison', T.riders.head, T.riders.body);
+  if (kind === 'rider') add('Checkpoint comparison', ['Checkpoint', 'Weight', ...T.vs.map(v => v.visit_date + ' (' + fvTypeLabel(v.visit_type) + ')'), 'Issues (all visits)'], T.cpRows.map(r => [r.text, r.weight, ...r.cells, r.times]));
+  add('Issues summary', T.issuePoint.head, T.issuePoint.body);
+  add('All issues', T.issueList.head, T.issueList.body);
+  const issueBy = new Map(d.issues.map(i => [i.visit_id + '|' + i.cp_key, i]));
+  const detail = []; T.vs.forEach(v => (v.answers || []).forEach((a, j) => { const is = issueBy.get(v.id + '|' + a.cp); detail.push([v.visit_date, v.rider_name || '', v.rider_employee_id || '', v.region_name || '', fvTypeLabel(v.visit_type), v.submitted_by_name || '', v.center_name || '', fvNum(v.score), j + 1, a.text, fvNum(a.weight), a.status, a.obs || '', is ? (is.status === 'resolved' ? 'Resolved' : 'Open') : '']); }));
+  add('All report details', ['Date', 'Rider', 'Employee ID', 'Team / Region', 'Visit type', 'Visited by', 'Centre', 'Visit score %', '#', 'Checkpoint', 'Weight', 'Result', 'Observation', 'Issue status'], detail);
+  return fhSaveXlsx(wb, `field-visit-history-${kind}-${fvSafeName(who)}-${fvToday()}.xlsx`);
+}
+async function fvHistDownload(kind, item, fmt) {
+  try {
+    toast('Collecting every report…');
+    const d = await fvLoadHistory(kind, item);
+    if (!d.visits.length) { toast('No reports found for this selection in the chosen dates.'); return false; }
+    if (fmt === 'xlsx') await fvXlsxHistory(kind, item, d); else await fvPdfHistory(kind, item, d);
+    return true;
+  } catch (e) { console.error(e); toast('Could not make the history file: ' + (e.message || e)); return false; }
+}
+// pick a person / place from the rows on screen, then download
+function fvHistoryModal(current, pre) {
+  const kinds = Object.keys(FV_HIST).filter(k => k !== 'centre' || FV_HAS_CENTER);
+  const itemsOf = (kind) => {
+    const H = FV_HIST[kind], m = new Map();
+    (current || []).forEach(v => { const raw = v[H.nameCol], id = H.id(v), key = id || raw; if (!key || !raw) return; if (!m.has(key)) m.set(key, { key, id: id || null, raw, label: H.name(v), n: 0 }); m.get(key).n++; });
+    return [...m.values()].sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  };
+  openModal(`<h2>Download history of one rider, Area Incharge, centre or team</h2>
+    <p class="hint">Period: <b>${escapeHtml(fvPeriodText())}</b>. You get <b>every report</b> in these dates, a <b>score comparison</b> (report by report and month by month) and an <b>issues summary</b>. To change the dates, close this window and change them on the page first.</p>
+    <div class="form-row"><label>History of</label><select id="fh-kind">${kinds.map(k => `<option value="${k}" ${pre && pre.kind === k ? 'selected' : ''}>${FV_HIST[k].label}</option>`).join('')}</select></div>
+    <div class="form-row"><label>Choose</label><select id="fh-item"></select></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"><button type="button" class="btn" id="fh-pdf">⬇ PDF</button><button type="button" class="btn outline" id="fh-xlsx">⬇ Excel</button></div>`);
+  let list = [];
+  const fill = () => {
+    const kind = document.getElementById('fh-kind').value; list = itemsOf(kind);
+    document.getElementById('fh-item').innerHTML = list.length ? list.map((x, i) => `<option value="${i}" ${pre && pre.kind === kind && String(pre.key) === String(x.key) ? 'selected' : ''}>${escapeHtml(x.label)} - ${x.n} check${x.n === 1 ? '' : 's'} on screen</option>`).join('') : '<option value="">Nothing on screen for this choice</option>';
+  };
+  document.getElementById('fh-kind').onchange = fill; fill();
+  const go = async (fmt) => {
+    const x = list[Number(document.getElementById('fh-item').value)]; if (!x) { toast('Nothing to download for this choice.'); return; }
+    const ok = await fvHistDownload(document.getElementById('fh-kind').value, x, fmt); if (ok) closeModal();
+  };
+  document.getElementById('fh-pdf').onclick = () => go('pdf');
+  document.getElementById('fh-xlsx').onclick = () => go('xlsx');
+}
 // Excel with several sheets
 async function fvXlsxVisits(current) {
   await ensureXLSX(); const wb = XLSX.utils.book_new();
@@ -8293,7 +8488,9 @@ function fvDownloadMenu(current) {
     <div style="display:grid;gap:8px;margin:10px 0">${opts.map(([k, l]) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:190px;font-weight:600;">${l}</span><button type="button" class="btn small outline" data-dl="${k}" data-fmt="pdf">PDF</button><button type="button" class="btn small outline" data-dl="${k}" data-fmt="csv">CSV</button></div>`).join('')}</div>
     <div style="display:grid;gap:8px;margin-top:12px;border-top:1px solid var(--line,#e3e8f2);padding-top:12px;">
       <button type="button" class="btn" data-dl="overall" data-fmt="pdf">⬇ Full report as PDF (overall + by incharge + visit details)</button>
-      <button type="button" class="btn" data-dl="xlsx" data-fmt="xlsx">⬇ Full report as Excel (every incharge on its own sheet)</button></div>`);
+      <button type="button" class="btn" data-dl="xlsx" data-fmt="xlsx">⬇ Full report as Excel (every incharge on its own sheet)</button>
+      <button type="button" class="btn outline" id="fv-hist-open">⬇ History of ONE rider / Area Incharge / centre / team (all reports, score comparison, issues summary)</button></div>`);
+  document.getElementById('fv-hist-open').onclick = () => { closeModal(); fvHistoryModal(current); };
   document.querySelectorAll('[data-dl]').forEach(b => b.onclick = async () => {
     if (!current.length) { toast('Nothing to download.'); return; }
     const k = b.dataset.dl, fmt = b.dataset.fmt, stamp = fvToday();
@@ -8543,7 +8740,9 @@ function fvRiderDownloads() {
   openModal(`<h2>Download rider summary</h2><p class="hint"><b>${c.rows.length}</b> rider check${c.rows.length === 1 ? '' : 's'}, ${fvPeriodText()}. ${not.length} rider(s) not visited.</p>
     <div style="display:grid;gap:8px;margin:10px 0;">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span style="flex:1;min-width:170px;font-weight:600;">Rider-wise summary (visits, scores, issues)</span><button type="button" class="btn small outline" data-r="pdf">PDF</button><button type="button" class="btn small outline" data-r="csv">CSV</button></div>
-      <button type="button" class="btn" data-r="xlsx">⬇ Excel (summary, every visit, not visited)</button></div>`);
+      <button type="button" class="btn" data-r="xlsx">⬇ Excel (summary, every visit, not visited)</button>
+      <button type="button" class="btn outline" id="fv-hist-open2">⬇ History of ONE rider (all reports, score comparison, issues summary)</button></div>`);
+  document.getElementById('fv-hist-open2').onclick = () => { closeModal(); fvHistoryModal(c.rows, { kind: 'rider' }); };
   document.querySelectorAll('[data-r]').forEach(b => b.onclick = async () => {
     try {
       const rows = fvAggRows(c.rows, 'rider');
@@ -8578,7 +8777,7 @@ async function fvPageRiders(host) {
           ${rows.slice(0, shown).map(v => `<tr><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td>
             <td><a href="#" data-rider="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" style="color:inherit;text-decoration:none;font-weight:600;">${escapeHtml(v.rider_name)}</a><div class="fv-note">${escapeHtml(v.rider_employee_id || '')}</div></td>
             <td>${fvTypeBadge(v.visit_type)}</td><td style="font-weight:700;color:${fvScoreColor(v.score)};">${fvNum(v.score)}%</td>
-            <td class="c" style="white-space:nowrap;"><button class="fv-btn" data-vid="${v.id}" type="button">View</button> <button class="fv-btn ghost" data-rpdf="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" type="button" title="Download this rider's full report as PDF">PDF</button></td></tr>`).join('')}
+            <td class="c" style="white-space:nowrap;"><button class="fv-btn" data-vid="${v.id}" type="button">View</button> <button class="fv-btn ghost" data-rpdf="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" type="button" title="Download this rider's full report as PDF">PDF</button> <button class="fv-btn ghost" data-rhist="${v.rider_id || ''}" data-rn="${escapeHtml(v.rider_name)}" data-re="${escapeHtml(v.rider_employee_id || '')}" type="button" title="All reports of this rider in the selected dates, with score comparison and issues summary">History</button></td></tr>`).join('')}
           </tbody></table></div>` : '<div style="padding:16px;">' + emptyState('No visits match these filters.') + '</div>'}</div>
           ${rows.length > shown ? `<div style="text-align:center;margin:-6px 0 14px;"><button class="fv-btn ghost" data-more type="button">Show more (${rows.length - shown} left)</button></div>` : ''}
           <div class="fv-card2"><h3>Not visited in this period <span class="fv-chip">${notVisited.length}</span></h3>
@@ -8586,6 +8785,7 @@ async function fvPageRiders(host) {
               <p class="fv-note" style="margin-top:8px;">Active riders from the Roster who have no visit in the selected dates.</p>` : '<div class="fv-note">Every active rider in view has been visited. 🎉</div>'}</div>`;
         res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), false));
         res.querySelectorAll('[data-rpdf]').forEach(b => b.onclick = () => { if (b.dataset.rpdf) fvPdfBtn(() => fvPdfRider(b.dataset.rpdf, b.dataset.rn, b.dataset.re)); });
+        res.querySelectorAll('[data-rhist]').forEach(b => b.onclick = () => fvHistoryModal(rows, { kind: 'rider', key: b.dataset.rhist || b.dataset.rn }));
         res.querySelectorAll('[data-rider]').forEach(a => a.onclick = (e) => { e.preventDefault(); if (a.dataset.rider) fvOpenRider(a.dataset.rider, a.dataset.rn, a.dataset.re, () => ctx && ctx.reload()); });
         const more = res.querySelector('[data-more]');
         if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
@@ -8610,7 +8810,10 @@ async function fvOpenRider(id, name, emp, onChanged) {
     <div class="fv-cards">${fvCard(fvVisitCount(visits), 'Visits (all time)')}${fvCard(visits.length ? fvNum(fvAvg(visits)) + '%' : '—', 'Average score', 'teal')}
       ${fvCard(visits.length ? fvNum(visits[0].score) + '%' : '—', 'Latest score', 'green')}${fvCard(open, 'Open issues', 'red')}</div>
     <div class="fv-panel"><h3>Score trend (last 30 visits)</h3>${fvLineChart(trend)}</div>
-    <div style="text-align:right;margin-bottom:8px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;"><button class="fv-btn ghost" id="fv-pdf-rider" type="button">⬇ Download rider report (PDF)</button></div>
+    <div style="text-align:right;margin-bottom:8px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;"><button class="fv-btn ghost" id="fv-pdf-rider" type="button">⬇ Download rider report (PDF)</button>
+      <button class="fv-btn" id="fv-hist-pdf" type="button" title="Every report of this rider in the selected dates, with score comparison and issues summary">⬇ All reports + comparison (PDF)</button>
+      <button class="fv-btn ghost" id="fv-hist-xlsx" type="button">⬇ All reports + comparison (Excel)</button></div>
+    <div class="fv-note" style="text-align:right;margin:-4px 0 8px;">The two buttons above use the dates chosen on the page: ${escapeHtml(fvPeriodText())}.</div>
     ${isSuperAdmin() && visits.length ? '<div style="text-align:right;margin-bottom:8px;"><button class="fv-btn ghost" id="fv-del-rider" type="button" style="color:#b3321b;border-color:#e0a79b;">Delete all visits of this rider</button></div>' : ''}
     <div class="fv-panel"><h3>Visits</h3>${visits.length ? `<div style="overflow-x:auto;max-height:260px;overflow-y:auto;"><table class="fv-table"><thead><tr><th>Date</th><th>Team / Region</th><th>Type</th><th>Score</th><th>By</th></tr></thead><tbody>
       ${visits.map(v => `<tr class="fv-row-click" data-vid="${v.id}"><td>${fvFmtDate(v.visit_date)}</td><td>${escapeHtml(v.region_name || '—')}</td><td>${fvTypeBadge(v.visit_type)}</td><td>${fvScorePill(v.score)}</td><td>${escapeHtml(v.submitted_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No visits yet.</div>'}</div>
@@ -8619,6 +8822,8 @@ async function fvOpenRider(id, name, emp, onChanged) {
         <td>${i.status === 'open' ? '<span class="badge" style="background:#fde7e1;color:#a63d1f;">Open</span>' : `<span class="badge active">Resolved</span><div class="fv-note">${fvFmtDate((i.resolved_at || '').slice(0, 10))}</div>`}</td></tr>`).join('')}</tbody></table></div>` : '<div class="fv-note">No issues recorded.</div>'}</div>`;
   modal.querySelectorAll('[data-vid]').forEach(tr => tr.onclick = () => { closeModal(); fvOpenVisit(tr.dataset.vid, onChanged); });
   const pr = modal.querySelector('#fv-pdf-rider'); if (pr) pr.onclick = () => fvPdfBtn(() => fvPdfRider(id, name, emp));
+  const hp = modal.querySelector('#fv-hist-pdf'); if (hp) hp.onclick = () => fvHistDownload('rider', { id, raw: name }, 'pdf');
+  const hx = modal.querySelector('#fv-hist-xlsx'); if (hx) hx.onclick = () => fvHistDownload('rider', { id, raw: name }, 'xlsx');
   const dr = modal.querySelector('#fv-del-rider'); if (dr) dr.onclick = () => fvDeleteVisits(visits.map(v => v.id), `All ${visits.length} visit report(s) of ${name} (${emp || ''}).`, () => { if (onChanged) onChanged(); });
   fvGo(modal);
 }
