@@ -2011,9 +2011,11 @@ function fhForgotCode(st){
         ${st.email ? '<span class="field-hint">E-mail works only if you saved a recovery e-mail on your My Profile page.</span>' : ''}</div>
       <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
     </form>
-    <p class="hint" style="margin-top:14px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-addmail">My e-mail is not saved yet — add it</a></p>
+    <p class="hint" style="margin-top:6px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
   document.getElementById('fp-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
   document.getElementById('fp-old').onclick = (ev) => { ev.preventDefault(); fhForgotRequest(); };
+  document.getElementById('fp-addmail').onclick = (ev) => { ev.preventDefault(); fhForgotAddEmail(document.getElementById('fp-phone').value); };
   document.getElementById('fp-send-form').onsubmit = async (ev) => {
     ev.preventDefault();
     const phone = document.getElementById('fp-phone').value.trim(), channel = document.getElementById('fp-channel').value, btn = document.getElementById('fp-send-btn');
@@ -2055,6 +2057,36 @@ function fhForgotVerify(phone, channel, hint, st){
   };
 }
 // The older way: send a request; a supervisor approves it and the temporary password is Test@123
+function fhForgotAddEmail(prefPhone){
+  const body = document.getElementById('fp-body'); if (!body) return;
+  body.innerHTML = `
+    <p class="hint">If no e-mail is saved on your account yet, send us the e-mail you want to use. For your safety an admin / supervisor checks that it is really you, saves the e-mail on your account, and then you can get your reset code there.</p>
+    <form id="fp-am-form">
+      <div class="form-row"><label>Mobile Number</label><input type="tel" id="fp-am-phone" required maxlength="11" placeholder="03124244131" inputmode="numeric" value="${escapeHtml(prefPhone||'')}"></div>
+      <div class="form-row"><label>Your e-mail</label><input type="email" id="fp-am-e1" required autocomplete="email" placeholder="name@gmail.com"></div>
+      <div class="form-row"><label>Type it again</label><input type="email" id="fp-am-e2" required autocomplete="off" placeholder="name@gmail.com"></div>
+      <button class="btn-primary" type="submit">Send for approval</button>
+    </form>
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-am-back">Back</a></p>`;
+  document.getElementById('fp-am-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
+  document.getElementById('fp-am-back').onclick = (ev) => { ev.preventDefault(); fhOtp('status', {}).then(st => fhForgotCode(st && st.ok ? st : { whatsapp: false, email: true })); };
+  document.getElementById('fp-am-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const phone = toE164(document.getElementById('fp-am-phone').value.trim());
+    const e1 = document.getElementById('fp-am-e1').value.trim().toLowerCase(), e2 = document.getElementById('fp-am-e2').value.trim().toLowerCase();
+    if (e1 !== e2){ toast('The two e-mail addresses do not match.'); return; }
+    try {
+      const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
+      if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
+    } catch (_) {}
+    const { error } = await sb.from('password_reset_requests').insert({ phone, note: 'ADD E-MAIL + RESET: please verify the person, save this recovery e-mail on the account (Team > Edit), then they can use "Forgot password" to get the code. E-mail: ' + e1 });
+    if (error){
+      if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('A request for this number is already waiting for approval. Please wait until it is done.'); return; }
+      toast('Could not submit: ' + error.message); return;
+    }
+    closeModal(); toast('Request sent. After the admin saves your e-mail you can use Forgot password to get the code there.');
+  };
+}
 function fhForgotRequest(){
   const body = document.getElementById('fp-body'); if (!body) return;
   body.innerHTML = `
