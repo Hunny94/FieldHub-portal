@@ -1255,6 +1255,8 @@ async function afterLogin(user){
   const firstPage = navigateTo(allowedViews.includes(hashView) ? hashView : 'dashboard');
   setupSessionTimeout();
   fhStartActivityTracking();
+  try { if (window.fhAssistantInit) fhAssistantInit(); } catch (_e) {}   // chat helper (assistant.js)
+  try { if (window.fhOffline) setTimeout(() => fhOffline.warm(), 6000); } catch (_e) {}   // save the main pages for offline reading
   // Popups, reminders, notifications and live updates are not urgent — they start only after the
   // first page has loaded, so they no longer compete with it for the connection.
   firstPage.then(() => setTimeout(() => {
@@ -1951,33 +1953,102 @@ function bindForcePasswordForm(){
   };
 }
 
+// Calls the public "fieldhub-otp" Edge Function (password reset by one-time code). Works while signed out.
+async function fhOtp(action, payload){
+  try {
+    const res = await fetch(SUPABASE_URL + '/functions/v1/fieldhub-otp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY }, body: JSON.stringify({ action, ...(payload || {}) }) });
+    const out = await res.json().catch(() => null);
+    return out || { ok: false, error: 'The server sent an unexpected answer. Please try again.' };
+  } catch (_) { return { ok: false, error: 'No internet connection. Please connect and try again.', offline: true }; }
+}
 function bindForgotPasswordLink(){
-  document.getElementById('show-forgot').onclick = (e) => {
+  document.getElementById('show-forgot').onclick = async (e) => {
     e.preventDefault();
-    openModal(`
-      <h2>Forgot password</h2>
+    openModal(`<h2>Forgot password</h2><div id="fp-body"><div class="mono">Loading…</div></div>`);
+    const st = await fhOtp('status', {});
+    if (st && st.ok && (st.whatsapp || st.email)) fhForgotCode(st); else fhForgotRequest();   // code reset not switched on yet: the old "ask my supervisor" form
+  };
+}
+// Step 1 + 2: get a code by WhatsApp / e-mail, then choose a new password
+function fhForgotCode(st){
+  const body = document.getElementById('fp-body'); if (!body) return;
+  const lp = (document.getElementById('login-phone') || {}).value || '';
+  body.innerHTML = `
+    <p class="hint">Enter your registered mobile number. We will send you a <b>6-digit code</b>. Enter it here and choose a new password. No need to wait for approval.</p>
+    <form id="fp-send-form">
+      <div class="form-row"><label>Mobile Number</label><input type="tel" id="fp-phone" required maxlength="11" placeholder="03124244131" inputmode="numeric" value="${escapeHtml(lp)}"></div>
+      <div class="form-row"><label>Send the code to</label>
+        <select id="fp-channel">${st.whatsapp ? '<option value="whatsapp">My mobile (WhatsApp)</option>' : ''}${st.email ? '<option value="email">My recovery e-mail</option>' : ''}</select>
+        ${st.email ? '<span class="field-hint">E-mail works only if you saved a recovery e-mail on your My Profile page.</span>' : ''}</div>
+      <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
+    </form>
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
+  document.getElementById('fp-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
+  document.getElementById('fp-old').onclick = (ev) => { ev.preventDefault(); fhForgotRequest(); };
+  document.getElementById('fp-send-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const phone = document.getElementById('fp-phone').value.trim(), channel = document.getElementById('fp-channel').value, btn = document.getElementById('fp-send-btn');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const r = await fhOtp('request_code', { phone, channel });
+    btn.disabled = false; btn.textContent = 'Send code';
+    if (!r.ok){ toast(r.error || 'Could not send the code.'); return; }
+    fhForgotVerify(phone, channel, r.hint, st);
+  };
+}
+function fhForgotVerify(phone, channel, hint, st){
+  const body = document.getElementById('fp-body'); if (!body) return;
+  body.innerHTML = `
+    <p class="hint">A code was sent to <b>${escapeHtml(hint || 'you')}</b> ${channel === 'email' ? 'by e-mail' : 'on WhatsApp'}. It works for 10 minutes.</p>
+    <form id="fp-verify-form">
+      <div class="form-row"><label>6-digit code</label><input type="text" id="fp-code" required maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+      <div class="form-row"><label>New password</label><div class="password-field"><input type="password" id="fp-pw1" required minlength="8" autocomplete="new-password"><button type="button" class="password-toggle" id="fp-tg">Show</button></div>
+        <span class="field-hint">At least 8 characters, with letters and numbers.</span></div>
+      <div class="form-row"><label>Repeat new password</label><input type="password" id="fp-pw2" required minlength="8" autocomplete="new-password"></div>
+      <button class="btn-primary" type="submit" id="fp-ok-btn">Reset password</button>
+    </form>
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-resend">Send a new code</a> · <a href="#" id="fp-back">Change number</a></p>`;
+  document.getElementById('fp-code').addEventListener('input', function(){ this.value = this.value.replace(/\D/g,'').slice(0,6); });
+  document.getElementById('fp-tg').onclick = () => { const i = document.getElementById('fp-pw1'), h = i.type === 'password'; i.type = h ? 'text' : 'password'; document.getElementById('fp-pw2').type = i.type; document.getElementById('fp-tg').textContent = h ? 'Hide' : 'Show'; };
+  document.getElementById('fp-back').onclick = (ev) => { ev.preventDefault(); fhForgotCode(st); };
+  document.getElementById('fp-resend').onclick = async (ev) => { ev.preventDefault(); const r = await fhOtp('request_code', { phone, channel }); toast(r.ok ? 'A new code was sent.' : (r.error || 'Could not send a new code.')); };
+  document.getElementById('fp-verify-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const pw = document.getElementById('fp-pw1').value;
+    if (pw !== document.getElementById('fp-pw2').value){ toast('The two passwords do not match.'); return; }
+    const btn = document.getElementById('fp-ok-btn'); btn.disabled = true; btn.textContent = 'Please wait…';
+    const r = await fhOtp('verify_code', { phone, code: document.getElementById('fp-code').value, new_password: pw });
+    btn.disabled = false; btn.textContent = 'Reset password';
+    if (!r.ok){ toast(r.error || 'Could not reset the password.'); return; }
+    closeModal();
+    const lp = document.getElementById('login-phone'); if (lp) lp.value = phone;
+    const pf = document.getElementById('login-password'); if (pf){ pf.value = ''; pf.focus(); }
+    toast('Password changed. Please sign in with your new password.');
+  };
+}
+// The older way: send a request; a supervisor approves it and the temporary password is Test@123
+function fhForgotRequest(){
+  const body = document.getElementById('fp-body'); if (!body) return;
+  body.innerHTML = `
       <p class="hint">Enter your registered mobile number. When your request is approved your temporary password will be <b>Test@123</b>. Sign in with it and the portal will ask you to choose your own new password. One request at a time.</p>
       <form id="forgot-form">
         <div class="form-row"><label>Mobile Number</label><input type="tel" id="forgot-phone" required maxlength="11" placeholder="03124244131"></div>
         <div class="form-row"><label>Note (optional)</label><textarea id="forgot-note" placeholder="Anything that helps us find your account"></textarea></div>
         <button class="btn-primary" type="submit">Submit request</button>
-      </form>
-    `);
-    document.getElementById('forgot-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
-    document.getElementById('forgot-form').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const phone = toE164(document.getElementById('forgot-phone').value.trim());
-      try {
-        const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
-        if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
-      } catch (_) {}
-      const { error } = await sb.from('password_reset_requests').insert({ phone, note: document.getElementById('forgot-note').value.trim() });
-      if (error){
-        if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('Your reset request is already waiting for approval. Please wait — you cannot send another one until it is done.'); return; }
-        toast('Could not submit: ' + error.message); return;
-      }
-      closeModal(); toast('Request received. Once it is approved your password becomes Test@123 — sign in with it and you will be asked to choose a new password.');
-    };
+      </form>`;
+  document.getElementById('forgot-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
+  document.getElementById('forgot-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const phone = toE164(document.getElementById('forgot-phone').value.trim());
+    try {
+      const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
+      if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
+    } catch (_) {}
+    const { error } = await sb.from('password_reset_requests').insert({ phone, note: document.getElementById('forgot-note').value.trim() });
+    if (error){
+      if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('Your reset request is already waiting for approval. Please wait — you cannot send another one until it is done.'); return; }
+      toast('Could not submit: ' + error.message); return;
+    }
+    closeModal(); toast('Request received. Once it is approved your password becomes Test@123 — sign in with it and you will be asked to choose a new password.');
   };
 }
 
@@ -11681,6 +11752,12 @@ async function renderMyProfile(){
       <button class="btn" id="mp-save-btn">Save changes</button>
     </div>
     <div class="card">
+      <h3>Recovery e-mail (optional)</h3>
+      <p class="hint">If you forget your password you can get a reset code by WhatsApp on your mobile, or at this e-mail. Saving an e-mail is optional and free.</p>
+      <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||p.email||'')}" placeholder="name@gmail.com" autocomplete="email"></div>
+      <button class="btn" id="mp-email-btn">Save e-mail</button>
+    </div>
+    <div class="card">
       <h3>Change password</h3>
       <p class="hint">Changing your password will sign you out of all other devices, for security.</p>
       <div class="form-row"><label>New password</label>
@@ -11697,6 +11774,13 @@ async function renderMyProfile(){
     state.profile = { ...state.profile, ...payload };
     renderUserBadge();
     toast('Saved');
+  };
+  document.getElementById('mp-email-btn').onclick = async () => {
+    const v = document.getElementById('mp-email').value.trim();
+    const { data, error } = await sb.rpc('fh_set_recovery_email', { p_email: v });
+    if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'This needs migration_51.sql to be run first.' : 'Could not save: ' + error.message.replace(/^.*?:\s*/, '')); return; }
+    state.profile = { ...state.profile, recovery_email: data || null };
+    toast(data ? 'Recovery e-mail saved.' : 'Recovery e-mail removed.');
   };
   document.getElementById('mp-pw-toggle').onclick = () => {
     const input = document.getElementById('mp-new-pw');
