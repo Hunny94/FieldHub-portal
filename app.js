@@ -1256,7 +1256,8 @@ async function afterLogin(user){
   setupSessionTimeout();
   fhStartActivityTracking();
   try { if (window.fhAssistantInit) fhAssistantInit(); } catch (_e) {}   // chat helper (assistant.js)
-  try { if (window.fhOffline) setTimeout(() => fhOffline.warm(), 6000); } catch (_e) {}   // save the main pages for offline reading
+  try { if (window.fhOffline) setTimeout(() => fhOffline.warm(), 6000); } catch (_e) {}
+  try { fhRequireEmail(); } catch (_e) {}   // save the main pages for offline reading
   // Popups, reminders, notifications and live updates are not urgent — they start only after the
   // first page has loaded, so they no longer compete with it for the connection.
   firstPage.then(() => setTimeout(() => {
@@ -1954,6 +1955,34 @@ function bindForcePasswordForm(){
 }
 
 // Calls the public "fieldhub-otp" Edge Function (password reset by one-time code). Works while signed out.
+// Everyone must save ONE recovery e-mail. It is used for password-reset codes and cannot be changed by the user afterwards (admin only).
+function fhRequireEmail(){
+  if (!state.user || !state.profile || state.profile.recovery_email) return;
+  if (state.profile.status && state.profile.status !== 'active') return;
+  if (document.getElementById('fh-email-gate') || (window.fhOffline && fhOffline.isOffline())) return;
+  const o = document.createElement('div'); o.id = 'fh-email-gate'; o.className = 'modal-overlay';
+  o.style.zIndex = 99999;
+  o.innerHTML = `<div class="modal"><h2>Add your e-mail address</h2>
+    <p class="hint">Please add your own e-mail address. It is used to send you a code if you ever forget your password. <b>Once saved it is locked</b> and only an admin can change it, so please type it carefully.</p>
+    <form id="fh-gate-form"><div class="form-row"><label>E-mail</label><input type="email" id="fh-gate-e1" required autocomplete="email" placeholder="name@gmail.com"></div>
+    <div class="form-row"><label>Type it again</label><input type="email" id="fh-gate-e2" required autocomplete="off" placeholder="name@gmail.com"></div>
+    <button class="btn-primary" type="submit" id="fh-gate-save">Save e-mail</button>
+    <button class="btn outline" type="button" id="fh-gate-out" style="margin-top:8px;width:100%">Sign out</button></form></div>`;
+  document.body.appendChild(o);
+  document.getElementById('fh-gate-out').onclick = () => { sb.auth.signOut().then(() => location.reload()); };
+  document.getElementById('fh-gate-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const v1 = document.getElementById('fh-gate-e1').value.trim().toLowerCase(), v2 = document.getElementById('fh-gate-e2').value.trim().toLowerCase();
+    if (v1 !== v2){ toast('The two e-mail addresses do not match.'); return; }
+    if (!confirm('Save ' + v1 + ' as your e-mail?\n\nYou will NOT be able to change it yourself later.')) return;
+    const btn = document.getElementById('fh-gate-save'); btn.disabled = true;
+    const { data, error } = await sb.rpc('fh_set_recovery_email', { p_email: v1 });
+    btn.disabled = false;
+    if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'Please ask the admin to run migration_52.sql first.' : 'Could not save: ' + error.message.replace(/^.*?:\s*/, '')); return; }
+    state.profile = { ...state.profile, recovery_email: data };
+    o.remove(); toast('E-mail saved. Thank you.');
+  };
+}
 async function fhOtp(action, payload){
   try {
     const res = await fetch(SUPABASE_URL + '/functions/v1/fieldhub-otp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY }, body: JSON.stringify({ action, ...(payload || {}) }) });
@@ -4230,6 +4259,7 @@ async function openApproveModal(profileId){
       <div class="two-col">
         <div class="form-row"><label>Mobile number</label><input type="text" id="ap-phone" value="${escapeHtml(toLocalPhone(p.phone)||'')}" maxlength="11" placeholder="03XXXXXXXXX"></div>
         <div class="form-row"><label>Email (optional)</label><input type="email" id="ap-email" value="${escapeHtml(p.email||'')}"></div>
+        <div class="form-row"><label>Recovery e-mail (locked for the user; only you can change it)</label><input type="email" id="ap-rec-email" value="${escapeHtml(p.recovery_email||'')}"></div>
       </div>` : ''}
       <div class="form-row"><label>Role</label><select id="ap-role">${roleOptions}</select></div>
       <div class="form-row" id="ap-designation-row" style="display:none;"><label>Designation (title shown to everyone)</label><select id="ap-designation"></select></div>
@@ -4297,6 +4327,7 @@ async function openApproveModal(profileId){
       payload.employee_id = document.getElementById('ap-empid').value.trim();
       payload.phone = toE164(document.getElementById('ap-phone').value.trim());
       payload.email = document.getElementById('ap-email').value.trim();
+      { const re = document.getElementById('ap-rec-email'); if (re) payload.recovery_email = re.value.trim().toLowerCase() || null; }
     }
 
     const { error } = await sb.from('profiles').update(payload).eq('id', profileId);
@@ -11752,10 +11783,10 @@ async function renderMyProfile(){
       <button class="btn" id="mp-save-btn">Save changes</button>
     </div>
     <div class="card">
-      <h3>Recovery e-mail (optional)</h3>
-      <p class="hint">If you forget your password you can get a reset code by WhatsApp on your mobile, or at this e-mail. Saving an e-mail is optional and free.</p>
-      <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||p.email||'')}" placeholder="name@gmail.com" autocomplete="email"></div>
-      <button class="btn" id="mp-email-btn">Save e-mail</button>
+      <h3>Recovery e-mail</h3>
+      <p class="hint">Used to send you a code if you forget your password. It is locked once saved; to change it please ask an admin.</p>
+      <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||'')}" placeholder="name@gmail.com" autocomplete="email" ${p.recovery_email?'disabled':''}></div>
+      ${p.recovery_email ? '<span class="field-hint">🔒 Locked</span>' : '<button class="btn" id="mp-email-btn">Save e-mail</button>'}
     </div>
     <div class="card">
       <h3>Change password</h3>
@@ -11775,12 +11806,12 @@ async function renderMyProfile(){
     renderUserBadge();
     toast('Saved');
   };
-  document.getElementById('mp-email-btn').onclick = async () => {
+  if (document.getElementById('mp-email-btn')) document.getElementById('mp-email-btn').onclick = async () => {
     const v = document.getElementById('mp-email').value.trim();
     const { data, error } = await sb.rpc('fh_set_recovery_email', { p_email: v });
     if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'This needs migration_51.sql to be run first.' : 'Could not save: ' + error.message.replace(/^.*?:\s*/, '')); return; }
     state.profile = { ...state.profile, recovery_email: data || null };
-    toast(data ? 'Recovery e-mail saved.' : 'Recovery e-mail removed.');
+    toast('Recovery e-mail saved and locked.'); renderMyProfile();
   };
   document.getElementById('mp-pw-toggle').onclick = () => {
     const input = document.getElementById('mp-new-pw');
