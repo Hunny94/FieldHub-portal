@@ -1998,35 +1998,70 @@ function bindForgotPasswordLink(){
     if (st && st.ok && (st.whatsapp || st.email)) fhForgotCode(st); else fhForgotRequest();   // code reset not switched on yet: the old "ask my supervisor" form
   };
 }
-// Step 1 + 2: get a code by WhatsApp / e-mail, then choose a new password
+// Step 1: mobile number. Step 2: type the saved e-mail (or, if none is saved, add one). Step 3: enter the code + new password
 function fhForgotCode(st){
   const body = document.getElementById('fp-body'); if (!body) return;
   const lp = (document.getElementById('login-phone') || {}).value || '';
   body.innerHTML = `
-    <p class="hint">Enter your registered mobile number. We will send you a <b>6-digit code</b>. Enter it here and choose a new password. No need to wait for approval.</p>
+    <p class="hint">Enter your registered mobile number to get a <b>6-digit code</b> and choose a new password. No need to wait for approval.</p>
     <form id="fp-send-form">
       <div class="form-row"><label>Mobile Number</label><input type="tel" id="fp-phone" required maxlength="11" placeholder="03124244131" inputmode="numeric" value="${escapeHtml(lp)}"></div>
-      <div class="form-row"><label>Send the code to</label>
-        <select id="fp-channel">${st.whatsapp ? '<option value="whatsapp">My mobile (WhatsApp)</option>' : ''}${st.email ? '<option value="email">My recovery e-mail</option>' : ''}</select>
-        ${st.email ? '<span class="field-hint">E-mail works only if you saved a recovery e-mail on your My Profile page.</span>' : ''}</div>
-      <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
+      <button class="btn-primary" type="submit" id="fp-send-btn">Continue</button>
     </form>
-    <p class="hint" style="margin-top:14px"><a href="#" id="fp-addmail">My e-mail is not saved yet — add it</a></p>
-    <p class="hint" style="margin-top:6px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
   document.getElementById('fp-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
   document.getElementById('fp-old').onclick = (ev) => { ev.preventDefault(); fhForgotRequest(); };
-  document.getElementById('fp-addmail').onclick = (ev) => { ev.preventDefault(); fhForgotAddEmail(document.getElementById('fp-phone').value); };
   document.getElementById('fp-send-form').onsubmit = async (ev) => {
     ev.preventDefault();
-    const phone = document.getElementById('fp-phone').value.trim(), channel = document.getElementById('fp-channel').value, btn = document.getElementById('fp-send-btn');
-    btn.disabled = true; btn.textContent = 'Sending…';
-    const r = await fhOtp('request_code', { phone, channel });
-    btn.disabled = false; btn.textContent = 'Send code';
-    if (!r.ok){ toast(r.error || 'Could not send the code.'); return; }
-    fhForgotVerify(phone, channel, r.hint, st);
+    const phone = document.getElementById('fp-phone').value.trim(), btn = document.getElementById('fp-send-btn');
+    if (phone.length < 10){ toast('Please enter your 11-digit mobile number.'); return; }
+    btn.disabled = true; btn.textContent = 'Checking…';
+    const r = await fhOtp('lookup', { phone });
+    btn.disabled = false; btn.textContent = 'Continue';
+    if (!r.ok){ toast(r.error || 'Could not check the number. Please try again.'); return; }
+    fhForgotStep2(phone, !!r.has_email, st);
   };
 }
-function fhForgotVerify(phone, channel, hint, st){
+function fhForgotStep2(phone, hasEmail, st){
+  const body = document.getElementById('fp-body'); if (!body) return;
+  const wa = !!st.whatsapp;
+  body.innerHTML = `
+    <p class="hint">${hasEmail ? 'An e-mail is saved on this account. <b>Type that e-mail</b> and we will send the code to it.' : 'No e-mail is saved on this account yet. <b>Add your own e-mail</b> now; the code is sent there and the e-mail is saved (locked) once you enter the code.'}</p>
+    <form id="fp-s2-form">
+      ${wa ? `<div class="form-row"><label>Send the code to</label><select id="fp-channel"><option value="whatsapp">My mobile (WhatsApp)</option><option value="email">${hasEmail ? 'My saved e-mail' : 'A new e-mail'}</option></select></div>` : ''}
+      <div id="fp-mail-box">
+        ${hasEmail ? '' : '<div class="form-row"><label>Your Employee ID</label><input type="text" id="fp-eid" autocomplete="off" placeholder="as shown on your ID card"></div>'}
+        <div class="form-row"><label>${hasEmail ? 'Your saved e-mail' : 'Your e-mail'}</label><input type="email" id="fp-email" autocomplete="email" placeholder="name@gmail.com"></div>
+        ${hasEmail ? '' : '<div class="form-row"><label>Type the e-mail again</label><input type="email" id="fp-email2" autocomplete="off" placeholder="name@gmail.com"></div>'}
+      </div>
+      <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
+    </form>
+    <p class="hint" style="margin-top:14px"><a href="#" id="fp-s2-back">Change number</a></p>`;
+  const ch = () => (wa ? document.getElementById('fp-channel').value : 'email');
+  const sync = () => { document.getElementById('fp-mail-box').style.display = ch() === 'email' ? '' : 'none'; };
+  if (wa) document.getElementById('fp-channel').onchange = sync; sync();
+  document.getElementById('fp-s2-back').onclick = (ev) => { ev.preventDefault(); fhForgotCode(st); };
+  document.getElementById('fp-s2-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const channel = ch(), btn = document.getElementById('fp-send-btn'), payload = { phone, channel };
+    if (channel === 'email'){
+      payload.email = document.getElementById('fp-email').value.trim().toLowerCase();
+      if (!payload.email){ toast('Please type the e-mail address.'); return; }
+      if (!hasEmail){
+        if (payload.email !== document.getElementById('fp-email2').value.trim().toLowerCase()){ toast('The two e-mail addresses do not match.'); return; }
+        payload.employee_id = document.getElementById('fp-eid').value.trim();
+        if (!payload.employee_id){ toast('Please type your Employee ID.'); return; }
+        if (!confirm('The code will be sent to ' + payload.email + ' and this e-mail will be saved on your account. You will not be able to change it yourself later.\n\nContinue?')) return;
+      }
+    }
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const r = await fhOtp('request_code', payload);
+    btn.disabled = false; btn.textContent = 'Send code';
+    if (!r.ok){ toast(r.error || 'Could not send the code.'); return; }
+    fhForgotVerify(phone, channel, r.hint, st, payload);
+  };
+}
+function fhForgotVerify(phone, channel, hint, st, sendPayload){
   const body = document.getElementById('fp-body'); if (!body) return;
   body.innerHTML = `
     <p class="hint">A code was sent to <b>${escapeHtml(hint || 'you')}</b> ${channel === 'email' ? 'by e-mail' : 'on WhatsApp'}. It works for 10 minutes.</p>
@@ -2041,7 +2076,7 @@ function fhForgotVerify(phone, channel, hint, st){
   document.getElementById('fp-code').addEventListener('input', function(){ this.value = this.value.replace(/\D/g,'').slice(0,6); });
   document.getElementById('fp-tg').onclick = () => { const i = document.getElementById('fp-pw1'), h = i.type === 'password'; i.type = h ? 'text' : 'password'; document.getElementById('fp-pw2').type = i.type; document.getElementById('fp-tg').textContent = h ? 'Hide' : 'Show'; };
   document.getElementById('fp-back').onclick = (ev) => { ev.preventDefault(); fhForgotCode(st); };
-  document.getElementById('fp-resend').onclick = async (ev) => { ev.preventDefault(); const r = await fhOtp('request_code', { phone, channel }); toast(r.ok ? 'A new code was sent.' : (r.error || 'Could not send a new code.')); };
+  document.getElementById('fp-resend').onclick = async (ev) => { ev.preventDefault(); const r = await fhOtp('request_code', sendPayload || { phone, channel }); toast(r.ok ? 'A new code was sent.' : (r.error || 'Could not send a new code.')); };
   document.getElementById('fp-verify-form').onsubmit = async (ev) => {
     ev.preventDefault();
     const pw = document.getElementById('fp-pw1').value;
@@ -2057,36 +2092,6 @@ function fhForgotVerify(phone, channel, hint, st){
   };
 }
 // The older way: send a request; a supervisor approves it and the temporary password is Test@123
-function fhForgotAddEmail(prefPhone){
-  const body = document.getElementById('fp-body'); if (!body) return;
-  body.innerHTML = `
-    <p class="hint">If no e-mail is saved on your account yet, send us the e-mail you want to use. For your safety an admin / supervisor checks that it is really you, saves the e-mail on your account, and then you can get your reset code there.</p>
-    <form id="fp-am-form">
-      <div class="form-row"><label>Mobile Number</label><input type="tel" id="fp-am-phone" required maxlength="11" placeholder="03124244131" inputmode="numeric" value="${escapeHtml(prefPhone||'')}"></div>
-      <div class="form-row"><label>Your e-mail</label><input type="email" id="fp-am-e1" required autocomplete="email" placeholder="name@gmail.com"></div>
-      <div class="form-row"><label>Type it again</label><input type="email" id="fp-am-e2" required autocomplete="off" placeholder="name@gmail.com"></div>
-      <button class="btn-primary" type="submit">Send for approval</button>
-    </form>
-    <p class="hint" style="margin-top:14px"><a href="#" id="fp-am-back">Back</a></p>`;
-  document.getElementById('fp-am-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
-  document.getElementById('fp-am-back').onclick = (ev) => { ev.preventDefault(); fhOtp('status', {}).then(st => fhForgotCode(st && st.ok ? st : { whatsapp: false, email: true })); };
-  document.getElementById('fp-am-form').onsubmit = async (ev) => {
-    ev.preventDefault();
-    const phone = toE164(document.getElementById('fp-am-phone').value.trim());
-    const e1 = document.getElementById('fp-am-e1').value.trim().toLowerCase(), e2 = document.getElementById('fp-am-e2').value.trim().toLowerCase();
-    if (e1 !== e2){ toast('The two e-mail addresses do not match.'); return; }
-    try {
-      const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
-      if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
-    } catch (_) {}
-    const { error } = await sb.from('password_reset_requests').insert({ phone, note: 'ADD E-MAIL + RESET: please verify the person, save this recovery e-mail on the account (Team > Edit), then they can use "Forgot password" to get the code. E-mail: ' + e1 });
-    if (error){
-      if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('A request for this number is already waiting for approval. Please wait until it is done.'); return; }
-      toast('Could not submit: ' + error.message); return;
-    }
-    closeModal(); toast('Request sent. After the admin saves your e-mail you can use Forgot password to get the code there.');
-  };
-}
 function fhForgotRequest(){
   const body = document.getElementById('fp-body'); if (!body) return;
   body.innerHTML = `
