@@ -4,7 +4,7 @@
    Needs app.js (globals: sb, state, escapeHtml, toLocalPhone, toE164, ROLE_LABEL, getAllowedViews, navigateTo ...). */
 (function () {
   'use strict';
-  const A = { open: false, msgs: [], pending: null, uid: null, busy: false, tools: null, ready: false };
+  const A = { open: false, msgs: [], pending: null, uid: null, busy: false, tools: null, ready: false, sid: '', qq: null };
   const esc = (s) => (typeof escapeHtml === 'function' ? escapeHtml(s) : String(s == null ? '' : s));
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9؀-ۿ\s]/g, ' ').replace(/\s+/g, ' ').trim();
   const squash = (s) => norm(s).replace(/\s/g, '');
@@ -69,6 +69,7 @@
     if (/^(hi|hello|hey|salam|assalam|aoa|help|menu|start)\b|what can you do|kya kar sakte/.test(t)) return 'help';
     if (/\b(thanks|thank you|shukriya|jazak|ok thanks)\b/.test(t)) return 'thanks';
     if (/expir|vial|reagent|near expiry|shelf life/.test(t)) return 'expiry';
+    if (/(coordinates?|lat(itude)?\b|long(itude)?\b|location|map|where is|pin)/.test(t) && /(hot ?spot|rider|\b\d{4,}\b|region|city|sub ?region|area)/.test(t) && !/same (area|spot)/.test(t)) return 'hscoord';
     if (/hot ?spot|same (area|spot|location)|colleague|team ?mate|who (works|is working) (in|at|with)|riders? (in|at|of) /.test(t)) return 'hotspot';
     if (/(incharge|in charge|supervisor|coordinator|\bpoc\b|team lead|manager|\bboss\b)/.test(t) && /(who|contact|number|phone|kaun|kon|call|reach)/.test(t)) return 'supervisor';
     if (/eligib|entitle|can i get|am i allowed|milega|mil sakta|re ?issue|replace|last (issued|issuance)|when (was|did) i (get|receive)|issued/.test(t)) return 'eligibility';
@@ -119,6 +120,42 @@
       return `I found nobody in a hotspot like “${esc(target)}”.` + (sugg.length ? ' Did you mean: ' + sugg.map((s) => btn(s, `data-say="riders in ${esc(s)}"`)).join(' ') : ' Please check the spelling.');
     }
     return `<b>${rows.length}</b> active ${rows.length === 1 ? 'person' : 'people'} in “${esc(target)}”:` + rows.slice(0, 40).map(personRow).join('') + (rows.length > 40 ? note('…and ' + (rows.length - 40) + ' more. Open the Roster for the full list.') : '');
+  }
+
+  // ----- hotspot coordinates (by hotspot / region / city / rider name or id) -----
+  const mapLink = (h) => `<a href="https://www.google.com/maps?q=${h.lat},${h.lng}" target="_blank" rel="noopener">📍 Open map</a>`;
+  function coordRow(h) {
+    const has = h.lat != null && h.lng != null;
+    return `<div class="fb-line"><b>${esc(h.name)}</b><div class="fb-dim">${esc([h.regions && h.regions.name, h.sub_regions && h.sub_regions.name].filter(Boolean).join(' · '))}</div>` +
+      (has ? `<div class="fb-dim">${Number(h.lat).toFixed(5)}, ${Number(h.lng).toFixed(5)}</div><div class="fb-act">${mapLink(h)}</div>` : '<div class="fb-dim">Coordinates not added yet</div>') + '</div>';
+  }
+  async function hsCoord(raw) {
+    if (!allowed('roster') && !allowed('hierarchy')) return noAccess('Roster');
+    const all = await sb.from('hotspots').select('name, lat, lng, regions(name), sub_regions(name)').limit(1500);
+    if (all.error) return /lat|column/i.test(all.error.message || '') ? 'Hotspot coordinates are not set up yet: the admin needs to run <b>migration_54.sql</b>.' : 'I could not read hotspots: ' + esc(all.error.message);
+    const list = all.data || [];
+    const kw = words(raw).filter((w) => !/^(coordinates?|latitude|longitude|location|locations|map|hotspots?|where|pin|riders?|rider|city|region|sub|area|lat|long|lng|located|find|show)$/.test(w));
+    const t = norm(raw);
+    // rider by employee id or name -> his / her hotspot
+    const idm = raw.match(/\b(\d{4,})\b/);
+    let rows = [];
+    if (idm || (kw.length && !list.some((h) => kw.some((w) => norm(h.name + ' ' + (h.regions && h.regions.name) + ' ' + (h.sub_regions && h.sub_regions.name)).includes(w))))) {
+      const people = await findPerson(idm ? idm[1] : kw.join(' '));
+      if (people.length) {
+        const out = [];
+        for (const p of people.slice(0, 4)) {
+          const r = await sb.from('roster_entries').select('hotspot, region_id').eq('rider_id', p.id).neq('status', 'removed').order('created_at', { ascending: false }).limit(1);
+          const hs = r.data && r.data[0] && r.data[0].hotspot;
+          const h = hs && list.find((x) => squash(x.name) === squash(hs));
+          out.push(`<div class="fb-h">${esc(p.full_name)} ${esc(p.employee_id || '')}</div>` + (h ? coordRow(h) : `<div class="fb-line">${hs ? 'Hotspot <b>' + esc(hs) + '</b> has no coordinates yet.' : 'No hotspot on the roster.'}</div>`));
+        }
+        return out.join('');
+      }
+    }
+    rows = list.filter((h) => !kw.length || kw.every((w) => norm(h.name + ' ' + (h.regions && h.regions.name) + ' ' + (h.sub_regions && h.sub_regions.name)).includes(w)));
+    if (!rows.length) return `I could not find a hotspot, region, city or rider matching “${esc(kw.join(' '))}”.`;
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return `<b>${rows.length}</b> hotspot${rows.length === 1 ? '' : 's'}${kw.length ? ' for “' + esc(kw.join(' ')) + '”' : ''}:` + rows.slice(0, 15).map(coordRow).join('') + (rows.length > 15 ? note('…and ' + (rows.length - 15) + ' more. Narrow it by region or city.') : '');
   }
 
   // ----- supervisors -----
@@ -278,6 +315,7 @@
       case 'thanks': return 'You are welcome! 😊 Ask me anything else.';
       case 'expiry': return expiry(raw);
       case 'hotspot': return hotspot(raw);
+      case 'hscoord': return hsCoord(raw);
       case 'supervisor': return supervisor();
       case 'eligibility': return eligibility(raw);
       case 'requests': return requests();
@@ -293,17 +331,45 @@
       }
     }
   }
-  async function ask(text) {
+  const plain = (h) => String(h || '').replace(/<br\s*\/?>|<\/div>/gi, ' ').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+  async function logChat(q, html, intent) {
+    try {
+      if (!A.sid) A.sid = (crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+      const r = await sb.from('chat_logs').insert({ user_id: state.user.id, session_id: A.sid, question: q.slice(0, 500), answer: plain(html).slice(0, 700), intent: intent || null }).select('id').single();
+      return r.data && r.data.id;
+    } catch (_) { return null; }   // logging must never break the chat
+  }
+  async function ask(text, fixed) {
     text = String(text || '').trim(); if (!text || A.busy) return;
     push('me', esc(text));
     A.busy = true; typing(true);
-    let out;
+    let out, it = detect(text);
     try {
       const off = typeof navigator !== 'undefined' && navigator.onLine === false;
-      out = (off ? '📴 <i>You are offline: this answer comes from the last data saved on this phone.</i><br><br>' : '') + await answer(text);
-    } catch (e) { console.warn(e); out = 'Sorry, something went wrong while looking that up. Please try again.'; }
+      out = fixed ? esc(fixed).replace(/\n/g, '<br>') : (off ? '📴 <i>You are offline: this answer comes from the last data saved on this phone.</i><br><br>' : '') + await answer(text);
+      if (fixed) it = 'quick';
+    } catch (e) { console.warn(e); out = 'Sorry, something went wrong while looking that up. Please try again.'; it = 'error'; }
     typing(false); A.busy = false;
     push('bot', out);
+    const m = A.msgs[A.msgs.length - 1];
+    logChat(text, out, it).then((id) => { if (id && m) { m.lid = id; render(); } });
+  }
+  async function rate(lid, v) {
+    const m = A.msgs.find((x) => x.lid === lid); if (!m || m.fb) return;
+    m.fb = v; render();
+    try { await sb.from('chat_logs').update({ feedback: v }).eq('id', lid); } catch (_) {}
+  }
+  async function loadQuick() {
+    try {
+      const r = await sb.from('chat_quick_questions').select('label, answer, roles, sort_order').eq('active', true).order('sort_order').limit(30);
+      A.qq = (r.data || []).filter((q) => !q.roles || !q.roles.length || q.roles.includes(state.profile && state.profile.role));
+    } catch (_) { A.qq = []; }
+  }
+  function startSession() {
+    A.msgs = []; A.pending = null; A.sid = '';
+    const n = (state.profile && state.profile.full_name || '').split(' ')[0];
+    A.msgs.push({ who: 'bot', html: `Hello${n ? ' <b>' + esc(n) + '</b>' : ''}! I am the FieldHub Assistant.<br>I answer from the portal data you have access to. Pick a quick question below or type your own.` });
+    render();
   }
 
   // ---------- UI ----------
@@ -336,6 +402,8 @@ body.fh-app #fh-bot-btn{display:flex}
 #fh-bot .fb-form button{background:var(--ink,#1E2A6E);color:#fff;border:0;border-radius:22px;padding:0 16px;font-weight:700;cursor:pointer}
 #fh-bot .fb-dots span{display:inline-block;width:7px;height:7px;margin:0 2px;border-radius:50%;background:#99a2d0;animation:fbd 1s infinite}
 #fh-bot .fb-dots span:nth-child(2){animation-delay:.15s}#fh-bot .fb-dots span:nth-child(3){animation-delay:.3s}
+#fh-bot .fb-rate{margin-top:6px;display:flex;gap:6px;align-items:center}#fh-bot .fb-rate button{background:transparent;border:1px solid #d9def0;border-radius:12px;padding:1px 8px;cursor:pointer;font-size:13px}#fh-bot .fb-rate button:hover{background:#eef1ff}
+#fh-bot .fb-new{background:rgba(255,255,255,.18);border:0;color:#fff;border-radius:12px;padding:3px 10px;font-size:12px;cursor:pointer}
 @keyframes fbd{0%,80%,100%{opacity:.25}40%{opacity:1}}
 html.fh-dark #fh-bot{background:#171e46;border-color:#2b3470;color:#e6e9ff}
 html.fh-dark #fh-bot .fb-msgs{background:#0d1230}
@@ -354,12 +422,15 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
   function msgsBox() { return document.querySelector('#fh-bot .fb-msgs'); }
   function push(who, html) { A.msgs.push({ who, html }); render(); }
   function typing(on) { const b = msgsBox(); if (!b) return; const old = b.querySelector('.fb-typing'); if (old) old.remove(); if (on) { b.insertAdjacentHTML('beforeend', '<div class="fb-m bot fb-typing"><span class="fb-dots"><span></span><span></span><span></span></span></div>'); b.scrollTop = b.scrollHeight; } }
-  function render() { const b = msgsBox(); if (!b) return; b.innerHTML = A.msgs.map((m) => `<div class="fb-m ${m.who}">${m.html}</div>`).join(''); b.scrollTop = b.scrollHeight; }
+  function render() { const b = msgsBox(); if (!b) return; b.innerHTML = A.msgs.map((m) => `<div class="fb-m ${m.who}">${m.html}${m.lid ? `<div class="fb-rate">${m.fb ? '<span class="fb-dim">Thanks for the feedback</span>' : `<button type="button" data-fb="1" data-lid="${m.lid}" aria-label="Helpful">👍</button><button type="button" data-fb="-1" data-lid="${m.lid}" aria-label="Not correct">👎</button>`}</div>` : ''}</div>`).join(''); b.scrollTop = b.scrollHeight; }
   function chips() {
     const r = isRiderRole();
     const list = r ? ['Same hotspot as me', 'Rain coat eligibility', 'Vials expiring soon', 'My requests', 'My Area Incharge'] : ['Vials expiring soon', 'Open requests', 'My tasks', 'Latest circulars'];
     const q = { 'Same hotspot as me': 'Who has the same hotspot as me?', 'Rain coat eligibility': 'Am I eligible for a new rain coat?', 'Vials expiring soon': 'Which vials expire soon?', 'My requests': 'Show my requests', 'My Area Incharge': 'Who is my Area Incharge?', 'Open requests': 'Open requests', 'My tasks': 'My tasks', 'Latest circulars': 'Latest circulars' };
-    el('fh-bot').querySelector('.fb-chips').innerHTML = list.map((l) => btn(l, `data-say="${esc(q[l])}"`)).join('');
+    const custom = (A.qq || []);
+    el('fh-bot').querySelector('.fb-chips').innerHTML = custom.length
+      ? custom.map((c) => btn(c.label, `data-say="${esc(c.label)}"` + (c.answer ? ` data-ans="${esc(c.answer)}"` : ''))).join('')
+      : list.map((l) => btn(l, `data-say="${esc(q[l])}"`)).join('');
   }
   function build() {
     if (el('fh-bot')) return;
@@ -367,13 +438,15 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
     const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.type = 'button'; b.title = 'FieldHub Assistant'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
     b.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6A8 8 0 1 1 21 12z"/><circle cx="9" cy="12" r=".8" fill="currentColor"/><circle cx="13" cy="12" r=".8" fill="currentColor"/><circle cx="17" cy="12" r=".8" fill="currentColor"/></svg>';
     const p = document.createElement('div'); p.id = 'fh-bot'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'FieldHub Assistant');
-    p.innerHTML = '<div class="fb-head"><div><b>FieldHub Assistant</b><small>Hotspot mates · tools · expiry · requests · help</small></div><button type="button" class="fb-x" aria-label="Close">✕</button></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
+    p.innerHTML = '<div class="fb-head"><div><b>FieldHub Assistant</b><small>Answers from your portal data</small></div><span style="display:flex;gap:8px;align-items:center"><button type="button" class="fb-new">New chat</button><button type="button" class="fb-x" aria-label="Close">✕</button></span></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
     document.body.appendChild(p); document.body.appendChild(b);
     b.onclick = () => toggle();
     p.querySelector('.fb-x').onclick = () => toggle(false);
     p.querySelector('.fb-form').onsubmit = (e) => { e.preventDefault(); const i = p.querySelector('input'); const v = i.value; i.value = ''; ask(v); };
     p.addEventListener('click', (e) => {
-      const s = e.target.closest('[data-say]'); if (s) { ask(s.getAttribute('data-say')); return; }
+      const fbk = e.target.closest('[data-fb]'); if (fbk) { rate(fbk.getAttribute('data-lid'), +fbk.getAttribute('data-fb')); return; }
+      if (e.target.closest('.fb-new')) { startSession(); chips(); return; }
+      const s = e.target.closest('[data-say]'); if (s) { ask(s.getAttribute('data-say'), s.getAttribute('data-ans')); return; }
       const g = e.target.closest('[data-go]');
       if (g) { const v = g.getAttribute('data-go'), q = g.getAttribute('data-q'); if (window.innerWidth < 700) toggle(false); Promise.resolve(navigateTo(v)).then(() => { if (q) setTimeout(() => { const i = document.getElementById('kb-search'); if (i) { i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); } }, 400); }); return; }
       const a = e.target.closest('[data-act="newreq"]'); if (a) { if (window.innerWidth < 700) toggle(false); if (typeof openNewRequestModal === 'function') openNewRequestModal(); }
@@ -383,8 +456,9 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
   function toggle(force) {
     A.open = typeof force === 'boolean' ? force : !A.open;
     el('fh-bot').classList.toggle('open', A.open);
+    if (!A.open) { A.msgs = []; A.pending = null; A.sid = ''; }
     if (A.open) {
-      if (!A.msgs.length) { const n = (state.profile && state.profile.full_name || '').split(' ')[0]; A.msgs.push({ who: 'bot', html: `Hello${n ? ' <b>' + esc(n) + '</b>' : ''}! I am the FieldHub Assistant.<br>Ask me about your <b>hotspot colleagues</b>, <b>tool eligibility</b>, <b>expiring vials</b>, <b>requests</b>, <b>tasks</b> or anything in the <b>Knowledge Base</b>.` }); render(); }
+      startSession(); chips(); loadQuick().then(chips);
       chips(); setTimeout(() => { const i = el('fh-bot').querySelector('input'); if (i && window.innerWidth > 700) i.focus(); }, 50);
     }
   }
