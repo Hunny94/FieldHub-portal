@@ -1527,7 +1527,8 @@ async function setupDesktopNotifications(){
   sb.channel('expiry-notify-' + state.user.id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expiry_notices', filter: `user_id=eq.${state.user.id}` }, (payload) => {
       fire('FieldHub: ' + (payload.new.title || 'Expiry update'), payload.new.body || '');
-      pushNotification({ type: 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: 'expiries' });
+      const fa = payload.new.kind === 'force_ack';
+      pushNotification({ type: fa ? 'Tool' : 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: fa ? 'tools' : 'expiries' });
       fhExpiryPopup();
     })
     .subscribe();
@@ -1550,7 +1551,7 @@ async function fhExpiryPopup(){
     if (r.error) return; rows = r.data || [];
   } catch (_e) { return; }
   if (!rows.length) return;
-  openModal(`<div id="exp-pop"><h2>⚠ Expiry notice${rows.length > 1 ? 's' : ''}</h2>
+  openModal(`<div id="exp-pop"><h2>${rows.every(n => n.kind === 'force_ack') ? '🔔 Notice' : '⚠ Expiry notice'}${rows.length > 1 ? 's' : ''}</h2>
     ${rows.map(n => `<div style="padding:10px 12px;margin:8px 0;border-radius:10px;border-left:4px solid ${n.kind === 'closed' ? '#1d7a47' : '#C1502E'};background:#f6f7fc"><b>${escapeHtml(n.title || 'Expiry update')}</b><div style="margin-top:4px;font-size:14px;line-height:1.45">${escapeHtml(n.body || '')}</div><div class="hint" style="margin:4px 0 0;font-size:12px">${formatDateTime(n.created_at)}</div></div>`).join('')}
     <button class="btn-primary" id="exp-pop-ok" type="button" style="margin-top:6px">OK, I understand</button></div>`);
   document.getElementById('exp-pop-ok').onclick = async () => {
@@ -1635,7 +1636,7 @@ async function loadAndShowNotifications(){
   }
   try {
     const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
-    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:'expiries' }));
+    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:x.kind === 'force_ack' ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'force_ack' ? 'tools' : 'expiries' }));
   } catch (_e) {}
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
     const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
@@ -2530,6 +2531,8 @@ async function renderDashboard(){
   `;
 
   { const q = document.getElementById('qa-edit'); if (q) q.onclick = fhEditQuickActions; }
+  // intro: cards come in one after another (blur to sharp). Dashboard only.
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) { let k = 0; main.querySelectorAll('.card, .stat-card').forEach(c => { if (c.parentElement && c.parentElement.closest('.card, .stat-card')) return; c.classList.add('fh-rv'); c.style.setProperty('--i', Math.min(k++, 10)); }); }
   // numbers count up gently
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) main.querySelectorAll('[data-count]').forEach(el => {
     const to = Number(el.dataset.count) || 0; if (!to) return;
@@ -3124,8 +3127,9 @@ async function renderRequests(){
     document.getElementById('topbar-actions').innerHTML = `<button class="btn" id="new-request-btn">+ New Request</button>`;
     document.getElementById('new-request-btn').onclick = openNewRequestModal;
   } else if (isSuperAdmin()){
-    document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="rq-recheck-btn" title="Re-checks the handler of every open request against the routing rules">Re-check handlers</button>`;
+    document.getElementById('topbar-actions').innerHTML = `<button class="btn outline" id="rq-force-btn" title="Mark resolved requests the rider has not accepted as acknowledged and closed">Force acknowledge</button> <button class="btn outline" id="rq-recheck-btn" title="Re-checks the handler of every open request against the routing rules">Re-check handlers</button>`;
     document.getElementById('rq-recheck-btn').onclick = fhRecheckHandlers;
+    document.getElementById('rq-force-btn').onclick = () => fhForceAckModal();
   }
 
   const { data: rawRequests0 } = await sb.from('requests')
@@ -3272,8 +3276,90 @@ async function renderRequests(){
   main.querySelectorAll('[data-req-status]').forEach(btn => {
     btn.onclick = () => changeRequestStatus(btn.dataset.reqId, btn.dataset.reqStatus);
   });
+  main.querySelectorAll('[data-req-revert]').forEach(btn => {
+    btn.onclick = () => fhRevertRequestModal(btn.dataset.reqId);
+  });
 }
 
+// ---------------------------------------------------------
+// FORCE ACKNOWLEDGE + REVERT (Super Admin)
+// ---------------------------------------------------------
+async function fhForceAckModal(after){
+  if (!isSuperAdmin()) return;
+  openModal(`<h2>Force acknowledge</h2><div id="fa-body"><div class="mono">Loading…</div></div>`);
+  const [rq, iss, acks] = await Promise.all([
+    sb.from('requests').select('id, category, rider_id, resolved_at, created_at, rider:profiles!rider_id(full_name, employee_id, status)').eq('status', 'resolved').is('deleted_at', null),
+    sb.from('tool_issuances').select('id, rider_id, request_id, issued_date, tool_types(name), profiles!rider_id(full_name, employee_id, status)'),
+    sb.from('tool_issuance_acks').select('tool_issuance_id')]);
+  const body = document.getElementById('fa-body'); if (!body) return;
+  if (rq.error || iss.error){ body.innerHTML = `<p class="hint">Could not load: ${escapeHtml((rq.error || iss.error).message)}</p>`; return; }
+  const acked = new Set((acks.data || []).map(a => a.tool_issuance_id));
+  const resolvedIds = new Set((rq.data || []).map(r => r.id));
+  const issByReq = new Map(); (iss.data || []).forEach(i => { if (i.request_id) { if (!issByReq.has(i.request_id)) issByReq.set(i.request_id, []); issByReq.get(i.request_id).push(i); } });
+  const items = [];
+  (rq.data || []).forEach(r => {
+    const linked = (issByReq.get(r.id) || []);
+    items.push({ t: 'req', id: r.id, name: r.rider && r.rider.full_name || '—', emp: r.rider && r.rider.employee_id || '', what: (linked[0] && linked[0].tool_types && linked[0].tool_types.name) || r.category || 'Request',
+      date: (linked[0] && linked[0].issued_date) || String(r.resolved_at || r.created_at || '').slice(0, 10), note: 'Request resolved, rider has not accepted' });
+  });
+  (iss.data || []).forEach(i => {
+    if (acked.has(i.id) || (i.request_id && resolvedIds.has(i.request_id)) || (i.profiles && i.profiles.status && i.profiles.status !== 'active')) return;
+    items.push({ t: 'iss', id: i.id, name: i.profiles && i.profiles.full_name || '—', emp: i.profiles && i.profiles.employee_id || '', what: i.tool_types && i.tool_types.name || 'Tool', date: i.issued_date || '', note: 'Tool issued, rider has not acknowledged' });
+  });
+  items.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if (!items.length){ body.innerHTML = '<p class="hint">Nothing is waiting for a rider acknowledgement.</p>'; return; }
+  const sel = new Set(); let q = '';
+  const shown = () => items.filter(x => !q || (x.name + ' ' + x.emp + ' ' + x.what).toLowerCase().includes(q));
+  const paint = () => {
+    const list = shown();
+    body.innerHTML = `<p class="hint">Pick what to mark as acknowledged. The tool shows as <b>Acknowledged</b> in Tool Issuance, the request becomes <b>Closed</b>, and the rider is told in the app, on the phone and by e-mail.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0;"><input type="text" id="fa-q" placeholder="Search rider, Employee ID or tool…" value="${escapeHtml(q)}" style="flex:1;min-width:180px;">
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="fa-all"> Select all shown (${list.length})</label></div>
+      <div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:10px;">${list.map(x => { const k = x.t + ':' + x.id; return `<label style="display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;"><input type="checkbox" class="fa-cb" data-k="${k}" ${sel.has(k) ? 'checked' : ''} style="margin-top:3px;"><span><b>${escapeHtml(x.what)}</b> · ${escapeHtml(x.name)}${x.emp ? ' (' + escapeHtml(x.emp) + ')' : ''}<br><span class="hint" style="font-size:12px;">${escapeHtml(x.note)} · ${escapeHtml(x.date || '—')}</span></span></label>`; }).join('') || '<div class="hint" style="padding:12px;">No match.</div>'}</div>
+      <div id="fa-confirm" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;background:#fff6e5;border:1px solid #e8c97a;"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"><button class="btn" id="fa-go" type="button" ${sel.size ? '' : 'disabled'}>Force acknowledge (${sel.size})</button><button class="btn outline" id="fa-cancel" type="button">Close</button></div>`;
+    const qi = document.getElementById('fa-q'); qi.oninput = () => { q = qi.value.trim().toLowerCase(); const pos = qi.selectionStart; paint(); const n = document.getElementById('fa-q'); n.focus(); try { n.setSelectionRange(pos, pos); } catch (_) {} };
+    document.getElementById('fa-all').checked = list.length > 0 && list.every(x => sel.has(x.t + ':' + x.id));
+    document.getElementById('fa-all').onchange = (e) => { list.forEach(x => e.target.checked ? sel.add(x.t + ':' + x.id) : sel.delete(x.t + ':' + x.id)); paint(); };
+    body.querySelectorAll('.fa-cb').forEach(cb => cb.onchange = () => { cb.checked ? sel.add(cb.dataset.k) : sel.delete(cb.dataset.k); document.getElementById('fa-go').disabled = !sel.size; document.getElementById('fa-go').textContent = `Force acknowledge (${sel.size})`; });
+    document.getElementById('fa-cancel').onclick = () => closeModal();
+    document.getElementById('fa-go').onclick = () => {
+      const box = document.getElementById('fa-confirm'); box.style.display = 'block';
+      box.innerHTML = `<b>Mark ${sel.size} item${sel.size === 1 ? '' : 's'} as acknowledged?</b><div class="hint" style="margin:4px 0 8px;">This closes the linked requests and sends a notice (app, phone, e-mail) to each rider. It can be undone later only by Reverting the request.</div><button class="btn" id="fa-yes" type="button">Yes, force acknowledge</button> <button class="btn outline" id="fa-no" type="button">No</button>`;
+      document.getElementById('fa-no').onclick = () => { box.style.display = 'none'; };
+      document.getElementById('fa-yes').onclick = async () => {
+        const reqIds = [], issIds = []; sel.forEach(k => { const [t, id] = [k.slice(0, 3), k.slice(4)]; (t === 'req' ? reqIds : issIds).push(id); });
+        const yes = document.getElementById('fa-yes'); yes.disabled = true; yes.textContent = 'Working…';
+        const { data, error } = await sb.rpc('fh_force_acknowledge', { p_request_ids: reqIds, p_issuance_ids: issIds });
+        if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'Please run migration_54.sql in Supabase first.' : 'Could not do this: ' + error.message); yes.disabled = false; yes.textContent = 'Yes, force acknowledge'; return; }
+        let mail = '';
+        try { const ses = (await sb.auth.getSession()).data.session; const r = await fhOtp('force_ack_email', { access_token: ses && ses.access_token, items: (data && data.items) || [] });
+          mail = r.ok ? ` ${r.sent} e-mail${r.sent === 1 ? '' : 's'} sent${r.skipped ? ', ' + r.skipped + ' rider(s) have no e-mail saved' : ''}.` : ' E-mail not sent: ' + (r.error || 'unknown problem'); } catch (_) { mail = ' E-mail not sent.'; }
+        closeModal();
+        toast(`Done. ${(data && data.requests_closed) || 0} request(s) closed, ${(data && data.notified) || 0} in-app notice(s) sent.` + mail);
+        if (typeof after === 'function') after(); else if (state.view === 'requests') renderRequests();
+      };
+    };
+  };
+  paint();
+}
+function fhRevertRequestModal(id){
+  if (!isSuperAdmin()) return;
+  const r = (typeof currentRequestsList !== 'undefined' && currentRequestsList.find(x => x.id === id)) || {};
+  openModal(`<h2>Revert this request</h2>
+    <p class="hint">Now: <b>${escapeHtml(String(r.status || '').replace('_', ' '))}</b>. Choose the status to move it back to. The rider and handler see this in the request history.</p>
+    <form id="rv-form"><div class="form-row"><label>Move back to</label><select id="rv-status"><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved (rider can accept again)</option></select></div>
+    <div class="form-row"><label>Remark (required)</label><textarea id="rv-remark" required placeholder="Why is it being reverted?"></textarea></div>
+    ${r.status === 'closed' ? '<div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="rv-ack" checked> Also remove the tool acknowledgement made when it was closed</label></div>' : ''}
+    <button class="btn-primary" type="submit">Revert</button></form>`);
+  document.getElementById('rv-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const remark = document.getElementById('rv-remark').value.trim(); if (!remark){ toast('A remark is required'); return; }
+    const { error } = await sb.rpc('fh_revert_request', { p_request_id: id, p_status: document.getElementById('rv-status').value, p_remark: remark, p_remove_ack: !!(document.getElementById('rv-ack') && document.getElementById('rv-ack').checked) });
+    if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'Please run migration_54.sql in Supabase first.' : 'Could not revert: ' + error.message); return; }
+    closeModal(); toast('Request reverted.'); renderRequests();
+  };
+}
 function countWords(str){ return (str.trim().match(/\S+/g)||[]).length; }
 
 function openEditRequestModal(r){
@@ -3380,6 +3466,9 @@ function requestActionControls(r){
   }
   if (isRider && r.status==='resolved'){
     html += `<button class="btn small success" data-req-id="${r.id}" data-req-status="closed">Accept &amp; Close</button>`;
+  }
+  if (isSuperAdmin() && ['in_progress','resolved','closed','cancelled'].includes(r.status)){
+    html += `<button class="btn small outline" data-req-id="${r.id}" data-req-revert="1" title="Move this request back to an earlier status">Revert</button>`;
   }
   // Cancel: handler / region staff / admin, or the rider while it is still open
   if (['open','in_progress'].includes(r.status) && (canAct || (isRider && r.status === 'open'))){
@@ -4608,6 +4697,7 @@ async function renderSettings(){
       ['fv_centers','Field Visit Centers & Location', () => isSuperAdmin()],
       ['appupdate','Android App Updates', () => isSuperAdmin()],
       ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
+      ['chatbot','Chatbot (quick questions & log)', () => isSuperAdmin()],
     ]}
   ];
   const visibleGroups = groups
@@ -4663,8 +4753,79 @@ async function renderSettings(){
   else if (settingsTab === 'fv_centers') await renderFvCentersSettings(body);
   else if (settingsTab === 'appupdate') await renderAppUpdateSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
+  else if (settingsTab === 'chatbot') await renderChatbotSettings(body);
   else if (settingsTab === 'welcome') await renderWelcomeSettings(body);
   } finally { main.style.minHeight = ''; _restore(); setTimeout(_restore, 120); }
+}
+
+// ---------------- Settings: Chatbot (Super Admin) — quick questions + question/answer log (auto-deleted after 14 days) ----------------
+async function renderChatbotSettings(body){
+  if (!isSuperAdmin()) { body.innerHTML = '<p class="hint">Only the Super Admin can open this.</p>'; return; }
+  body.innerHTML = '<p class="hint">Loading…</p>';
+  const since = new Date(Date.now() - 14*86400000).toISOString();
+  const [qq, lg] = await Promise.all([
+    sb.from('chat_quick_questions').select('*').order('sort_order').order('created_at'),
+    sb.from('chat_logs').select('id, user_id, session_id, question, answer, intent, feedback, created_at').gte('created_at', since).order('created_at', { ascending:false }).limit(1000)
+  ]);
+  if ((qq.error && /relation|does not exist|schema/i.test(qq.error.message||'')) || (lg.error && /relation|does not exist|schema/i.test(lg.error.message||''))) {
+    body.innerHTML = '<h3>Chatbot</h3><p class="hint">Not set up yet: run <b>migration_54.sql</b> in Supabase (SQL Editor), then reopen this page.</p>'; return;
+  }
+  const quick = qq.data || [], logs = lg.data || [];
+  const names = {}; try { const ids = [...new Set(logs.map(l=>l.user_id))]; if (ids.length) { const r = await sb.from('profiles').select('id, full_name, employee_id').in('id', ids.slice(0,300)); (r.data||[]).forEach(p => names[p.id] = p.full_name + (p.employee_id ? ' ('+p.employee_id+')' : '')); } } catch(_){}
+  const up = logs.filter(l=>l.feedback===1).length, down = logs.filter(l=>l.feedback===-1).length;
+  const roleOpts = Object.keys(ROLE_LABEL||{});
+  const dayKey = (iso) => new Date(iso).toLocaleDateString('en-CA');
+  const days = [...new Set(logs.map(l => dayKey(l.created_at)))];
+  body.innerHTML = `
+    <h3 style="margin-top:0">Chatbot</h3>
+    <p class="hint">Quick questions appear as buttons in the chat. Chat history is kept for <b>14 days</b> and then deleted automatically, so it uses almost no storage. Every chat starts fresh when it is opened.</p>
+    <h4>Quick questions</h4>
+    <div id="cb-qq">${quick.length ? quick.map(q => `<div class="card" style="padding:10px;margin-bottom:8px;display:flex;gap:10px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap">
+      <div style="min-width:200px;flex:1"><b>${escapeHtml(q.label)}</b>${q.active?'':' <span class="hint">(hidden)</span>'}<div class="hint">${q.answer ? 'Fixed answer: ' + escapeHtml(q.answer).slice(0,140) : 'Answered from portal data'} · ${(q.roles&&q.roles.length) ? escapeHtml(q.roles.map(r=>ROLE_LABEL[r]||r).join(', ')) : 'Everyone'}</div></div>
+      <div style="display:flex;gap:6px"><button class="btn small outline" data-qq-tog="${q.id}">${q.active?'Hide':'Show'}</button><button class="btn small outline" data-qq-del="${q.id}">Delete</button></div></div>`).join('') : '<p class="hint">None yet: the chat shows its built-in buttons.</p>'}</div>
+    <div class="card" style="padding:12px;margin:10px 0 18px">
+      <b>Add a quick question</b>
+      <input id="cb-label" class="input" maxlength="80" placeholder="Button text, e.g. Which vials expire soon?" style="width:100%;margin:8px 0">
+      <textarea id="cb-ans" class="input" rows="2" maxlength="600" placeholder="Optional fixed answer. Leave empty to let the bot work it out from portal data." style="width:100%"></textarea>
+      <div class="hint" style="margin:6px 0">Show to (none ticked = everyone):</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">${roleOpts.map(r=>`<label style="font-size:13px"><input type="checkbox" class="cb-role" value="${r}"> ${escapeHtml(ROLE_LABEL[r]||r)}</label>`).join('')}</div>
+      <button class="btn small" id="cb-add">Add</button>
+    </div>
+    <h4>Questions asked &amp; answers given (last 14 days)</h4>
+    <p class="hint">${logs.length} questions · 👍 ${up} · 👎 ${down}</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <select id="cb-day" class="input" style="max-width:200px"><option value="">All days</option>${days.map(d=>`<option value="${d}">${d}</option>`).join('')}</select>
+      <select id="cb-fbf" class="input" style="max-width:180px"><option value="">All answers</option><option value="-1">👎 Not correct</option><option value="1">👍 Helpful</option></select>
+      <button class="btn small outline" id="cb-dl">⬇ Download (Excel)</button>
+    </div>
+    <div id="cb-log" style="max-height:420px;overflow:auto"></div>`;
+  const drawLog = () => {
+    const d = document.getElementById('cb-day').value, f = document.getElementById('cb-fbf').value;
+    const rows = logs.filter(l => (!d || dayKey(l.created_at)===d) && (!f || String(l.feedback)===f));
+    document.getElementById('cb-log').innerHTML = rows.length ? rows.slice(0,200).map(l => `<div style="padding:8px 0;border-top:1px solid var(--border,#e5e7ef)">
+      <div class="hint">${escapeHtml(new Date(l.created_at).toLocaleString())} · ${escapeHtml(names[l.user_id]||'—')} ${l.feedback===1?'· 👍':l.feedback===-1?'· 👎':''}</div>
+      <div><b>Q:</b> ${escapeHtml(l.question)}</div><div class="hint"><b>A:</b> ${escapeHtml((l.answer||'').slice(0,300))}</div></div>`).join('') + (rows.length>200?'<p class="hint">Showing 200 of '+rows.length+'. Download for the full list.</p>':'') : '<p class="hint">Nothing for this filter.</p>';
+  };
+  drawLog();
+  document.getElementById('cb-day').onchange = drawLog; document.getElementById('cb-fbf').onchange = drawLog;
+  document.getElementById('cb-dl').onclick = async () => {
+    const d = document.getElementById('cb-day').value, f = document.getElementById('cb-fbf').value;
+    const rows = logs.filter(l => (!d || dayKey(l.created_at)===d) && (!f || String(l.feedback)===f));
+    if (!rows.length) { toast('Nothing to download'); return; }
+    try { await ensureXLSX(); const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.map(l => ({ Date: new Date(l.created_at).toLocaleString(), User: names[l.user_id]||'', Question: l.question, Answer: l.answer||'', Feedback: l.feedback===1?'Helpful':l.feedback===-1?'Not correct':'' }))), 'Chat log');
+      await fhSaveXlsx(wb, 'chatbot-log-' + (d || 'all') + '.xlsx');
+    } catch (e) { toast('Could not make the file: ' + (e.message||e)); }
+  };
+  document.getElementById('cb-add').onclick = async () => {
+    const label = document.getElementById('cb-label').value.trim(); if (!label) { toast('Enter the button text'); return; }
+    const roles = [...body.querySelectorAll('.cb-role:checked')].map(x=>x.value);
+    const r = await sb.from('chat_quick_questions').insert({ label, answer: document.getElementById('cb-ans').value.trim() || null, roles: roles.length ? roles : null, sort_order: quick.length*10+10 });
+    if (r.error) { toast('Could not save: ' + r.error.message); return; }
+    toast('Added'); renderSettings();
+  };
+  body.querySelectorAll('[data-qq-tog]').forEach(b => b.onclick = async () => { const q = quick.find(x=>x.id===b.dataset.qqTog); await sb.from('chat_quick_questions').update({ active: !q.active }).eq('id', q.id); renderSettings(); });
+  body.querySelectorAll('[data-qq-del]').forEach(b => b.onclick = async () => { if (!confirm('Delete this quick question?')) return; await sb.from('chat_quick_questions').delete().eq('id', b.dataset.qqDel); renderSettings(); });
 }
 // ---------------- Settings: Welcome banner text (Super Admin only) ----------------
 async function renderWelcomeSettings(body){
@@ -6219,13 +6380,15 @@ async function renderHotspotsSettings(body){
   const regionOptions = state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
   const { data: subs } = await sb.from('sub_regions').select('*').order('name');
   const { data: hotspots } = await sb.from('hotspots').select('*, regions(name), sub_regions(name)').order('name');
-  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Status</th><th></th></tr></thead><tbody>
+  const renderRows = (list) => `<table><thead><tr><th>Region</th><th>Sub-Region/City</th><th>Hotspot</th><th>Coordinates</th><th>Status</th><th></th></tr></thead><tbody>
     ${list.map(h=>`<tr>
       <td>${escapeHtml(h.regions?.name||'—')}</td>
       <td>${escapeHtml(h.sub_regions?.name||'—')}</td>
       <td>${escapeHtml(h.name)}</td>
+      <td class="mono">${h.lat != null && h.lng != null ? `<a href="https://www.google.com/maps?q=${h.lat},${h.lng}" target="_blank" rel="noopener">${Number(h.lat).toFixed(5)}, ${Number(h.lng).toFixed(5)}</a>` : '<span class="hint">not set</span>'}</td>
       <td><span class="badge ${h.active?'active':'closed'}">${h.active?'Active':'Inactive'}</span></td>
       <td style="white-space:nowrap;">
+        <button class="btn small outline" data-pin-hotspot="${h.id}">Coordinates</button>
         <button class="btn small outline" data-edit-hotspot="${h.id}">Edit</button>
         <button class="btn small outline" data-toggle-hotspot="${h.id}" data-active="${h.active}">${h.active?'Disable':'Enable'}</button>
         <button class="btn small danger" data-delete-hotspot="${h.id}">Remove</button>
@@ -6249,6 +6412,13 @@ Lahore, , Model Town
 Multan, , Cantt Area"></textarea>
       <button class="btn small" id="bulk-hotspot-add">Add All</button>
       <div id="bulk-hotspot-results" style="margin-top:10px;"></div>
+    </details>
+ <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">Update coordinates from Excel ▾</summary>
+      <p class="hint" style="margin:10px 0;">1) Download the sheet (it lists every hotspot with its Region, Latitude and Longitude). 2) Fill in <strong>Latitude</strong> and <strong>Longitude</strong> (for example 31.5204 and 74.3587). 3) Upload it back. Hotspots are matched by Region + Hotspot name, so <strong>no Roster change is needed</strong>: every roster entry picks up the coordinates by its hotspot name. The file itself is not stored.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn small outline" id="hs-xl-down" type="button">⬇ Download sheet</button>
+      <label class="btn small" style="cursor:pointer;margin:0;">⬆ Upload filled sheet<input type="file" id="hs-xl-up" accept=".xlsx,.xls,.csv" style="display:none;"></label></div>
+      <div id="hs-xl-res" style="margin-top:10px;"></div>
     </details>
     <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
       <input type="text" id="hotspot-search" placeholder="Search hotspots…" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;">
@@ -6319,7 +6489,44 @@ Multan, , Cantt Area"></textarea>
   document.getElementById('hotspot-search').oninput = applyFilters;
   document.getElementById('hotspot-sort').onchange = applyFilters;
 
+  document.getElementById('hs-xl-down').onclick = async () => {
+    try { await ensureXLSX(); const wb = XLSX.utils.book_new();
+      const rows = (hotspots||[]).slice().sort((a,b)=>(a.regions?.name||'').localeCompare(b.regions?.name||'') || a.name.localeCompare(b.name)).map(h => ({ Region: h.regions?.name||'', 'Sub-Region': h.sub_regions?.name||'', Hotspot: h.name, Latitude: h.lat ?? '', Longitude: h.lng ?? '' }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Region:'', 'Sub-Region':'', Hotspot:'', Latitude:'', Longitude:'' }]), 'Hotspots');
+      await fhSaveXlsx(wb, 'hotspot-coordinates.xlsx');
+    } catch (e) { toast('Could not make the sheet: ' + (e.message || e)); }
+  };
+  document.getElementById('hs-xl-up').onchange = async (ev) => {
+    const f = ev.target.files && ev.target.files[0]; if (!f) return;
+    const res = document.getElementById('hs-xl-res'); res.innerHTML = '<span class="hint">Reading…</span>';
+    try {
+      await ensureXLSX(); const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' }); const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+      const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const pick = (r, names) => { const k = Object.keys(r).find(k => names.includes(norm(k))); return k ? r[k] : ''; };
+      let ok = 0, skipped = 0; const bad = [], jobs = [];
+      rows.forEach((r, n) => {
+        const hs = norm(pick(r, ['hotspot', 'hotspot name', 'area', 'name'])), rg = norm(pick(r, ['region'])), la = pick(r, ['latitude', 'lat']), lo = pick(r, ['longitude', 'lng', 'lon', 'long']);
+        if (!hs) return; if (la === '' && lo === '') { skipped++; return; }
+        const lat = Number(String(la).trim()), lng = Number(String(lo).trim());
+        if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) { bad.push(`Row ${n + 2}: ${pick(r, ['hotspot', 'hotspot name', 'area', 'name'])}: latitude/longitude not valid`); return; }
+        const hit = (hotspots || []).filter(h => norm(h.name) === hs && (!rg || norm(h.regions && h.regions.name) === rg));
+        if (!hit.length) { bad.push(`Row ${n + 2}: "${pick(r, ['hotspot', 'hotspot name', 'area', 'name'])}" is not in Settings → Hotspots`); return; }
+        hit.forEach(h => jobs.push({ id: h.id, lat, lng }));
+      });
+      for (let k = 0; k < jobs.length; k += 10) {
+        const out = await Promise.all(jobs.slice(k, k + 10).map(j => sb.from('hotspots').update({ lat: j.lat, lng: j.lng }).eq('id', j.id)));
+        out.forEach((o, i) => { if (o.error) bad.push(jobs[k + i].id + ': ' + (/lat|lng|schema cache/i.test(o.error.message) ? 'please run migration_54.sql first' : o.error.message)); else ok++; });
+      }
+      res.innerHTML = `<div class="hint"><b>${ok}</b> hotspot${ok === 1 ? '' : 's'} updated${skipped ? `, ${skipped} row(s) had no coordinates` : ''}${bad.length ? `, <b>${bad.length}</b> problem(s):` : '.'}</div>${bad.length ? `<div style="max-height:160px;overflow:auto;font-size:12.5px;">${bad.slice(0, 60).map(b => '• ' + escapeHtml(b)).join('<br>')}</div>` : ''}`;
+      if (ok) toast(`Coordinates updated for ${ok} hotspot(s)`);
+      ev.target.value = '';
+    } catch (e) { res.innerHTML = '<span class="hint">Could not read this file: ' + escapeHtml(e.message || String(e)) + '</span>'; }
+  };
+
   function bindActions(){
+    document.querySelectorAll('[data-pin-hotspot]').forEach(btn => {
+      btn.onclick = () => fhHotspotCoordsModal((hotspots||[]).find(h=>h.id===btn.dataset.pinHotspot), () => renderSettings());
+    });
     document.querySelectorAll('[data-edit-hotspot]').forEach(btn => {
       btn.onclick = async () => {
         const row = (hotspots||[]).find(h=>h.id===btn.dataset.editHotspot);
@@ -6349,6 +6556,36 @@ Multan, , Cantt Area"></textarea>
   bindActions();
 }
 
+// "31.5204, 74.3587" or a Google Maps link (…@31.52,74.35… / ?q=31.52,74.35 / !3d31.52!4d74.35)
+function fhParseLatLng(str){
+  const t = String(str || '').trim(); if (!t) return null;
+  const pats = [/@(-?\d{1,2}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/, /!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/, /[?&](?:q|ll|query)=(-?\d{1,2}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/, /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/];
+  for (const p of pats){ const m = t.match(p); if (m){ const a = Number(m[1]), b = Number(m[2]); if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return { lat: a, lng: b }; } }
+  return null;
+}
+function fhHotspotCoordsModal(h, after){
+  if (!h) return;
+  openModal(`<h2>Coordinates: ${escapeHtml(h.name)}</h2>
+    <p class="hint">${escapeHtml(h.regions?.name || '')}. Paste a Google Maps link or "latitude, longitude", or use your current location while standing at the hotspot.</p>
+    <form id="hc-form"><div class="form-row"><label>Google Maps link or "lat, lng"</label><input type="text" id="hc-paste" placeholder="https://maps.google.com/…@31.52,74.35 or 31.5204, 74.3587"></div>
+    <div class="two-col"><div class="form-row"><label>Latitude</label><input type="number" step="any" id="hc-lat" value="${h.lat ?? ''}"></div><div class="form-row"><label>Longitude</label><input type="number" step="any" id="hc-lng" value="${h.lng ?? ''}"></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn outline" type="button" id="hc-here">📍 Use my current location</button><button class="btn-primary" type="submit">Save</button>${h.lat != null ? '<button class="btn outline" type="button" id="hc-clear">Remove coordinates</button>' : ''}</div></form>`);
+  const lat = document.getElementById('hc-lat'), lng = document.getElementById('hc-lng');
+  document.getElementById('hc-paste').oninput = (e) => { const p = fhParseLatLng(e.target.value); if (p){ lat.value = p.lat; lng.value = p.lng; } };
+  document.getElementById('hc-here').onclick = () => {
+    if (!navigator.geolocation){ toast('This device cannot give its location.'); return; }
+    toast('Getting your location…');
+    navigator.geolocation.getCurrentPosition(p => { lat.value = p.coords.latitude.toFixed(6); lng.value = p.coords.longitude.toFixed(6); }, () => toast('Could not get the location. Allow location access, or paste a map link instead.'), { enableHighAccuracy: true, timeout: 15000 });
+  };
+  const save = async (la, lo) => {
+    const { error } = await sb.from('hotspots').update({ lat: la, lng: lo }).eq('id', h.id);
+    if (error){ toast(/lat|lng|schema cache/i.test(error.message) ? 'Please run migration_54.sql in Supabase first.' : 'Could not save: ' + error.message); return; }
+    closeModal(); toast(la == null ? 'Coordinates removed' : 'Coordinates saved'); if (after) after();
+  };
+  document.getElementById('hc-form').onsubmit = (e) => { e.preventDefault(); const a = Number(lat.value), b = Number(lng.value);
+    if (lat.value === '' || lng.value === '' || !isFinite(a) || !isFinite(b) || Math.abs(a) > 90 || Math.abs(b) > 180){ toast('Please enter a valid latitude and longitude.'); return; } save(a, b); };
+  const cl = document.getElementById('hc-clear'); if (cl) cl.onclick = () => save(null, null);
+}
 async function renderShortcutsSettings(body){
   const rows = [
     ['General', [
@@ -7019,6 +7256,7 @@ async function renderTools(){
     document.getElementById('new-tool-issuance-btn').onclick = openNewToolIssuanceModal;
     document.getElementById('bulk-tool-issuance-btn').onclick = openBulkToolIssuanceModal;
     if (canBulkUpdate) document.getElementById('bulk-tool-update-btn').onclick = openBulkToolUpdateModal;
+    if (isSuperAdmin()){ const fb = document.createElement('button'); fb.className = 'btn outline'; fb.id = 'ti-force-btn'; fb.textContent = 'Force acknowledge'; fb.title = 'Mark issued tools the rider has not acknowledged as acknowledged'; fb.onclick = () => fhForceAckModal(() => renderTools()); document.getElementById('topbar-actions').prepend(fb); }
   }
   let { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id, status), tool_types(name)').order('next_due_date');
   if (issuancesErr){ main.innerHTML = emptyState('Could not load tool issuances: ' + issuancesErr.message); return; }
@@ -7032,7 +7270,8 @@ async function renderTools(){
   const today = new Date();
   const TI_SEL = new Set();
   const toolNames = [...new Set(issuances.map(i => i.tool_types?.name).filter(Boolean))].sort();
-  const riderNames = [...new Map(issuances.filter(i => i.rider_id).map(i => [i.rider_id, i.profiles?.full_name || '—'])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const riderNames = [...new Map(issuances.filter(i => i.rider_id).map(i => [i.rider_id, (i.profiles?.full_name || '—') + (i.profiles?.employee_id ? ' (' + i.profiles.employee_id + ')' : '')])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const issRegions = [...new Set(issuances.map(i => i.region_id).filter(Boolean))].map(id => [id, (state.regions.find(r => r.id === id) || {}).name || 'Region']).sort((a, b) => a[1].localeCompare(b[1]));
   const renderRows = (list) => `<table><thead><tr>${isSuperAdmin()?'<th style="width:28px"><input type="checkbox" id="ti-all" title="Select all shown"></th>':''}<th>Rider</th><th>Employee ID</th><th>Tool</th><th>Serial No.</th><th>Issued</th><th>Next Due</th><th>Status</th><th>Rider Acknowledgment</th>${isSuperAdmin()?'<th></th>':''}</tr></thead><tbody>
     ${list.map(i => {
       const due = new Date(i.next_due_date);
@@ -7044,7 +7283,7 @@ async function renderTools(){
       const isMine = i.rider_id === state.user.id;
       let ackCell;
       if (ack){
-        ackCell = `<span class="badge active">✓ Acknowledged ${formatDate(ack.seen_at)}</span>${i.request_id ? '<div class="hint" style="font-size:11px">via request</div>' : ''}`;
+        ackCell = `<span class="badge active">✓ Acknowledged ${formatDate(ack.seen_at)}</span>${i.request_id ? '<div class="hint" style="font-size:11px">via request</div>' : ''}${ack.forced_at ? '<div class="hint" style="font-size:11px">marked by admin</div>' : ''}`;
       } else if (isMine){
         ackCell = `<button class="btn small" data-ack-tool="${i.id}">Acknowledge Receipt</button>`;
       } else {
@@ -7071,6 +7310,7 @@ async function renderTools(){
   main.innerHTML = `<div class="fv-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <input type="text" id="tool-issuance-search" placeholder="Search by rider name, Employee ID or serial number…" style="min-width:240px;flex:1;max-width:340px;">
       <select id="ti-f-ack"><option value="">Acknowledgment: All</option><option value="yes">Acknowledged</option><option value="no">Not acknowledged</option></select>
+      <select id="ti-f-region"><option value="">Region: All</option>${issRegions.map(([id, n]) => `<option value="${id}">${escapeHtml(n)}</option>`).join('')}</select>
       <select id="ti-f-tool"><option value="">Tool: All</option>${toolNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
       <select id="ti-f-rider"><option value="">Rider: All</option>${riderNames.map(([id, n]) => `<option value="${id}">${escapeHtml(n)}</option>`).join('')}</select>
       <select id="ti-f-status"><option value="">Status: All</option><option value="ok">OK</option><option value="due">Due within 30 days</option><option value="over">Overdue for reissue</option></select>
@@ -7091,13 +7331,14 @@ async function renderTools(){
   const applyFilters = () => {
     const q = document.getElementById('tool-issuance-search').value.trim().toLowerCase();
     const ack = document.getElementById('ti-f-ack').value, tool = document.getElementById('ti-f-tool').value,
-          rid = document.getElementById('ti-f-rider').value, st = document.getElementById('ti-f-status').value;
+          rid = document.getElementById('ti-f-rider').value, st = document.getElementById('ti-f-status').value, reg = document.getElementById('ti-f-region').value;
     shown = issuances.filter(i => {
       if (q && !((i.profiles?.full_name||'').toLowerCase().includes(q) || (i.profiles?.employee_id||'').toLowerCase().includes(q) || (i.serial_number||'').toLowerCase().includes(q))) return false;
       if (ack === 'yes' && !ackMap.has(i.id)) return false;
       if (ack === 'no' && ackMap.has(i.id)) return false;
       if (tool && (i.tool_types?.name || '') !== tool) return false;
       if (rid && i.rider_id !== rid) return false;
+      if (reg && i.region_id !== reg) return false;
       if (st){ const d = daysLeftOf(i); if (st === 'over' && !(d < 0)) return false; if (st === 'due' && !(d >= 0 && d <= 30)) return false; if (st === 'ok' && !(d > 30)) return false; }
       return true;
     });
@@ -7108,8 +7349,8 @@ async function renderTools(){
     refreshSel();
   };
   ['tool-issuance-search'].forEach(id => document.getElementById(id).oninput = applyFilters);
-  ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status'].forEach(id => document.getElementById(id).onchange = applyFilters);
-  document.getElementById('ti-f-clear').onclick = () => { document.getElementById('tool-issuance-search').value = ''; ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status'].forEach(id => document.getElementById(id).value = ''); applyFilters(); };
+  ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status','ti-f-region'].forEach(id => document.getElementById(id).onchange = applyFilters);
+  document.getElementById('ti-f-clear').onclick = () => { document.getElementById('tool-issuance-search').value = ''; ['ti-f-ack','ti-f-tool','ti-f-rider','ti-f-status','ti-f-region'].forEach(id => document.getElementById(id).value = ''); applyFilters(); };
   const delSel = document.getElementById('ti-del-sel');
   if (delSel) delSel.onclick = async () => {
     const ids = [...TI_SEL]; if (!ids.length) return;
@@ -8570,8 +8811,9 @@ function fvHistoryModal(current, pre) {
   };
   openModal(`<h2>Download history of one rider, Area Incharge, centre or team</h2>
     <p class="hint">Period: <b>${escapeHtml(fvPeriodText())}</b>. You get <b>every report</b> in these dates, a <b>score comparison</b> (report by report and month by month) and an <b>issues summary</b>. To change the dates, close this window and change them on the page first.</p>
-    <div class="form-row"><label>History of</label><select id="fh-kind">${kinds.map(k => `<option value="${k}" ${pre && pre.kind === k ? 'selected' : ''}>${FV_HIST[k].label}</option>`).join('')}</select></div>
-    <div class="form-row"><label>Choose</label><select id="fh-item"></select></div>
+    <div class="form-row" id="fh-row-kind"><label>History of</label><select id="fh-kind">${kinds.map(k => `<option value="${k}" ${pre && pre.kind === k ? 'selected' : ''}>${FV_HIST[k].label}</option>`).join('')}</select></div>
+    <div class="form-row" id="fh-row-item"><label>Choose</label><select id="fh-item"></select></div>
+    <p class="hint" id="fh-locked" style="display:none;font-weight:600;"></p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"><button type="button" class="btn" id="fh-pdf">⬇ PDF</button><button type="button" class="btn outline" id="fh-xlsx">⬇ Excel</button></div>`);
   let list = [];
   const fill = () => {
@@ -8579,6 +8821,14 @@ function fvHistoryModal(current, pre) {
     document.getElementById('fh-item').innerHTML = list.length ? list.map((x, i) => `<option value="${i}" ${pre && pre.kind === kind && String(pre.key) === String(x.key) ? 'selected' : ''}>${escapeHtml(x.label)} - ${x.n} check${x.n === 1 ? '' : 's'} on screen</option>`).join('') : '<option value="">Nothing on screen for this choice</option>';
   };
   document.getElementById('fh-kind').onchange = fill; fill();
+  if (pre && pre.locked) {   // opened from one rider's row: only that rider, no choice of anyone else
+    const k = document.getElementById('fh-kind').value, idx = list.findIndex(x => String(x.key) === String(pre.key));
+    if (idx < 0) { closeModal(); toast('No reports found for this rider in the selected dates.'); return; }
+    document.getElementById('fh-item').value = String(idx);
+    document.getElementById('fh-row-kind').style.display = 'none'; document.getElementById('fh-row-item').style.display = 'none';
+    const lk = document.getElementById('fh-locked'); lk.style.display = ''; lk.textContent = 'Rider: ' + list[idx].label + ' (' + list[idx].n + ' check' + (list[idx].n === 1 ? '' : 's') + ')';
+    const h2 = document.querySelector('#active-modal h2'); if (h2) h2.textContent = 'History of ' + list[idx].label;
+  }
   const go = async (fmt) => {
     const x = list[Number(document.getElementById('fh-item').value)]; if (!x) { toast('Nothing to download for this choice.'); return; }
     const ok = await fvHistDownload(document.getElementById('fh-kind').value, x, fmt); if (ok) closeModal();
@@ -8901,9 +9151,9 @@ async function fvPageRiders(host) {
   let shown = 50, ctx = null;
   await fvListShell(host, {
     filters: { region: true, search: true },
-    extra: ' <button class="fv-btn ghost" data-rexport type="button" style="height:34px;">Download</button>',
+    extra: ' <button class="fv-btn ghost" data-rexport type="button" style="height:34px;">Download</button> <button class="fv-btn ghost" data-rhistall type="button" style="height:34px;" title="History of any rider: all reports, score comparison and issues summary">History</button>',
     load: async (r) => { const [v, riders] = await Promise.all([fvLoadVisits(r), fvLoadRiders()]); return { v, riders }; },
-    afterFilters: (fh, c) => { ctx = c; const b = fh.querySelector('[data-rexport]'); if (b) b.onclick = () => fvRiderDownloads(); },
+    afterFilters: (fh, c) => { ctx = c; const b = fh.querySelector('[data-rexport]'); if (b) b.onclick = () => fvRiderDownloads(); const hb = fh.querySelector('[data-rhistall]'); if (hb) hb.onclick = () => { if (!RIDERS_CUR || !RIDERS_CUR.rows.length) { toast('No rider checks in these dates.'); return; } fvHistoryModal(RIDERS_CUR.rows, { kind: 'rider' }); }; },
     draw: (d, f, res) => {
       const rows = fvFilterVisits(d.v, f).slice().sort((a, b) => Number(a.score) - Number(b.score) || (a.visit_date < b.visit_date ? 1 : -1));
       RIDERS_CUR = { rows, riders: d.riders, v: d.v, f };
@@ -8924,7 +9174,7 @@ async function fvPageRiders(host) {
               <p class="fv-note" style="margin-top:8px;">Active riders from the Roster who have no visit in the selected dates.</p>` : '<div class="fv-note">Every active rider in view has been visited. 🎉</div>'}</div>`;
         res.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => fvOpenVisit(b.dataset.vid, () => ctx && ctx.reload(), false));
         res.querySelectorAll('[data-rpdf]').forEach(b => b.onclick = () => { if (b.dataset.rpdf) fvPdfBtn(() => fvPdfRider(b.dataset.rpdf, b.dataset.rn, b.dataset.re)); });
-        res.querySelectorAll('[data-rhist]').forEach(b => b.onclick = () => fvHistoryModal(rows, { kind: 'rider', key: b.dataset.rhist || b.dataset.rn }));
+        res.querySelectorAll('[data-rhist]').forEach(b => b.onclick = () => fvHistoryModal(rows, { kind: 'rider', key: b.dataset.rhist || b.dataset.rn, locked: true }));
         res.querySelectorAll('[data-rider]').forEach(a => a.onclick = (e) => { e.preventDefault(); if (a.dataset.rider) fvOpenRider(a.dataset.rider, a.dataset.rn, a.dataset.re, () => ctx && ctx.reload()); });
         const more = res.querySelector('[data-more]');
         if (more) more.onclick = () => { shown += 50; paint(); fvGo(res); };
@@ -10958,6 +11208,9 @@ async function renderRosterMain(){
 
   // Designation (e.g. Rider / Trainee Rider) of the person on each roster entry
   const entryDesig = (e) => e.profiles ? designationLabel(e.profiles) : '—';
+  // hotspot coordinates come from Settings -> Hotspots, matched by hotspot name: no roster data is changed
+  const hsMap = new Map(); try { const hq = await sb.from('hotspots').select('region_id, name, lat, lng').not('lat', 'is', null); (hq.data || []).forEach(h => hsMap.set(h.region_id + '|' + String(h.name).toLowerCase().trim(), h)); } catch (_e) {}
+  const hsPin = (e) => { const h = e.hotspot ? hsMap.get(e.region_id + '|' + String(e.hotspot).toLowerCase().trim()) : null; return h ? ` <a href="https://www.google.com/maps?q=${h.lat},${h.lng}" target="_blank" rel="noopener" title="Open on map (${Number(h.lat).toFixed(4)}, ${Number(h.lng).toFixed(4)})">📍</a>` : ''; };
   const desigOrder = (state.designations||[]).map(d => d.name);
   const desigLabels = [...new Set([
     ...entries.map(entryDesig).filter(l => l !== '—'),
@@ -10999,7 +11252,7 @@ async function renderRosterMain(){
       <td>${escapeHtml(entryDesig(e))}</td>
       <td>${escapeHtml(e.regions?.name||'—')}</td>
       <td>${escapeHtml(e.sub_regions?.name||'—')}</td>
-      <td>${escapeHtml(e.hotspot||'—')}</td>
+      <td>${escapeHtml(e.hotspot||'—')}${hsPin(e)}</td>
       <td>${escapeHtml(e.shift_types?.name||'—')}</td>
       <td>${escapeHtml(e.day_off||'—')}</td>
       <td class="mono">${escapeHtml(e.official_mobile||'—')}</td>
