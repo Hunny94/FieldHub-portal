@@ -1110,7 +1110,21 @@ function fhBootSlowNotice(){
   if (!o || o.querySelector('.fh-boot-slow')) return;
   o.insertAdjacentHTML('beforeend', '<div class="fh-boot-slow" style="position:absolute;bottom:18%;left:0;right:0;text-align:center;color:#fff;font-size:14px;padding:0 20px;">Still loading… your connection looks slow.<br><button onclick="location.reload()" style="margin-top:10px;padding:8px 18px;border:0;border-radius:8px;font-weight:600;cursor:pointer;">Reload</button></div>');
 }
+// Only the plain portal address, or one ending in a real page name, is accepted. Anything else shows a 404 page
+// (also when nobody is signed in). Links that carry a sign-in / password-reset token (they contain '=') are allowed.
+function fhAddressOk(){
+  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (!h || /[=&]/.test(h)) return true;
+  return Object.keys(NAV_LABEL).concat(['myprofile']).includes(h);
+}
+function fhShowNotFoundPage(){
+  const bad = decodeURIComponent(location.hash.replace(/^#\/?/, '')).slice(0, 40);
+  document.title = 'Page not found · FieldHub';
+  document.body.innerHTML = '<main style="max-width:560px;margin:0 auto;padding:14vh 20px;text-align:center;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1b2150"><div style="font-size:84px;font-weight:800;color:#1E2A6E;line-height:1">404</div><h1 style="color:#1E2A6E">We could not find that page</h1><p style="color:#5b6390">The link is wrong or incomplete' + (bad ? ' (“' + bad.replace(/[<>&"]/g, '') + '”)' : '') + '.</p><a href="' + location.pathname + '" style="display:inline-block;background:#1E2A6E;color:#fff;padding:11px 22px;border-radius:10px;text-decoration:none;margin-top:16px">Go to FieldHub login</a></main>';
+}
+window.addEventListener('hashchange', () => { if (!fhAddressOk()) location.reload(); });
 async function init(){
+  if (!fhAddressOk()) { fhShowNotFoundPage(); return; }
   fhInstallFx();
   const bootTimer = setTimeout(fhBootSlowNotice, 12000);
   try{
