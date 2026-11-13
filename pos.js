@@ -5,10 +5,12 @@
 (function () {
   'use strict';
   const esc = (s) => escapeHtml(s == null ? '' : String(s));
-  const P = { data: null, f: { q: '', status: '', region: '', bank: '', charger: '', link: '' }, sel: new Set(), shown: 100, tab: 'reported' };
+  const P = { data: null, f: { q: '', status: '', region: '', bank: '', charger: '', link: '', device: '' }, sel: new Set(), shown: 100, tab: 'reported' };
   const STATUS = { issued: ['Issued', 'active'], in_stock: ['In stock', ''], in_repair: ['In repair', 'open'], retired: ['Retired', ''] };
   const REPAIR_STATUS = { reported: 'Reported by rider', with_accounts: 'With Accounts', repaired: 'Repaired', irreparable: 'Irreparable', cancelled: 'Cancelled' };
   const fd = (d) => (d ? formatDate(d) : '—');
+  const DEV = { android: 'Android', non_android: 'Non-Android' };
+  const devOpts = (sel) => `<option value="">— choose —</option><option value="android" ${sel === 'android' ? 'selected' : ''}>Android</option><option value="non_android" ${sel === 'non_android' ? 'selected' : ''}>Non-Android</option>`;
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const SETUP_MSG = '<div class="empty-state"><p>POS Management is not set up yet.</p><p class="hint">Ask the admin to run <b>migration_56.sql</b> in Supabase (SQL Editor), then reopen this page.</p></div>';
   const missing = (e) => e && /relation|does not exist|schema cache|column/i.test(e.message || '');
@@ -107,13 +109,13 @@
       host.querySelector('#pd-rows').innerHTML = list.map((r) => rowHtml(r, false, r.id) + subRows(r).map((s) => rowHtml(s, true, r.id)).join('')).join('') || '<tr><td colspan="9" class="hint">Nothing to show yet.</td></tr>';
       const q = norm(host.querySelector('#pd-q').value);
       const np = cv.noPos.filter((x) => (!rg || x.region === rg) && (!q || norm(x.name + x.emp).includes(q)));
-      host.querySelector('#pd-no').innerHTML = np.length ? `<div style="overflow-x:auto;max-height:380px"><table><thead><tr><th>Rider</th><th>Employee ID</th><th>Region</th><th>Sub-region / City</th><th></th></tr></thead><tbody>${np.slice(0, 200).map((x) => `<tr><td>${esc(x.name)}</td><td class="mono">${esc(x.emp)}</td><td>${esc(d.regName.get(x.region) || '—')}</td><td>${esc(d.subName.get(x.sub) || '—')}</td><td>${d.machines.some((m) => m.status === 'in_stock') ? `<button class="btn small" data-issue-to="${x.rid}">Issue POS</button>` : '<span class="hint">no stock</span>'}</td></tr>`).join('')}</tbody></table></div>${np.length > 200 ? '<p class="hint">Showing 200 of ' + np.length + '. Download for the full list.</p>' : ''}` : '<p class="hint">✅ Everyone on the roster has a POS' + (rg ? ' in this region' : '') + '.</p>';
+      host.querySelector('#pd-no').innerHTML = np.length ? `<div style="overflow-x:auto;max-height:380px"><table><thead><tr><th>Rider</th><th>Employee ID</th><th>Region</th><th>Sub-region / City</th><th></th></tr></thead><tbody>${np.slice(0, 200).map((x) => `<tr><td>${esc(x.name)}</td><td class="mono">${esc(x.emp)}</td><td>${esc(d.regName.get(x.region) || '—')}</td><td>${esc(d.subName.get(x.sub) || '—')}</td><td><button class="btn small" data-issue-to="${x.rid}">Issue POS</button></td></tr>`).join('')}</tbody></table></div>${np.length > 200 ? '<p class="hint">Showing 200 of ' + np.length + '. Download for the full list.</p>' : ''}` : '<p class="hint">✅ Everyone on the roster has a POS' + (rg ? ' in this region' : '') + '.</p>';
     };
     draw();
     host.querySelector('#pd-reg').onchange = draw; host.querySelector('#pd-q').oninput = draw;
     host.onclick = async (e) => {
       const h = e.target.closest('[data-hc]'); if (h) { const [k, id] = h.dataset.hc.split(':'); const cur = (k === 'r' ? d.regs : d.subs).find((x) => x.id === id); const v = prompt('Approved headcount for ' + cur.name + ' (a whole number, empty to clear)', cur.approved_headcount == null ? '' : cur.approved_headcount); if (v === null) return; const n = v.trim() === '' ? null : parseInt(v, 10); if (n !== null && (!Number.isInteger(n) || n < 0)) { toast('Enter a whole number'); return; } const r = await sb.from(k === 'r' ? 'regions' : 'sub_regions').update({ approved_headcount: n }).eq('id', id); if (r.error) { toast('Could not save: ' + r.error.message); return; } toast('Saved'); reload(); return; }
-      const i = e.target.closest('[data-issue-to]'); if (i) issueModal({ riderId: i.dataset.issueTo });
+      const i = e.target.closest('[data-issue-to]'); if (i) issueNewModal(i.dataset.issueTo);
     };
     host.querySelector('#pd-dl').onclick = async () => {
       const out = []; cv.rows.forEach((r) => { [r, ...[...r.subs.values()].filter((s) => s.working || s.have || s.stock || s.approved)].forEach((x, i) => out.push({ Region: r.name, 'Sub-Region / City': i ? x.name : '(whole region)', Approved: x.approved ?? '', Working: x.working, 'Have POS': x.have, 'No POS': x.nopos, 'In stock': x.stock, 'In repair': x.repair, 'Charger pending': x.chg, 'POS needed': x.need })); });
@@ -128,13 +130,13 @@
   // ---------------------------------------------------------------- MACHINES
   const machineRow = (m, d) => `<tr><td><input type="checkbox" data-sel="${m.id}" ${P.sel.has(m.id) ? 'checked' : ''}></td>
     <td>${esc(m.rider_name || '—')}${m.employee_id && !m.rider_id ? ' <span title="No portal login matches this Employee ID" style="color:#b9770e">⚠</span>' : ''}</td><td class="mono">${esc(m.employee_id || '')}</td><td class="mono">${esc(m.nexus_id || '')}</td>
-    <td>${esc(d.regName.get(regionOf(m, d)) || '')}</td><td>${esc(d.subName.get(subOf(m, d)) || '')}</td><td class="mono">${esc(m.sn)}</td><td class="mono">${esc(m.mid || '')}</td><td class="mono">${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${fd(m.issued_date)}</td>
+    <td>${esc(d.regName.get(regionOf(m, d)) || '')}</td><td>${esc(d.subName.get(subOf(m, d)) || '')}</td><td class="mono">${esc(m.sn)}</td><td class="mono">${esc(m.mid || '')}</td><td class="mono">${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${DEV[m.device_type] || '—'}</td><td>${fd(m.issued_date)}</td>
     <td>${m.status === 'issued' || m.status === 'in_repair' ? (m.charger_given ? '<span class="badge active">Given</span>' : '<span class="badge open">Pending</span>') : '—'}</td><td>${badge(m.status)}</td>
-    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''}</td></tr>`;
+    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''} <button class="btn small outline" data-del="${m.id}" style="color:#c0392b;border-color:#c0392b">Delete</button></td></tr>`;
   function filtered(d) {
     const f = P.f, q = norm(f.q);
     return d.machines.filter((m) => (!f.status || m.status === f.status) && (!f.region || regionOf(m, d) === f.region) && (!f.bank || norm(m.bank_name) === norm(f.bank)) &&
-      (!f.charger || ((m.status === 'issued' || m.status === 'in_repair') && (f.charger === 'pending' ? !m.charger_given : m.charger_given))) && (!f.link || (m.employee_id && !m.rider_id)) &&
+      (!f.charger || ((m.status === 'issued' || m.status === 'in_repair') && (f.charger === 'pending' ? !m.charger_given : m.charger_given))) && (!f.link || (m.employee_id && !m.rider_id)) && (!f.device || (f.device === 'none' ? !m.device_type : m.device_type === f.device)) &&
       (!q || norm([m.sn, m.mid, m.tid, m.rider_name, m.employee_id, m.nexus_id, m.bank_name].join(' ')).includes(q)));
   }
   function pageStock(host) {
@@ -146,19 +148,20 @@
       <select id="ps-rg" class="input" style="max-width:150px"><option value="">All regions</option>${d.regs.map((r) => `<option value="${r.id}" ${f.region === r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
       <select id="ps-bk" class="input" style="max-width:140px"><option value="">All banks</option>${banks.map((b) => `<option ${norm(f.bank) === norm(b) ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
       <select id="ps-ch" class="input" style="max-width:150px"><option value="">Charger: all</option><option value="pending" ${f.charger === 'pending' ? 'selected' : ''}>Charger pending</option><option value="given" ${f.charger === 'given' ? 'selected' : ''}>Charger given</option></select>
+      <select id="ps-dv" class="input" style="max-width:150px"><option value="">Android / Non-Android</option><option value="android" ${f.device === 'android' ? 'selected' : ''}>Android</option><option value="non_android" ${f.device === 'non_android' ? 'selected' : ''}>Non-Android</option><option value="none" ${f.device === 'none' ? 'selected' : ''}>Not set</option></select>
       <label class="hint"><input type="checkbox" id="ps-lk" ${f.link ? 'checked' : ''}> Not linked to a login</label></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn small" id="ps-add" type="button">+ Add machine</button><button class="btn small outline" id="ps-up" type="button">⬆ Upload Excel</button><button class="btn small outline" id="ps-tpl" type="button">Template</button><button class="btn small outline" id="ps-dl" type="button">⬇ Download</button><button class="btn small outline" id="ps-link" type="button" title="Match Employee IDs to rider logins">Link riders</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn small" id="ps-issue" type="button">💳 Issue POS</button><button class="btn small outline" id="ps-add" type="button">Add to stock</button><button class="btn small outline" id="ps-up" type="button">⬆ Upload Excel</button><button class="btn small outline" id="ps-tpl" type="button">Template</button><button class="btn small outline" id="ps-dl" type="button">⬇ Download</button><button class="btn small outline" id="ps-link" type="button" title="Match Employee IDs to rider logins">Link riders</button>
         <span style="flex:1"></span><span class="hint" id="ps-selinfo"></span>
-        <button class="btn small outline" data-bulk="chg1" type="button">Charger given</button><button class="btn small outline" data-bulk="chg0" type="button">Charger pending</button><button class="btn small outline" data-bulk="rep" type="button">Send to Accounts…</button></div>
+        <button class="btn small outline" data-bulk="chg1" type="button">Charger given</button><button class="btn small outline" data-bulk="chg0" type="button">Charger pending</button><button class="btn small outline" data-bulk="rep" type="button">Send to Accounts…</button><button class="btn small outline" data-bulk="del" type="button" style="color:#c0392b;border-color:#c0392b">Delete selected</button></div>
       <div id="ps-res"></div><div id="ps-table"></div></div>`;
     const draw = () => {
       const rows = filtered(d);
-      host.querySelector('#ps-table').innerHTML = rows.length ? `<p class="hint">${rows.length} machine${rows.length === 1 ? '' : 's'}</p><div style="overflow-x:auto"><table><thead><tr><th><input type="checkbox" id="ps-all"></th><th>Rider</th><th>Emp ID</th><th>Nexus ID</th><th>Region</th><th>Sub-region / City</th><th>S/N</th><th>MID</th><th>TID</th><th>Bank</th><th>Issued</th><th>Charger</th><th>Status</th><th></th></tr></thead><tbody>${rows.slice(0, P.shown).map((m) => machineRow(m, d)).join('')}</tbody></table></div>${rows.length > P.shown ? `<button class="btn small outline" id="ps-more" style="margin-top:8px">Show 100 more (${rows.length - P.shown} left)</button>` : ''}` : '<div class="empty-state"><p>No machines match.</p></div>';
+      host.querySelector('#ps-table').innerHTML = rows.length ? `<p class="hint">${rows.length} machine${rows.length === 1 ? '' : 's'}</p><div style="overflow-x:auto"><table><thead><tr><th><input type="checkbox" id="ps-all"></th><th>Rider</th><th>Emp ID</th><th>Nexus ID</th><th>Region</th><th>Sub-region / City</th><th>S/N</th><th>MID</th><th>TID</th><th>Bank</th><th>Device</th><th>Issued</th><th>Charger</th><th>Status</th><th></th></tr></thead><tbody>${rows.slice(0, P.shown).map((m) => machineRow(m, d)).join('')}</tbody></table></div>${rows.length > P.shown ? `<button class="btn small outline" id="ps-more" style="margin-top:8px">Show 100 more (${rows.length - P.shown} left)</button>` : ''}` : '<div class="empty-state"><p>No machines match.</p></div>';
       info();
     };
     const info = () => { host.querySelector('#ps-selinfo').textContent = P.sel.size ? P.sel.size + ' selected' : ''; };
     const bind = (id, k) => { const e = host.querySelector(id); e.onchange = e.oninput = () => { f[k] = e.type === 'checkbox' ? (e.checked ? '1' : '') : e.value; P.shown = 100; draw(); }; };
-    bind('#ps-q', 'q'); bind('#ps-st', 'status'); bind('#ps-rg', 'region'); bind('#ps-bk', 'bank'); bind('#ps-ch', 'charger'); bind('#ps-lk', 'link');
+    bind('#ps-q', 'q'); bind('#ps-st', 'status'); bind('#ps-rg', 'region'); bind('#ps-bk', 'bank'); bind('#ps-ch', 'charger'); bind('#ps-dv', 'device'); bind('#ps-lk', 'link');
     draw();
     host.onclick = async (e) => {
       const t = e.target;
@@ -166,18 +169,21 @@
       if (t.id === 'ps-all') { filtered(d).slice(0, P.shown).forEach((m) => (t.checked ? P.sel.add(m.id) : P.sel.delete(m.id))); draw(); return; }
       if (t.dataset.sel) { t.checked ? P.sel.add(t.dataset.sel) : P.sel.delete(t.dataset.sel); info(); return; }
       const b = t.closest('button'); if (!b) return;
+      if (b.id === 'ps-issue') return issueNewModal();
       if (b.id === 'ps-add') return editModal(null);
+      if (b.dataset.del) { const m = d.mById.get(b.dataset.del); if (!confirm('Permanently delete S/N ' + m.sn + (m.rider_name ? ' (issued to ' + m.rider_name + ')' : '') + '?\n\nIts history and repair records are deleted too. This cannot be undone.')) return; if (await rpc('fh_pos_delete', { p_ids: [m.id] }, 'Deleted')) { P.sel.delete(m.id); reload(); } return; }
       if (b.dataset.edit) return editModal(d.mById.get(b.dataset.edit));
       if (b.dataset.hist) return historyModal(d.mById.get(b.dataset.hist));
       if (b.dataset.issue) return issueModal({ machineId: b.dataset.issue });
       if (b.dataset.back) { const m = d.mById.get(b.dataset.back); const why = prompt('Take back ' + m.sn + ' from ' + (m.rider_name || 'the rider') + '? Add a remark (optional):', ''); if (why === null) return; if (await rpc('fh_pos_take_back', { p_machine: m.id, p_remark: why }, 'Returned to stock')) reload(); return; }
       if (b.id === 'ps-up') return uploadModal();
-      if (b.id === 'ps-tpl') return xl([{ 'Rider Name': 'Ali Khan', 'Employee ID': '12345', 'Nexus ID': 'NX-001', 'Region Name': 'Lahore', 'Sub Region/City Name': 'Lahore', 'S/N': 'SN123456', MID: '000111222', TID: '12345678', 'Bank Name': 'HBL', 'Issued Date': '01-11-2026', 'Charger Given': 'Yes' }, { 'Rider Name': '', 'Employee ID': '', 'Nexus ID': '', 'Region Name': '', 'Sub Region/City Name': '', 'S/N': 'SN123457', MID: '', TID: '', 'Bank Name': 'Meezan', 'Issued Date': '', 'Charger Given': '' }], 'POS', 'pos-template.xlsx');
-      if (b.id === 'ps-dl') return xl(filtered(d).map((m) => ({ 'Rider Name': m.rider_name || '', 'Employee ID': m.employee_id || '', 'Nexus ID': m.nexus_id || '', 'Region Name': d.regName.get(regionOf(m, d)) || '', 'Sub Region/City Name': d.subName.get(subOf(m, d)) || '', 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', 'Bank Name': m.bank_name || '', 'Issued Date': m.issued_date || '', 'Charger Given': m.charger_given ? 'Yes' : 'No', Status: (STATUS[m.status] || [m.status])[0] })), 'POS', 'pos-machines.xlsx');
+      if (b.id === 'ps-tpl') return xl([{ 'Rider Name': 'Ali Khan', 'Employee ID': '12345', 'Nexus ID': 'NX-001', 'Region Name': 'Lahore', 'Sub Region/City Name': 'Lahore', 'S/N': 'SN123456', MID: '000111222', TID: '12345678', 'Bank Name': 'HBL', 'Android / Non Android': 'Android', 'Issued Date': '01-11-2026', 'Charger Given': 'Yes' }, { 'Rider Name': '', 'Employee ID': '', 'Nexus ID': '', 'Region Name': '', 'Sub Region/City Name': '', 'S/N': 'SN123457', MID: '', TID: '', 'Bank Name': 'Meezan', 'Android / Non Android': 'Non-Android', 'Issued Date': '', 'Charger Given': '' }], 'POS', 'pos-template.xlsx');
+      if (b.id === 'ps-dl') return xl(filtered(d).map((m) => ({ 'Rider Name': m.rider_name || '', 'Employee ID': m.employee_id || '', 'Nexus ID': m.nexus_id || '', 'Region Name': d.regName.get(regionOf(m, d)) || '', 'Sub Region/City Name': d.subName.get(subOf(m, d)) || '', 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', 'Bank Name': m.bank_name || '', 'Android / Non Android': DEV[m.device_type] || '', 'Issued Date': m.issued_date || '', 'Charger Given': m.charger_given ? 'Yes' : 'No', Status: (STATUS[m.status] || [m.status])[0] })), 'POS', 'pos-machines.xlsx');
       if (b.id === 'ps-link') { const n = await rpc('fh_pos_link', {}, null); if (n !== false) { toast(n + ' machine(s) linked to rider logins'); reload(); } return; }
       if (b.dataset.bulk) {
         const ids = [...P.sel]; if (!ids.length) { toast('Tick the machines first'); return; }
         if (b.dataset.bulk === 'rep') return repairModal(ids);
+        if (b.dataset.bulk === 'del') { if (!confirm('Permanently delete ' + ids.length + ' machine(s) with their history and repair records?\n\nThis cannot be undone.')) return; if (await rpc('fh_pos_delete', { p_ids: ids }, ids.length + ' deleted')) { P.sel.clear(); reload(); } return; }
         if (await rpc('fh_pos_set_charger', { p_ids: ids, p_given: b.dataset.bulk === 'chg1' }, 'Updated')) { P.sel.clear(); reload(); }
       }
     };
@@ -186,9 +192,10 @@
   // ---- add / edit
   function editModal(m) {
     const d = P.data, x = m || {};
-    openModal(`<h2>${m ? 'Edit machine' : 'Add machine'}</h2><form id="pe-form">
+    openModal(`<h2>${m ? 'Edit machine' : 'Add machine to stock'}</h2><form id="pe-form">
       <div class="form-row"><label>S/N (serial number) *</label><input id="pe-sn" required value="${esc(x.sn)}"></div>
       <div class="form-row"><label>Bank name</label><input id="pe-bank" value="${esc(x.bank_name)}"></div>
+      <div class="form-row"><label>Android / Non-Android</label><select id="pe-dev">${devOpts(x.device_type)}</select></div>
       <div class="form-row"><label>MID</label><input id="pe-mid" value="${esc(x.mid)}"></div><div class="form-row"><label>TID</label><input id="pe-tid" value="${esc(x.tid)}"></div>
       <div class="form-row"><label>Rider Employee ID</label><input id="pe-emp" value="${esc(x.employee_id)}" placeholder="leave empty for stock"></div>
       <div class="form-row"><label>Rider name</label><input id="pe-name" value="${esc(x.rider_name)}"></div><div class="form-row"><label>Nexus ID</label><input id="pe-nx" value="${esc(x.nexus_id)}"></div>
@@ -202,7 +209,7 @@
       const v = (id) => document.getElementById(id).value.trim() || null;
       const emp = v('pe-emp'); let rider = null;
       if (emp) { const r = await sb.from('profiles').select('id, full_name, employee_id').ilike('employee_id', emp).limit(1); rider = r.data && r.data[0]; }
-      const row = { sn: v('pe-sn'), bank_name: v('pe-bank'), mid: v('pe-mid'), tid: v('pe-tid'), employee_id: emp, rider_id: rider ? rider.id : null, rider_name: v('pe-name') || (rider ? rider.full_name : null), nexus_id: v('pe-nx'), region_id: v('pe-reg'), sub_region_id: v('pe-sub'), issued_date: v('pe-date'), charger_given: document.getElementById('pe-chg').checked, updated_at: new Date().toISOString() };
+      const row = { sn: v('pe-sn'), bank_name: v('pe-bank'), mid: v('pe-mid'), tid: v('pe-tid'), employee_id: emp, rider_id: rider ? rider.id : null, rider_name: v('pe-name') || (rider ? rider.full_name : null), nexus_id: v('pe-nx'), device_type: v('pe-dev'), region_id: v('pe-reg'), sub_region_id: v('pe-sub'), issued_date: v('pe-date'), charger_given: document.getElementById('pe-chg').checked, updated_at: new Date().toISOString() };
       if (!m) row.status = (emp || row.rider_name) ? 'issued' : 'in_stock';
       const r = m ? await sb.from('pos_machines').update(row).eq('id', m.id) : await sb.from('pos_machines').insert(row);
       if (r.error) { toast(/duplicate|unique/i.test(r.error.message) ? 'That S/N already exists' : 'Could not save: ' + r.error.message); return; }
@@ -215,6 +222,51 @@
     openModal(`<h2>History — ${esc(m.sn)}</h2><p class="hint">${esc(m.bank_name || '')} · MID ${esc(m.mid || '—')} · TID ${esc(m.tid || '—')}</p>${rows.length ? rows.map((r) => `<div style="padding:6px 0;border-top:1px solid var(--line,#e5e7ef)"><div class="hint">${esc(new Date(r.t).toLocaleString())}</div><b>${esc(r.a)}</b> ${esc(r.d || '')}</div>`).join('') : '<p class="hint">Nothing recorded yet.</p>'}`);
   }
 
+  // riders who are actually working (on the roster), with the region / sub-region the roster gives them
+  function workList(d) {
+    const has = (rid, pr) => d.holders.has(rid) || (pr && norm(pr.employee_id) && d.holders.has('e:' + norm(pr.employee_id)));
+    const out = [];
+    d.work.forEach((w, rid) => { const pr = d.rid.get(rid); if (!pr) return; out.push({ id: rid, name: pr.full_name || '', emp: pr.employee_id || '', region: d.regName.get(w.region) || '', sub: d.subName.get(w.sub) || '', has: !!has(rid, pr) }); });
+    out.sort((a, b) => Number(a.has) - Number(b.has) || a.name.localeCompare(b.name));
+    return out;
+  }
+  const wLabel = (w) => `${w.name} (${w.emp}) · ${w.region}${w.sub ? ' · ' + w.sub : ''}${w.has ? ' · already has POS' : ''}`;
+  // rider picker: type a name / Employee ID, the roster details are filled in (read-only)
+  function riderPicker(d, pre) {
+    const list = workList(d);
+    return { html: `<div class="form-row"><label>Rider (from the roster) *</label><input id="rp-find" list="rp-list" placeholder="Type name or Employee ID" autocomplete="off" ${pre ? 'disabled' : ''}><datalist id="rp-list">${list.map((w) => `<option value="${esc(wLabel(w))}">`).join('')}</datalist></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"><div class="form-row"><label>Employee ID</label><input id="rp-emp" disabled></div><div class="form-row"><label>Name</label><input id="rp-name" disabled></div>
+      <div class="form-row"><label>Region</label><input id="rp-reg" disabled></div><div class="form-row"><label>Sub-region / City</label><input id="rp-sub" disabled></div></div>`,
+      bind(onPick) {
+        const f = document.getElementById('rp-find'); let cur = null;
+        const set = (w) => { cur = w; document.getElementById('rp-emp').value = w ? w.emp : ''; document.getElementById('rp-name').value = w ? w.name : ''; document.getElementById('rp-reg').value = w ? w.region : ''; document.getElementById('rp-sub').value = w ? w.sub : ''; if (onPick) onPick(w); };
+        const find = (t) => list.find((w) => wLabel(w) === t) || list.find((w) => norm(w.emp) === norm(t) && norm(t));
+        f.oninput = f.onchange = () => set(find(f.value.trim()) || null);
+        if (pre) { const w = list.find((x) => x.id === pre); if (w) { f.value = wLabel(w); set(w); } }
+        return () => cur;
+      } };
+  }
+  // ---- Issue POS: rider from the roster + machine details
+  function issueNewModal(preRider) {
+    const d = P.data, rp = riderPicker(d, preRider || '');
+    const banks = [...new Set(d.machines.map((m) => (m.bank_name || '').trim()).filter(Boolean))].sort();
+    openModal(`<h2>Issue POS</h2><form id="pn-form">${rp.html}
+      <div class="form-row"><label>S/N (serial number) *</label><input id="pn-sn" required></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"><div class="form-row"><label>MID</label><input id="pn-mid"></div><div class="form-row"><label>TID</label><input id="pn-tid"></div>
+      <div class="form-row"><label>Bank name</label><input id="pn-bank" list="pn-banks"><datalist id="pn-banks">${banks.map((b) => `<option value="${esc(b)}">`).join('')}</datalist></div><div class="form-row"><label>Nexus ID</label><input id="pn-nx"></div></div>
+      <div class="form-row"><label>Android / Non-Android *</label><select id="pn-dev" required>${devOpts('')}</select></div>
+      <div class="form-row"><label>Issued date</label><input type="date" id="pn-date" value="${new Date().toLocaleDateString('en-CA')}"></div>
+      <div class="form-row"><label><input type="checkbox" id="pn-chg"> Charger given with this machine</label><span class="hint">Leave unticked if the charger is still pending.</span></div>
+      <button class="btn-primary" type="submit">Issue POS</button></form>`);
+    const get = rp.bind((w) => { const nx = w && d.machines.find((m) => m.rider_id === w.id && m.nexus_id); const el = document.getElementById('pn-nx'); if (nx && !el.value) el.value = nx.nexus_id; });
+    document.getElementById('pn-form').onsubmit = async (ev) => {
+      ev.preventDefault(); const w = get(); if (!w) { toast('Choose a rider from the list'); return; }
+      if (w.has && !confirm(w.name + ' already has a POS. Issue another one?')) return;
+      const v = (id) => document.getElementById(id).value.trim();
+      if (await rpc('fh_pos_issue_new', { p_rider: w.id, p_sn: v('pn-sn'), p_mid: v('pn-mid'), p_tid: v('pn-tid'), p_bank: v('pn-bank'), p_nexus: v('pn-nx'), p_device: v('pn-dev'), p_date: v('pn-date') || null, p_charger: document.getElementById('pn-chg').checked }, 'POS issued. The rider has been notified.')) { closeModal(); reload(); }
+    };
+  }
+
   // ---- issue (from stock to a rider; also a replacement)
   function issueModal(o) {
     const d = P.data, stock = d.machines.filter((m) => m.status === 'in_stock');
@@ -222,16 +274,18 @@
     const rep = o.repairId ? d.repairs.find((r) => r.id === o.repairId) : null;
     const riderId = o.riderId || (rep && rep.rider_id) || '';
     const mach = o.machineId ? d.mById.get(o.machineId) : null;
-    openModal(`<h2>${rep ? 'Issue replacement POS' : 'Issue POS'}</h2><form id="pi-form">
+    const rider = riderPicker(d, riderId);
+    openModal(`<h2>${rep ? 'Issue replacement POS' : 'Issue POS from stock'}</h2><form id="pi-form">
       <div class="form-row"><label>Machine (in stock)</label>${mach ? `<input value="${esc(mach.sn)} · ${esc(mach.bank_name || '')}" disabled>` : `<select id="pi-m">${stock.map((m) => `<option value="${m.id}">${esc(m.sn)} · ${esc(m.bank_name || '')} · TID ${esc(m.tid || '—')}</option>`).join('')}</select>`}</div>
-      <div class="form-row"><label>Rider</label>${riderId ? `<input value="${esc((d.rid.get(riderId) || {}).full_name || (rep && rep.rider_name) || '')} (${esc((d.rid.get(riderId) || {}).employee_id || '')})" disabled>` : `<input id="pi-find" list="pi-list" placeholder="Type name or Employee ID" autocomplete="off"><datalist id="pi-list">${d.riders.filter((r) => r.status === 'active').map((r) => `<option value="${esc(r.full_name)} (${esc(r.employee_id || '')})">`).join('')}</datalist>`}</div>
+      ${rider.html}
       <div class="form-row"><label>Issued date</label><input type="date" id="pi-date" value="${new Date().toLocaleDateString('en-CA')}"></div>
       <div class="form-row"><label><input type="checkbox" id="pi-chg"> Charger given with this machine</label><span class="hint">Leave unticked if the charger is still pending.</span></div>
       <button class="btn-primary" type="submit">Issue</button></form>`);
+    const getW = rider.bind();
     document.getElementById('pi-form').onsubmit = async (ev) => {
       ev.preventDefault();
       let rid = riderId;
-      if (!rid) { const t = document.getElementById('pi-find').value.trim(); const hit = d.riders.find((r) => `${r.full_name} (${r.employee_id || ''})` === t) || d.riders.find((r) => norm(r.employee_id) === norm(t)); if (!hit) { toast('Choose a rider from the list'); return; } rid = hit.id; }
+      if (!rid) { const w = getW(); if (!w) { toast('Choose a rider from the list'); return; } rid = w.id; }
       const mid = mach ? mach.id : document.getElementById('pi-m').value;
       if (await rpc('fh_pos_issue', { p_machine: mid, p_rider: rid, p_charger: document.getElementById('pi-chg').checked, p_date: document.getElementById('pi-date').value || null, p_replaces_repair: o.repairId || null }, 'POS issued')) { closeModal(); reload(); }
     };
@@ -253,7 +307,7 @@
   }
 
   // ---------------------------------------------------------------- Excel upload
-  const COLS = { rider_name: ['ridername', 'name', 'employeename', 'fullname', 'rider'], employee_id: ['employeeid', 'empid', 'employeeno', 'empno', 'eid', 'employeecode'], nexus_id: ['nexusid', 'nexus'], region: ['regionname', 'region'], sub_region: ['subregioncityname', 'subregioncity', 'subregion', 'cityname', 'city', 'subregionorcity'], sn: ['sn', 'serialno', 'serialnumber', 'serial', 'snno'], mid: ['mid', 'merchantid'], tid: ['tid', 'terminalid'], bank: ['bankname', 'bank'], issued_date: ['issueddate', 'issueddata', 'dateissued', 'issuedon', 'issued'], charger: ['chargergiven', 'charger', 'chargerstatus'] };
+  const COLS = { rider_name: ['ridername', 'name', 'employeename', 'fullname', 'rider'], employee_id: ['employeeid', 'empid', 'employeeno', 'empno', 'eid', 'employeecode'], nexus_id: ['nexusid', 'nexus'], region: ['regionname', 'region'], sub_region: ['subregioncityname', 'subregioncity', 'subregion', 'cityname', 'city', 'subregionorcity'], sn: ['sn', 'serialno', 'serialnumber', 'serial', 'snno'], mid: ['mid', 'merchantid'], tid: ['tid', 'terminalid'], bank: ['bankname', 'bank'], device: ['androidornonandroid', 'androidnonandroid', 'androidnonandroid', 'devicetype', 'device', 'android', 'type'], issued_date: ['issueddate', 'issueddata', 'dateissued', 'issuedon', 'issued'], charger: ['chargergiven', 'charger', 'chargerstatus'] };
   function isoDate(v) {
     if (v == null || v === '') return '';
     if (typeof v === 'number') { const dt = new Date(Math.round((v - 25569) * 86400000)); return isNaN(dt) ? '' : dt.toISOString().slice(0, 10); }
@@ -262,7 +316,7 @@
     const dt = new Date(s); return isNaN(dt) ? '' : dt.toISOString().slice(0, 10);
   }
   function uploadModal() {
-    openModal(`<h2>Upload POS Excel</h2><p class="hint">Columns: Rider Name, Employee ID, Nexus ID, Region Name, Sub Region/City Name, S/N, MID, TID, Bank Name, Issued Date, Charger Given. <b>S/N is the key</b>: new S/N are added, existing ones are updated. Empty cells never erase saved data. Rows without a rider are added as stock.</p>
+    openModal(`<h2>Upload POS Excel</h2><p class="hint">Columns: Rider Name, Employee ID, Nexus ID, Region Name, Sub Region/City Name, S/N, MID, TID, Bank Name, Android / Non Android, Issued Date, Charger Given. <b>S/N is the key</b>: new S/N are added, existing ones are updated. Empty cells never erase saved data. Rows without a rider are added as stock.</p>
       <input type="file" id="pu-file" accept=".xlsx,.xls,.csv"><div id="pu-prev" style="margin-top:10px"></div>`);
     let rows = [];
     document.getElementById('pu-file').onchange = async (ev) => {
@@ -332,45 +386,60 @@
     };
   };
 
-  // ---------------------------------------------------------------- RIDER: my POS card (Dashboard + My Profile)
-  window.fhPosRiderHtml = async function () {
-    if (!state.user) return '';
-    let ms = [], rp = [];
-    try {
-      const a = await sb.from('pos_machines').select('*').eq('rider_id', state.user.id).in('status', ['issued', 'in_repair', 'retired']).order('issued_date', { ascending: false });
-      if (a.error) return ''; ms = a.data || [];
-      const b = await sb.from('pos_repairs').select('machine_id, status, fault_name').eq('rider_id', state.user.id).in('status', ['reported', 'with_accounts']); rp = b.data || [];
-    } catch (_) { return ''; }
-    ms = ms.filter((m) => m.status !== 'retired' || !ms.some((x) => x.status !== 'retired'));
-    if (!ms.length) return '';
-    const names = {}; try { const r = await sb.from('regions').select('id, name'); (r.data || []).forEach((x) => (names[x.id] = x.name)); } catch (_) {}
-    return `<div class="card" id="fh-pos-card"><h3 style="margin-top:0">💳 My POS machine</h3>${ms.map((m) => {
-      const open = rp.find((r) => r.machine_id === m.id);
-      return `<div style="padding:8px 0;border-top:1px solid var(--line,#e5e7ef)"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 14px">
-        <div><span class="hint">Bank</span><br><b>${esc(m.bank_name || '—')}</b></div><div><span class="hint">MID</span><br><b class="mono">${esc(m.mid || '—')}</b></div><div><span class="hint">TID</span><br><b class="mono">${esc(m.tid || '—')}</b></div><div><span class="hint">S/N</span><br><b class="mono">${esc(m.sn)}</b></div>
-        <div><span class="hint">Nexus ID</span><br><b class="mono">${esc(m.nexus_id || '—')}</b></div><div><span class="hint">Issued</span><br><b>${fd(m.issued_date)}</b></div>
-        <div><span class="hint">Charger</span><br>${m.charger_given ? '<span class="badge active">Given</span>' : '<span class="badge open">Not received yet</span>'}</div><div><span class="hint">Status</span><br>${badge(m.status)}</div></div>
-        ${open ? `<p class="hint" style="margin:8px 0 0">🔧 Fault reported (${esc(open.fault_name || '')}): ${open.status === 'with_accounts' ? 'with Accounts for repair' : 'waiting for the Super Admin'}.</p>` : (m.status === 'issued' ? `<button class="btn small outline" data-pos-report="${m.id}" style="margin-top:8px">Report a fault</button>` : '')}</div>`; }).join('')}</div>`;
+  // ---------------------------------------------------------------- RIDER: My POS (sidebar page) + Dashboard card
+  const TAG = { issued: ['Issued', 'active'], in_repair: ['In repair', 'open'], retired: ['Retired', ''], in_stock: ['Pending', 'open'] };
+  const tag = (m) => { const [t, c] = m ? (TAG[m.status] || [m.status, '']) : ['Not issued', 'open']; return `<span class="badge ${c}">${esc(t)}</span>`; };
+  async function myData() {
+    const uid = state.user.id;
+    const [a, b, rg, sr] = await Promise.all([
+      sb.from('pos_machines').select('*').eq('rider_id', uid).order('issued_date', { ascending: false }),
+      sb.from('pos_repairs').select('*').eq('rider_id', uid).order('created_at', { ascending: false }),
+      sb.from('regions').select('id, name'), sb.from('sub_regions').select('id, name')]);
+    if (a.error) throw a.error;
+    const nm = {}; [...(rg.data || []), ...(sr.data || [])].forEach((x) => (nm[x.id] = x.name));
+    let ms = a.data || []; if (ms.some((m) => m.status !== 'retired')) ms = ms.filter((m) => m.status !== 'retired');
+    return { ms, rp: b.data || [], nm };
+  }
+  const openRep = (rp, id) => rp.find((r) => r.machine_id === id && (r.status === 'reported' || r.status === 'with_accounts'));
+
+  window.fhPosTileHtml = async function () {
+    if (!state.user || !state.profile) return '';
+    let D; try { D = await myData(); } catch (_) { return ''; }
+    if (!D.ms.length && state.profile.role !== 'rider') return '';
+    const m = D.ms[0], extra = D.ms.length > 1 ? ` <span class="hint">+${D.ms.length - 1} more</span>` : '';
+    return `<div class="card" style="cursor:pointer;display:flex;gap:12px;align-items:center;flex-wrap:wrap" onclick="navigateTo('my_pos')"><div style="font-size:28px">💳</div>
+      <div style="flex:1;min-width:150px"><b>My POS</b> ${tag(m)}${extra}<div class="hint">${m ? esc(m.bank_name || 'POS') + ' · TID ' + esc(m.tid || '—') + (m.charger_given ? '' : ' · charger pending') : 'No POS has been issued to you yet.'}</div></div><span class="hint">View ›</span></div>`;
   };
-  window.fhPosRiderBind = function (root) {
-    root.querySelectorAll('[data-pos-report]').forEach((b) => b.onclick = async () => {
+
+  window.renderMyPos = async function () {
+    const main = document.getElementById('main-content'); document.getElementById('topbar-actions').innerHTML = '';
+    let D; try { D = await myData(); } catch (e) { main.innerHTML = missing(e) ? '<div class="empty-state"><p>POS is not available yet.</p></div>' : '<div class="empty-state">Could not load: ' + esc(e.message) + '</div>'; return; }
+    const card = (m) => { const o = openRep(D.rp, m.id); return `<div class="card" data-open="${m.id}" style="cursor:pointer"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="font-size:30px">💳</div><div style="flex:1;min-width:150px"><b style="font-size:1.05rem">${esc(m.bank_name || 'POS machine')}</b> ${tag(m)}<div class="hint">S/N ${esc(m.sn)} · ${DEV[m.device_type] || 'device type not set'}</div></div><span class="hint">Tap for details ›</span></div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${m.charger_given ? '<span class="badge active">Charger given</span>' : '<span class="badge open">Charger pending</span>'}${o ? `<span class="badge open">🔧 Fault ${o.status === 'with_accounts' ? 'with Accounts' : 'reported'}</span>` : ''}</div></div>`; };
+    const hist = D.rp.slice(0, 15);
+    main.innerHTML = `<p class="hint" style="margin-top:0">Your POS machine, and any fault you report.</p>
+      ${D.ms.length ? D.ms.map(card).join('') : `<div class="card"><div style="display:flex;gap:10px;align-items:center"><div style="font-size:30px">💳</div><div><b>No POS issued yet</b> ${tag(null)}<div class="hint">When a POS is issued to you it will appear here and you will get a notice.</div></div></div></div>`}
+      ${D.ms.some((m) => m.status === 'issued' && !openRep(D.rp, m.id)) ? '<button class="btn" id="mp-rep" type="button">🔧 Report a fault</button>' : ''}
+      ${hist.length ? `<div class="card" style="margin-top:14px"><h3 style="margin-top:0">My fault reports</h3>${hist.map((r) => `<div style="padding:7px 0;border-top:1px solid var(--line,#e5e7ef)"><b>${esc(r.fault_name || 'Fault')}</b> <span class="badge ${r.status === 'repaired' ? 'active' : 'open'}">${esc(REPAIR_STATUS[r.status] || r.status)}</span><div class="hint">${esc(new Date(r.reported_at || r.created_at).toLocaleDateString())}${r.remark ? ' · ' + esc(r.remark) : ''}${r.outcome_remark ? ' · ' + esc(r.outcome_remark) : ''}</div></div>`).join('')}</div>` : ''}`;
+    const detail = (m) => {
+      const o = openRep(D.rp, m.id), row = (l, v) => `<div style="padding:7px 0;border-top:1px solid var(--line,#e5e7ef)"><span class="hint">${l}</span><br><b class="mono">${v}</b></div>`;
+      openModal(`<h2 style="margin-top:0">💳 POS details ${tag(m)}</h2>${row('Bank', esc(m.bank_name || '—'))}${row('MID', esc(m.mid || '—'))}${row('TID', esc(m.tid || '—'))}${row('S/N', esc(m.sn))}${row('Nexus ID', esc(m.nexus_id || '—'))}${row('Android / Non-Android', DEV[m.device_type] || '—')}${row('Region', esc(D.nm[m.region_id] || '—') + (D.nm[m.sub_region_id] ? ' · ' + esc(D.nm[m.sub_region_id]) : ''))}${row('Issued on', fd(m.issued_date))}${row('Charger', m.charger_given ? 'Given' : 'Not received yet')}
+        ${o ? `<p class="hint" style="margin-top:10px">🔧 Fault reported (${esc(o.fault_name || '')}): ${o.status === 'with_accounts' ? 'with Accounts for repair' : 'waiting for the Super Admin'}.</p>` : (m.status === 'issued' ? '<button class="btn" id="pd-rep" type="button" style="margin-top:12px">🔧 Report a fault</button>' : '')}`);
+      const b = document.getElementById('pd-rep'); if (b) b.onclick = () => { closeModal(); report(m); };
+    };
+    const report = async (m) => {
       const f = await sb.from('pos_fault_types').select('id, name').eq('active', true).order('sort_order');
-      openModal(`<h2>Report a POS fault</h2><form id="pr-rf"><div class="form-row"><label>What is wrong? *</label><select id="pr-rt" required><option value="">— choose —</option>${(f.data || []).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div><div class="form-row"><label>Details (optional)</label><textarea id="pr-rn" rows="2" maxlength="300"></textarea></div><button class="btn-primary" type="submit">Send report</button></form>`);
+      openModal(`<h2 style="margin-top:0">Report a POS fault</h2><p class="hint">${esc(m.bank_name || 'POS')} · S/N ${esc(m.sn)}</p><form id="pr-rf"><div class="form-row"><label>What is wrong? *</label><select id="pr-rt" required><option value="">— choose —</option>${(f.data || []).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div><div class="form-row"><label>Details (optional)</label><textarea id="pr-rn" rows="2" maxlength="300"></textarea></div><button class="btn-primary" type="submit">Send report</button></form>`);
       document.getElementById('pr-rf').onsubmit = async (e) => {
         e.preventDefault(); const sel = document.getElementById('pr-rt'), p = state.profile;
-        const r = await sb.from('pos_repairs').insert({ machine_id: b.dataset.posReport, rider_id: state.user.id, rider_name: p.full_name, rider_employee_id: p.employee_id, fault_type_id: sel.value, fault_name: sel.options[sel.selectedIndex].text, remark: document.getElementById('pr-rn').value.trim() || null, reported_by_rider: true, status: 'reported' });
+        const r = await sb.from('pos_repairs').insert({ machine_id: m.id, rider_id: state.user.id, rider_name: p.full_name, rider_employee_id: p.employee_id, fault_type_id: sel.value, fault_name: sel.options[sel.selectedIndex].text, remark: document.getElementById('pr-rn').value.trim() || null, reported_by_rider: true, status: 'reported' });
         if (r.error) { toast(/duplicate|unique/i.test(r.error.message) ? 'A fault is already reported for this machine' : 'Could not send: ' + r.error.message); return; }
-        closeModal(); toast('Fault reported to the Super Admin'); const c = document.getElementById('fh-pos-card'); if (c) fhPosMount(c.parentElement, true);
+        closeModal(); toast('Fault reported to the Super Admin'); renderMyPos();
       };
-    });
-  };
-  // inserts / refreshes the card at the top of a page container
-  window.fhPosMount = async function (host, refresh) {
-    try {
-      if (!host || !state.profile || state.profile.role !== 'rider') return;
-      const html = await fhPosRiderHtml(); const old = host.querySelector('#fh-pos-card'); if (old) old.remove();
-      if (!html || (!refresh && state.view !== 'dashboard' && state.view !== 'myprofile')) return;
-      const t = document.createElement('div'); t.innerHTML = html; const card = t.firstElementChild; host.insertBefore(card, host.firstChild); fhPosRiderBind(card);
-    } catch (_) {}
+    };
+    main.onclick = (e) => {
+      const rb = e.target.closest('#mp-rep'); if (rb) { const ms = D.ms.filter((m) => m.status === 'issued' && !openRep(D.rp, m.id)); if (ms.length === 1) report(ms[0]); else if (ms.length) { const m = ms[parseInt(prompt('Which machine?\n' + ms.map((x, i) => (i + 1) + '. S/N ' + x.sn).join('\n'), '1'), 10) - 1]; if (m) report(m); } return; }
+      const c = e.target.closest('[data-open]'); if (c) detail(D.ms.find((m) => m.id === c.dataset.open));
+    };
   };
 })();
