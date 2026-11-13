@@ -12298,7 +12298,7 @@ function fhTour(force) {
   } catch (_) {}
 }
 
-const FH_BACKUP_FN = 'weekly-backup';   // the last part of the backup function's URL (change only if you named it differently)
+const FH_BACKUP_FN = 'clever-action';   // the last part of the backup function's URL (change only if you named it differently)
 async function renderHealthSettings(body) {
   if (!isSuperAdmin()) { body.innerHTML = '<p class="hint">Only the Super Admin can open this.</p>'; return; }
   body.innerHTML = '<p class="hint">Loading…</p>';
