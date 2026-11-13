@@ -3,7 +3,7 @@
 // Data (requests, circulars, expiry ...) is saved separately by offline.js, never here.
 // Network first: online you always get the newest files; offline you get the saved ones.
 const CACHE_NAME = 'fieldhub-shell-v2';
-const SHELL_FILES = ['./', './index.html', './style.css', './app.js', './assistant.js', './offline.js', './biometric.js', './config.js', './manifest.json', './404.html', './privacy.html', './terms.html', './logo.png', './logo.jpg', './favicon-192.png', './favicon-32.png', './sidebar-bg.webp', './banner-riders.jpg', './banner-blooddraw.jpg'];
+const SHELL_FILES = ['./', './index.html', './style.css', './app.js', './assistant.js', './pos.js', './offline.js', './biometric.js', './config.js', './manifest.json', './404.html', './privacy.html', './terms.html', './logo.png', './logo.jpg', './favicon-192.png', './favicon-32.png', './sidebar-bg.webp', './banner-riders.jpg', './banner-blooddraw.jpg'];
 const CDN_HOSTS = ['cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'unpkg.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.plot.ly'];
 
 self.addEventListener('install', (event) => {
