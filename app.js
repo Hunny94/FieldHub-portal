@@ -12086,8 +12086,8 @@ async function renderMyProfile(){
     <div class="card">
       <h3>Recovery e-mail</h3>
       <p class="hint">Used to send you a code if you forget your password. It is locked once saved; to change it please ask an admin.</p>
-      <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||'')}" placeholder="name@gmail.com" autocomplete="email" ${p.recovery_email?'disabled':''}></div>
-      ${p.recovery_email ? '<span class="field-hint">🔒 Locked</span>' : '<button class="btn" id="mp-email-btn">Save e-mail</button>'}
+      <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||'')}" placeholder="name@gmail.com" autocomplete="email" ${p.recovery_email && p.role!=='super_admin'?'disabled':''}></div>
+      ${p.recovery_email && p.role!=='super_admin' ? '<span class="field-hint">🔒 Locked</span>' : `<button class="btn" id="mp-email-btn">${p.recovery_email ? 'Change e-mail' : 'Save e-mail'}</button>${p.recovery_email ? '<span class="field-hint"> As Super Admin you can change your own e-mail. Weekly backups are sent here.</span>' : ''}`}
     </div>
     <div class="card">
       <h3>Change password</h3>
@@ -12134,7 +12134,7 @@ async function renderMyProfile(){
     const { data, error } = await sb.rpc('fh_set_recovery_email', { p_email: v });
     if (error){ toast(/function|schema cache|does not exist/i.test(error.message) ? 'This needs migration_51.sql to be run first.' : 'Could not save: ' + error.message.replace(/^.*?:\s*/, '')); return; }
     state.profile = { ...state.profile, recovery_email: data || null };
-    toast('Recovery e-mail saved and locked.'); renderMyProfile();
+    toast(state.profile.role === 'super_admin' ? 'E-mail saved.' : 'Recovery e-mail saved and locked.'); renderMyProfile();
   };
   document.getElementById('mp-pw-toggle').onclick = () => {
     const input = document.getElementById('mp-new-pw');
