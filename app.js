@@ -1252,7 +1252,9 @@ async function afterLogin(user){
   renderUserBadge();
   const allowedViews = getAllowedViews();
   const hashView = location.hash.replace('#','');
+  const badHash = hashView && /^[A-Za-z_]+$/.test(hashView) && !allowedViews.includes(hashView);   // a mistyped / unavailable page address
   const firstPage = navigateTo(allowedViews.includes(hashView) ? hashView : 'dashboard');
+  if (badHash) setTimeout(() => fhPageNotFound(hashView), 400);
   setupSessionTimeout();
   fhStartActivityTracking();
   try { if (window.fhAssistantInit) fhAssistantInit(); } catch (_e) {}   // chat helper (assistant.js)
@@ -1277,7 +1279,15 @@ window.addEventListener('hashchange', () => {
   const view = location.hash.replace('#','');
   const allowedViews = getAllowedViews();
   if (view && allowedViews.includes(view) && view !== state.view) navigateTo(view);
+  else if (view && /^[A-Za-z_]+$/.test(view) && !allowedViews.includes(view)) fhPageNotFound(view);
 });
+// shown when the address ends in a page name that does not exist (or is not available to this person)
+function fhPageNotFound(view) {
+  const m = document.getElementById('main-content'); if (!m) return;
+  document.getElementById('topbar-actions').innerHTML = '';
+  m.innerHTML = '<div class="empty-state" style="padding:48px 16px"><div style="font-size:64px;font-weight:800;color:var(--ink,#1E2A6E);line-height:1">404</div><h2>We could not find that page</h2><p class="hint">“' + escapeHtml(String(view).slice(0, 40)) + '” does not exist, or it is not available to your login.</p><button class="btn" type="button" id="nf-home">Go to Dashboard</button></div>';
+  const b = document.getElementById('nf-home'); if (b) b.onclick = () => navigateTo('dashboard');
+}
 
 // ---------------------------------------------------------
 // AUTO SIGN-OUT (website only) + LAST-ACTIVE TRACKING
