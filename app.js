@@ -1257,7 +1257,8 @@ async function afterLogin(user){
   fhStartActivityTracking();
   try { if (window.fhAssistantInit) fhAssistantInit(); } catch (_e) {}   // chat helper (assistant.js)
   try { if (window.fhOffline) setTimeout(() => fhOffline.warm(), 6000); } catch (_e) {}
-  try { fhRequireEmail(); } catch (_e) {}   // save the main pages for offline reading
+  try { fhRequireEmail(); } catch (_e) {}
+  try { setTimeout(() => fhTour(false), 1500); } catch (_e) {}   // save the main pages for offline reading
   // Popups, reminders, notifications and live updates are not urgent — they start only after the
   // first page has loaded, so they no longer compete with it for the connection.
   firstPage.then(() => setTimeout(() => {
@@ -2347,6 +2348,7 @@ async function navigateTo(view){
   if (state.profile && !getAllowedViews().includes(view) && view === 'dashboard') view = getAllowedViews()[0] || 'dashboard';   // view-only logins have no Dashboard
   if (location.hash !== '#'+view) history.pushState(null, '', '#'+view);
   state.view = view;
+  try { fhTrack(view); } catch (_e) {}
   const mc0 = document.getElementById('main-content'); if (mc0) mc0.classList.remove('ft-full');
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.getElementById('view-title').textContent = NAV_LABEL[view] || 'My Profile';
@@ -4698,6 +4700,7 @@ async function renderSettings(){
       ['appupdate','Android App Updates', () => isSuperAdmin()],
       ['shortcuts','Keyboard Shortcuts', () => isSuperAdmin()],
       ['chatbot','Chatbot (quick questions & log)', () => isSuperAdmin()],
+      ['health','Health, Backup & Privacy', () => isSuperAdmin()],
     ]}
   ];
   const visibleGroups = groups
@@ -4754,6 +4757,7 @@ async function renderSettings(){
   else if (settingsTab === 'appupdate') await renderAppUpdateSettings(body);
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
   else if (settingsTab === 'chatbot') await renderChatbotSettings(body);
+  else if (settingsTab === 'health') await renderHealthSettings(body);
   else if (settingsTab === 'welcome') await renderWelcomeSettings(body);
   } finally { main.style.minHeight = ''; _restore(); setTimeout(_restore, 120); }
 }
@@ -12086,7 +12090,27 @@ async function renderMyProfile(){
       </div>
       <button class="btn" id="mp-pw-btn">Change password</button>
     </div>
+    <div class="card">
+      <h3>Help &amp; privacy</h3>
+      <p class="hint"><a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a> · <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a></p>
+      <button class="btn outline" id="mp-tour-btn" type="button">Show the quick tour</button>
+      <hr style="margin:14px 0;border:0;border-top:1px solid var(--border,#e5e7ef)">
+      <p class="hint">Want your account removed? Send a request: the Super Admin will disable your login. Work records others rely on (such as issued-tool history) may be kept for audit.</p>
+      <button class="btn outline" id="mp-del-btn" type="button" style="color:#c0392b;border-color:#c0392b">Request account deletion</button>
+    </div>
   `;
+  document.getElementById('mp-tour-btn').onclick = () => fhTour(true);
+  (async () => {
+    const b = document.getElementById('mp-del-btn'); if (!b) return;
+    try { const r = await sb.from('account_deletion_requests').select('id').eq('user_id', state.user.id).eq('status', 'pending').limit(1); if (r.data && r.data.length) { b.disabled = true; b.textContent = 'Deletion requested — waiting for the Super Admin'; return; } } catch (_) {}
+    b.onclick = async () => {
+      if (!confirm('Request deletion of your account? Your login will be disabled by the Super Admin.')) return;
+      const reason = (prompt('Optional: tell us why (you can leave this empty)') || '').slice(0, 300);
+      const r = await sb.from('account_deletion_requests').insert({ user_id: state.user.id, reason: reason || null });
+      if (r.error) { toast(/relation|schema/i.test(r.error.message) ? 'Not available yet: the admin must run migration_55.sql' : 'Could not send: ' + r.error.message); return; }
+      b.disabled = true; b.textContent = 'Deletion requested — waiting for the Super Admin'; toast('Request sent to the Super Admin');
+    };
+  })();
   document.getElementById('mp-save-btn').onclick = async () => {
     const payload = { full_name: toProperCase(document.getElementById('mp-name').value.trim()) };
     if (p.role==='rider') payload.bike_number = document.getElementById('mp-bike').value.trim();
@@ -12211,4 +12235,108 @@ function formatDateTime(iso){
 function escapeHtml(str){
   if (str === null || str === undefined) return '';
   return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+// ---------------- v74: error capture, page-visit counts, first-login tour, Health / Backup / Privacy settings ----------------
+(function () {
+  const seen = new Set(); let n = 0;
+  function rep(msg, src) {
+    try {
+      if (typeof sb === 'undefined' || typeof state === 'undefined' || !state.user || navigator.onLine === false) return;
+      msg = String(msg || '').slice(0, 300); if (!msg || /^Script error/i.test(msg) || seen.has(msg) || n >= 5) return;
+      seen.add(msg); n++;
+      sb.from('error_logs').insert({ user_id: state.user.id, message: msg, source: String(src || '').slice(0, 200), page: state.view || '', device: (navigator.userAgent || '').slice(0, 160) }).then(() => {}, () => {});
+    } catch (_) {}
+  }
+  window.addEventListener('error', (e) => rep(e.message, String(e.filename || '').split('/').pop() + ':' + (e.lineno || '')));
+  window.addEventListener('unhandledrejection', (e) => rep('Promise: ' + ((e.reason && e.reason.message) || e.reason), 'promise'));
+})();
+let _fhLastTrack = '';
+function fhTrack(v) {
+  if (!v || v === _fhLastTrack || !state.user || navigator.onLine === false) return;
+  _fhLastTrack = v;
+  try { Promise.resolve(sb.rpc('fh_track', { p_view: v })).catch(() => {}); } catch (_) {}
+}
+
+function fhTour(force) {
+  try {
+    if (!state.user || !state.profile || document.getElementById('fh-tour') || document.getElementById('fh-email-gate')) return;
+    const key = 'fh_tour_' + state.user.id;
+    if (!force) {
+      if (!state.profile.recovery_email || state.profile.must_change_password || (state.profile.status && state.profile.status !== 'active')) return;
+      let done = false; try { done = !!localStorage.getItem(key); } catch (_) {}
+      if (done) return;
+    }
+    const rider = state.profile.role === 'rider';
+    const steps = [
+      ['Welcome to FieldHub', 'Everything for your daily field work is in one place. This 30-second tour shows the basics.'],
+      [rider ? 'Raise a request' : 'Handle requests', rider ? 'Open <b>Requests</b> to ask for a tool or report a problem. You will get a notice when it moves forward, and you confirm when you receive the item.' : 'Open <b>Requests</b> to see what your team has raised, move it forward, and close it once the rider has confirmed.'],
+      ['Ask the Assistant', 'Tap the chat button at the bottom right to ask about expiry dates, tool eligibility, hotspots, supervisors and more. Use 👍 / 👎 to tell us if the answer helped.'],
+      ['Stay secure', 'Open <b>My Profile</b> (top right) to change your password, see the Privacy Policy, or replay this tour any time.']
+    ];
+    let i = 0;
+    const o = document.createElement('div'); o.id = 'fh-tour'; o.className = 'modal-overlay'; o.style.zIndex = 99990;
+    const draw = () => {
+      const [t, b] = steps[i], last = i === steps.length - 1;
+      o.innerHTML = `<div class="modal" style="max-width:440px"><h2 style="margin-top:0">${t}</h2><p>${b}</p>
+        <div style="display:flex;gap:6px;justify-content:center;margin:12px 0">${steps.map((_, k) => `<span style="width:8px;height:8px;border-radius:50%;background:${k === i ? 'var(--ink,#1E2A6E)' : '#c9cfe8'}"></span>`).join('')}</div>
+        <div style="display:flex;gap:8px;justify-content:space-between"><button class="btn outline" type="button" id="fh-tour-skip">${last ? '' : 'Skip'}</button><button class="btn-primary" type="button" id="fh-tour-next" style="width:auto;padding:10px 24px">${last ? 'Get started' : 'Next'}</button></div></div>`;
+      const end = () => { try { localStorage.setItem(key, '1'); } catch (_) {} o.remove(); };
+      const sk = o.querySelector('#fh-tour-skip'); if (last) sk.style.visibility = 'hidden'; sk.onclick = end;
+      o.querySelector('#fh-tour-next').onclick = () => { if (last) end(); else { i++; draw(); } };
+    };
+    document.body.appendChild(o); draw();
+  } catch (_) {}
+}
+
+const FH_BACKUP_FN = 'weekly-backup';   // the last part of the backup function's URL (change only if you named it differently)
+async function renderHealthSettings(body) {
+  if (!isSuperAdmin()) { body.innerHTML = '<p class="hint">Only the Super Admin can open this.</p>'; return; }
+  body.innerHTML = '<p class="hint">Loading…</p>';
+  const since = new Date(Date.now() - 30 * 86400000).toLocaleDateString('en-CA');
+  const [us, er, dl] = await Promise.all([
+    sb.from('usage_daily').select('day, view, hits').gte('day', since).limit(3000),
+    sb.from('error_logs').select('id, user_id, message, source, page, device, created_at').order('created_at', { ascending: false }).limit(100),
+    sb.from('account_deletion_requests').select('id, user_id, reason, status, created_at, profiles:user_id(full_name, employee_id)').order('created_at', { ascending: false }).limit(50)
+  ]);
+  if ([us, er].some(x => x.error && /relation|does not exist|schema/i.test(x.error.message || ''))) { body.innerHTML = '<h3>Health, Backup &amp; Privacy</h3><p class="hint">Not set up yet: run <b>migration_55.sql</b> in Supabase (SQL Editor), then reopen this page.</p>'; return; }
+  const usage = us.data || [], errs = er.data || [], dels = dl.data || [];
+  const byView = {}; usage.forEach(u => byView[u.view] = (byView[u.view] || 0) + u.hits);
+  const top = Object.entries(byView).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const total = usage.reduce((a, u) => a + u.hits, 0), max = top.length ? top[0][1] : 1;
+  const pend = dels.filter(d => d.status === 'pending');
+  body.innerHTML = `
+    <h3 style="margin-top:0">Health, Backup &amp; Privacy</h3>
+    <h4>Weekly backup</h4>
+    <p class="hint">Every Sunday 07:00 a ZIP of CSV files (open in Excel) is e-mailed to the Super Admin. You can also send one right now.</p>
+    <button class="btn small" id="hl-bk">Send backup now</button> <span class="hint" id="hl-bk-res"></span>
+    <h4 style="margin-top:22px">Account deletion requests ${pend.length ? '<span class="badge">' + pend.length + ' pending</span>' : ''}</h4>
+    <div id="hl-del">${dels.length ? dels.map(d => `<div class="card" style="padding:10px;margin-bottom:8px"><b>${escapeHtml((d.profiles && d.profiles.full_name) || '—')}</b> <span class="hint">${escapeHtml((d.profiles && d.profiles.employee_id) || '')} · ${escapeHtml(new Date(d.created_at).toLocaleDateString())} · ${escapeHtml(d.status)}</span>${d.reason ? '<div class="hint">“' + escapeHtml(d.reason) + '”</div>' : ''}${d.status === 'pending' ? `<div style="margin-top:6px;display:flex;gap:6px"><button class="btn small" data-del-ok="${d.id}" data-uid="${d.user_id}">Disable login &amp; mark done</button><button class="btn small outline" data-del-no="${d.id}">Reject</button></div>` : ''}</div>`).join('') : '<p class="hint">No requests.</p>'}</div>
+    <p class="hint">Disabling keeps the person’s history (issued tools, requests) for audit. For complete erasure, delete the user in Supabase → Authentication after disabling.</p>
+    <h4 style="margin-top:22px">Page visits (last 30 days)</h4>
+    <p class="hint">${total} page views. Counts only: no names or content are stored.</p>
+    ${top.map(([v, c]) => `<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><span style="width:130px;font-size:13px">${escapeHtml(NAV_LABEL[v] || v)}</span><div style="flex:1;background:#eef1ff;border-radius:6px;height:14px"><div style="width:${Math.max(3, Math.round(c / max * 100))}%;background:var(--ink,#1E2A6E);height:14px;border-radius:6px"></div></div><span class="hint" style="width:44px;text-align:right">${c}</span></div>`).join('') || '<p class="hint">No visits recorded yet.</p>'}
+    <h4 style="margin-top:22px">Errors (kept 14 days) ${errs.length ? '<button class="btn small outline" id="hl-ec" style="margin-left:8px">Clear</button>' : ''}</h4>
+    <div style="max-height:360px;overflow:auto">${errs.length ? errs.map(e => `<div style="padding:7px 0;border-top:1px solid var(--border,#e5e7ef)"><div class="hint">${escapeHtml(new Date(e.created_at).toLocaleString())} · page: ${escapeHtml(e.page || '—')} · ${escapeHtml(e.source || '')}</div><div style="font-size:13px">${escapeHtml(e.message)}</div><div class="hint" style="font-size:11px">${escapeHtml((e.device || '').slice(0, 90))}</div></div>`).join('') : '<p class="hint">✅ No errors recorded.</p>'}</div>`;
+  document.getElementById('hl-bk').onclick = async () => {
+    const res = document.getElementById('hl-bk-res'), b = document.getElementById('hl-bk'); b.disabled = true; res.textContent = 'Sending…';
+    try {
+      const { data: { session } } = await sb.auth.getSession();
+      const r = await fetch(SUPABASE_URL + '/functions/v1/' + FH_BACKUP_FN, { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY }, body: JSON.stringify({ action: 'now', access_token: session && session.access_token }) });
+      const j = await r.json().catch(() => ({}));
+      res.textContent = j.ok ? `Sent: ${j.tables} tables, ${j.rows} rows (${j.mb} MB) to ${j.sent_to} e-mail address(es).` : 'Could not send: ' + (j.error || r.status);
+    } catch (e) { res.textContent = 'Could not reach the backup function. Check that it is deployed and its name matches.'; }
+    b.disabled = false;
+  };
+  body.querySelectorAll('[data-del-ok]').forEach(b => b.onclick = async () => {
+    if (!confirm('Disable this person’s login and mark the request done?')) return;
+    const u = await sb.from('profiles').update({ status: 'disabled' }).eq('id', b.dataset.uid);
+    if (u.error) { toast('Could not disable: ' + u.error.message); return; }
+    await sb.from('account_deletion_requests').update({ status: 'done', handled_by: state.user.id, handled_at: new Date().toISOString() }).eq('id', b.dataset.delOk);
+    toast('Login disabled'); renderSettings();
+  });
+  body.querySelectorAll('[data-del-no]').forEach(b => b.onclick = async () => {
+    await sb.from('account_deletion_requests').update({ status: 'rejected', handled_by: state.user.id, handled_at: new Date().toISOString() }).eq('id', b.dataset.delNo); renderSettings();
+  });
+  const ec = document.getElementById('hl-ec'); if (ec) ec.onclick = async () => { if (!confirm('Clear all recorded errors?')) return; await sb.from('error_logs').delete().in('id', errs.map(e => e.id)); renderSettings(); };
 }
