@@ -2160,10 +2160,10 @@ function ftNavViews(){
 function ftCanView(view){ return isSuperAdmin() || (view === 'ft_trend' ? (hasPermission('ft_trend') || hasPermission('ft_upload')) : hasPermission('ft_upload')); }
 function getAllowedViews(){
   const viewerOnly = !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only');
-  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews()];
+  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : [])];
   const extra = [];
   // any page can be switched on for one person (Settings > Access Control)
-  Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
+  Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && !v.startsWith('pos_') && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
   if (isAdmin()) return [...base, ...extra];
   if (!base.includes('settings') && [...state.myPermissions].some(k => k.startsWith('settings:') && hasPermission(k))) extra.push('settings');
   const settingsKeys = ['categories_add','categories_edit','categories_remove','manage_types','circular_categories_manage'];
@@ -2180,7 +2180,8 @@ const NAV_LABEL = {
   compliance:'Compliance Tracker', activitylog:'Activity Log', releasenotes:"What's New", hierarchy:'My Team & Supervisors',
   fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
   fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI',
-  ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File'
+  ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File',
+  pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
@@ -2191,6 +2192,7 @@ const NAV_GROUPS = [
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
   { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools'] },
   { id: 'g_fuel',       label: 'Fuel Trends',   items: ['ft_trend','ft_data','ft_upload'] },
+  { id: 'g_pos',        label: 'POS Management', items: ['pos_dash','pos_stock','pos_repairs'] },
   { id: 'g_admin',      label: 'Admin',         items: ['regions','settings','reports','activitylog'] }
 ];
 
@@ -2244,6 +2246,7 @@ const NAV_ICON_LIB = {
   activity:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   bookmark:'<path d="M6 3h12v18l-6-4-6 4z"/>',
   fuel:'<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12"/><path d="M6 8h6"/><path d="M14 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V8l-3-3"/>',
+  card:'<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>',
   key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/>'
 };
 const NAV_ICON_DEFAULT = {
@@ -2253,6 +2256,7 @@ const NAV_ICON_DEFAULT = {
   fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
   fv_checklist:'svg:clipboard', fv_targets:'svg:target',
   ft_trend:'svg:chart', ft_data:'svg:list', ft_upload:'svg:plus', g_fuel:'svg:fuel',
+  pos_dash:'svg:chart', pos_stock:'svg:list', pos_repairs:'svg:wrench', g_pos:'svg:card',
   g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
 };
 // icon for a menu entry: the Super Admin's choice if there is one ('' = removed), otherwise the built-in default
@@ -2362,7 +2366,7 @@ async function navigateTo(view){
       main.insertAdjacentHTML('afterbegin', `<div class="fh-slow">Still loading… your connection looks slow. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Retry</button></div>`);
   }, 12000);
   try{
-    if (view==='dashboard') await renderDashboard();
+    if (view==='dashboard') { await renderDashboard(); try { if (typeof fhPosMount === 'function') fhPosMount(document.getElementById('main-content')); } catch (_e) {} }
     else if (view==='circulars') await renderCirculars();
     else if (view==='tasks') await renderTasks();
     else if (view==='requests') await renderRequests();
@@ -2382,6 +2386,7 @@ async function navigateTo(view){
     else if (view==='hierarchy') await renderHierarchy();
     else if (view.startsWith('fv_')) await renderFieldVisits(view);
     else if (view.startsWith('ft_')) await renderFuelTrends(view);
+    else if (view.startsWith('pos_')) { if (typeof renderPos === 'function') await renderPos(view); else main.innerHTML = '<div class="empty-state">POS Management is loading. Please refresh the page.</div>'; }
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -4675,6 +4680,7 @@ async function renderSettings(){
       ['tooltypes','Tool Types', () => isAdmin() || hasPermission('manage_types') || hasPermission('tooltypes_manage')],
       ['compliancetypes','Compliance Items', () => isAdmin() || hasPermission('manage_types')],
       ['shifttypes','Shift Types', () => isAdmin() || hasPermission('manage_types')],
+      ['posfaults','POS Fault Types', () => isSuperAdmin()],
     ]},
     { label: 'People', items: [
       ['designations','Designations', () => isSuperAdmin()],
@@ -4758,6 +4764,7 @@ async function renderSettings(){
   else if (settingsTab === 'shortcuts') await renderShortcutsSettings(body);
   else if (settingsTab === 'chatbot') await renderChatbotSettings(body);
   else if (settingsTab === 'health') await renderHealthSettings(body);
+  else if (settingsTab === 'posfaults') await renderPosFaultsSettings(body);
   else if (settingsTab === 'welcome') await renderWelcomeSettings(body);
   } finally { main.style.minHeight = ''; _restore(); setTimeout(_restore, 120); }
 }
@@ -12090,6 +12097,7 @@ async function renderMyProfile(){
       </div>
       <button class="btn" id="mp-pw-btn">Change password</button>
     </div>
+    <div id="mp-pos-slot"></div>
     <div class="card">
       <h3>Help &amp; privacy</h3>
       <p class="hint"><a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a> · <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a></p>
@@ -12100,6 +12108,7 @@ async function renderMyProfile(){
     </div>
   `;
   document.getElementById('mp-tour-btn').onclick = () => fhTour(true);
+  try { if (typeof fhPosMount === 'function') fhPosMount(document.getElementById('mp-pos-slot'), true); } catch (_e) {}
   (async () => {
     const b = document.getElementById('mp-del-btn'); if (!b) return;
     try { const r = await sb.from('account_deletion_requests').select('id').eq('user_id', state.user.id).eq('status', 'pending').limit(1); if (r.data && r.data.length) { b.disabled = true; b.textContent = 'Deletion requested — waiting for the Super Admin'; return; } } catch (_) {}
