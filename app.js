@@ -1262,6 +1262,7 @@ async function afterLogin(user){
   state.systemSettings = sysSettings || {};
   // all reference lists load together instead of one after another
   await Promise.all([loadRegions(), loadDesignations(), loadCategories(), loadReferenceData(true)]);
+  try { const pr = await sb.from('pos_machines').select('id', { count: 'exact', head: true }).eq('rider_id', state.user.id); state.hasPos = (pr.count || 0) > 0; } catch (_e) { state.hasPos = false; }
   renderNav();
   renderUserBadge();
   const allowedViews = getAllowedViews();
@@ -1552,8 +1553,8 @@ async function setupDesktopNotifications(){
   sb.channel('expiry-notify-' + state.user.id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expiry_notices', filter: `user_id=eq.${state.user.id}` }, (payload) => {
       fire('FieldHub: ' + (payload.new.title || 'Expiry update'), payload.new.body || '');
-      const fa = payload.new.kind === 'force_ack';
-      pushNotification({ type: fa ? 'Tool' : 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: fa ? 'tools' : 'expiries' });
+      const pk = payload.new.kind === 'pos_issued', fa = pk || payload.new.kind === 'force_ack';
+      pushNotification({ type: fa ? 'Tool' : 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: pk ? 'my_pos' : (fa ? 'tools' : 'expiries') });
       fhExpiryPopup();
     })
     .subscribe();
@@ -1576,7 +1577,7 @@ async function fhExpiryPopup(){
     if (r.error) return; rows = r.data || [];
   } catch (_e) { return; }
   if (!rows.length) return;
-  openModal(`<div id="exp-pop"><h2>${rows.every(n => n.kind === 'force_ack') ? '🔔 Notice' : '⚠ Expiry notice'}${rows.length > 1 ? 's' : ''}</h2>
+  openModal(`<div id="exp-pop"><h2>${rows.every(n => n.kind === 'force_ack' || n.kind === 'pos_issued') ? '🔔 Notice' : '⚠ Expiry notice'}${rows.length > 1 ? 's' : ''}</h2>
     ${rows.map(n => `<div style="padding:10px 12px;margin:8px 0;border-radius:10px;border-left:4px solid ${n.kind === 'closed' ? '#1d7a47' : '#C1502E'};background:#f6f7fc"><b>${escapeHtml(n.title || 'Expiry update')}</b><div style="margin-top:4px;font-size:14px;line-height:1.45">${escapeHtml(n.body || '')}</div><div class="hint" style="margin:4px 0 0;font-size:12px">${formatDateTime(n.created_at)}</div></div>`).join('')}
     <button class="btn-primary" id="exp-pop-ok" type="button" style="margin-top:6px">OK, I understand</button></div>`);
   document.getElementById('exp-pop-ok').onclick = async () => {
@@ -1661,7 +1662,7 @@ async function loadAndShowNotifications(){
   }
   try {
     const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
-    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:x.kind === 'force_ack' ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'force_ack' ? 'tools' : 'expiries' }));
+    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:(x.kind === 'force_ack' || x.kind === 'pos_issued') ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'pos_issued' ? 'my_pos' : (x.kind === 'force_ack' ? 'tools' : 'expiries') }));
   } catch (_e) {}
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
     const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
@@ -2154,7 +2155,7 @@ const NAV_BY_ROLE = {
   team_lead: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
   coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','warnings','roster','team','knowledgebase','resources','compliance','releasenotes','hierarchy'],
   inventory_coordinator: ['dashboard','circulars','tasks','requests','expiries','tools','roster','knowledgebase','resources','releasenotes','hierarchy'],
-  rider: ['dashboard','circulars','requests','expiries','tools','warnings','roster','knowledgebase','resources','releasenotes','hierarchy']
+  rider: ['dashboard','circulars','requests','expiries','tools','my_pos','warnings','roster','knowledgebase','resources','releasenotes','hierarchy']
 };
 // A granted custom_permission can unlock a whole nav item (e.g. Settings,
 // Regions, Reports) for a role that wouldn't normally see it at all —
@@ -2184,10 +2185,10 @@ function ftNavViews(){
 function ftCanView(view){ return isSuperAdmin() || (view === 'ft_trend' ? (hasPermission('ft_trend') || hasPermission('ft_upload')) : hasPermission('ft_upload')); }
 function getAllowedViews(){
   const viewerOnly = !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only');
-  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : [])];
+  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : []), ...(state.hasPos && !(NAV_BY_ROLE[state.profile.role] || []).includes('my_pos') ? ['my_pos'] : [])];
   const extra = [];
   // any page can be switched on for one person (Settings > Access Control)
-  Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && !v.startsWith('pos_') && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
+  Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && !v.startsWith('pos_') && v !== 'my_pos' && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
   if (isAdmin()) return [...base, ...extra];
   if (!base.includes('settings') && [...state.myPermissions].some(k => k.startsWith('settings:') && hasPermission(k))) extra.push('settings');
   const settingsKeys = ['categories_add','categories_edit','categories_remove','manage_types','circular_categories_manage'];
@@ -2205,7 +2206,7 @@ const NAV_LABEL = {
   fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
   fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI',
   ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File',
-  pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs'
+  pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs', my_pos:'My POS'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
@@ -2214,7 +2215,7 @@ const NAV_GROUPS = [
   { id: 'g_people',     label: 'People',        items: ['team','roster','hierarchy'] },
   { id: 'g_operations', label: 'Operations',    items: ['circulars','tasks','requests','warnings','compliance'] },
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
-  { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools'] },
+  { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools','my_pos'] },
   { id: 'g_fuel',       label: 'Fuel Trends',   items: ['ft_trend','ft_data','ft_upload'] },
   { id: 'g_pos',        label: 'POS Management', items: ['pos_dash','pos_stock','pos_repairs'] },
   { id: 'g_admin',      label: 'Admin',         items: ['regions','settings','reports','activitylog'] }
@@ -2280,7 +2281,7 @@ const NAV_ICON_DEFAULT = {
   fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
   fv_checklist:'svg:clipboard', fv_targets:'svg:target',
   ft_trend:'svg:chart', ft_data:'svg:list', ft_upload:'svg:plus', g_fuel:'svg:fuel',
-  pos_dash:'svg:chart', pos_stock:'svg:list', pos_repairs:'svg:wrench', g_pos:'svg:card',
+  pos_dash:'svg:chart', pos_stock:'svg:list', pos_repairs:'svg:wrench', g_pos:'svg:card', my_pos:'svg:card',
   g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
 };
 // icon for a menu entry: the Super Admin's choice if there is one ('' = removed), otherwise the built-in default
@@ -2390,7 +2391,7 @@ async function navigateTo(view){
       main.insertAdjacentHTML('afterbegin', `<div class="fh-slow">Still loading… your connection looks slow. <button class="fv-btn" onclick="navigateTo('${view}')" type="button">Retry</button></div>`);
   }, 12000);
   try{
-    if (view==='dashboard') { await renderDashboard(); try { if (typeof fhPosMount === 'function') fhPosMount(document.getElementById('main-content')); } catch (_e) {} }
+    if (view==='dashboard') await renderDashboard();
     else if (view==='circulars') await renderCirculars();
     else if (view==='tasks') await renderTasks();
     else if (view==='requests') await renderRequests();
@@ -2410,6 +2411,7 @@ async function navigateTo(view){
     else if (view==='hierarchy') await renderHierarchy();
     else if (view.startsWith('fv_')) await renderFieldVisits(view);
     else if (view.startsWith('ft_')) await renderFuelTrends(view);
+    else if (view === 'my_pos') { if (typeof renderMyPos === 'function') await renderMyPos(); }
     else if (view.startsWith('pos_')) { if (typeof renderPos === 'function') await renderPos(view); else main.innerHTML = '<div class="empty-state">POS Management is loading. Please refresh the page.</div>'; }
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
@@ -2514,6 +2516,7 @@ async function renderDashboard(){
   const expiringDueRows = (expiring.data||[]).filter(i => i.status !== 'closed' && new Date(i.expiry_date) <= soonCutoff);
   const expiringSoon = new Set(expiringDueRows.map(i => i.group_id || i.id)).size;
 
+  let posTile = ''; try { if (typeof fhPosTileHtml === 'function') posTile = await fhPosTileHtml(); } catch (_e) {}
   main.innerHTML = `
     ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden; cursor:pointer;" id="dashboard-banner-click">
       <img src="${escapeHtml(banner.data.image_url)}" style="width:100%; max-height:280px; object-fit:contain; background:#f4f4f4; display:block;">
@@ -2528,6 +2531,7 @@ async function renderDashboard(){
       </div>
       <div class="dt"><b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
     </div>
+    ${posTile}
     <div class="grid grid-4 fh-stagger">
       ${[['clay','requests',openReq.count ?? 0,'Open requests','M9 12h6M9 16h6M9 8h6M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z'],
          ['sky','tasks',myTasks.count ?? 0,'My pending tasks','M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'],
@@ -12132,7 +12136,6 @@ async function renderMyProfile(){
     </div>
   `;
   document.getElementById('mp-tour-btn').onclick = () => fhTour(true);
-  try { if (typeof fhPosMount === 'function') fhPosMount(document.getElementById('mp-pos-slot'), true); } catch (_e) {}
   (async () => {
     const b = document.getElementById('mp-del-btn'); if (!b) return;
     try { const r = await sb.from('account_deletion_requests').select('id').eq('user_id', state.user.id).eq('status', 'pending').limit(1); if (r.data && r.data.length) { b.disabled = true; b.textContent = 'Deletion requested — waiting for the Super Admin'; return; } } catch (_) {}
