@@ -132,7 +132,7 @@
     <td>${esc(m.rider_name || '—')}${m.employee_id && !m.rider_id ? ' <span title="No portal login matches this Employee ID" style="color:#b9770e">⚠</span>' : ''}</td><td class="mono">${esc(m.employee_id || '')}</td><td class="mono">${esc(m.nexus_id || '')}</td>
     <td>${esc(d.regName.get(regionOf(m, d)) || '')}</td><td>${esc(d.subName.get(subOf(m, d)) || '')}</td><td class="mono">${esc(m.sn)}</td><td class="mono">${esc(m.mid || '')}</td><td class="mono">${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${DEV[m.device_type] || '—'}</td><td>${fd(m.issued_date)}</td>
     <td>${m.status === 'issued' || m.status === 'in_repair' ? (m.charger_given ? '<span class="badge active">Given</span>' : '<span class="badge open">Pending</span>') : '—'}</td><td>${badge(m.status)}</td>
-    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''} <button class="btn small outline" data-del="${m.id}" style="color:#c0392b;border-color:#c0392b">Delete</button></td></tr>`;
+    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'issued' || m.status === 'in_stock' ? ` <button class="btn small outline" data-rep1="${m.id}">Send to Accounts</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''} <button class="btn small outline" data-del="${m.id}" style="color:#c0392b;border-color:#c0392b">Delete</button></td></tr>`;
   function filtered(d) {
     const f = P.f, q = norm(f.q);
     return d.machines.filter((m) => (!f.status || m.status === f.status) && (!f.region || regionOf(m, d) === f.region) && (!f.bank || norm(m.bank_name) === norm(f.bank)) &&
@@ -149,24 +149,25 @@
       <select id="ps-bk" class="input" style="max-width:140px"><option value="">All banks</option>${banks.map((b) => `<option ${norm(f.bank) === norm(b) ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
       <select id="ps-ch" class="input" style="max-width:150px"><option value="">Charger: all</option><option value="pending" ${f.charger === 'pending' ? 'selected' : ''}>Charger pending</option><option value="given" ${f.charger === 'given' ? 'selected' : ''}>Charger given</option></select>
       <select id="ps-dv" class="input" style="max-width:150px"><option value="">Android / Non-Android</option><option value="android" ${f.device === 'android' ? 'selected' : ''}>Android</option><option value="non_android" ${f.device === 'non_android' ? 'selected' : ''}>Non-Android</option><option value="none" ${f.device === 'none' ? 'selected' : ''}>Not set</option></select>
-      <label class="hint"><input type="checkbox" id="ps-lk" ${f.link ? 'checked' : ''}> Not linked to a login</label></div>
+      <label class="hint"><input type="checkbox" id="ps-lk" ${f.link ? 'checked' : ''}> Rider has no login yet</label></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn small" id="ps-issue" type="button">💳 Issue POS</button><button class="btn small outline" id="ps-add" type="button">Add to stock</button><button class="btn small outline" id="ps-up" type="button">⬆ Upload Excel</button><button class="btn small outline" id="ps-tpl" type="button">Template</button><button class="btn small outline" id="ps-dl" type="button">⬇ Download</button><button class="btn small outline" id="ps-link" type="button" title="Match Employee IDs to rider logins">Link riders</button>
         <span style="flex:1"></span><span class="hint" id="ps-selinfo"></span>
         <button class="btn small outline" data-bulk="chg1" type="button">Charger given</button><button class="btn small outline" data-bulk="chg0" type="button">Charger pending</button><button class="btn small outline" data-bulk="rep" type="button">Send to Accounts…</button><button class="btn small outline" data-bulk="del" type="button" style="color:#c0392b;border-color:#c0392b">Delete selected</button></div>
       <div id="ps-res"></div><div id="ps-table"></div></div>`;
     const draw = () => {
       const rows = filtered(d);
-      host.querySelector('#ps-table').innerHTML = rows.length ? `<p class="hint">${rows.length} machine${rows.length === 1 ? '' : 's'}</p><div style="overflow-x:auto"><table><thead><tr><th><input type="checkbox" id="ps-all"></th><th>Rider</th><th>Emp ID</th><th>Nexus ID</th><th>Region</th><th>Sub-region / City</th><th>S/N</th><th>MID</th><th>TID</th><th>Bank</th><th>Device</th><th>Issued</th><th>Charger</th><th>Status</th><th></th></tr></thead><tbody>${rows.slice(0, P.shown).map((m) => machineRow(m, d)).join('')}</tbody></table></div>${rows.length > P.shown ? `<button class="btn small outline" id="ps-more" style="margin-top:8px">Show 100 more (${rows.length - P.shown} left)</button>` : ''}` : '<div class="empty-state"><p>No machines match.</p></div>';
+      host.querySelector('#ps-table').innerHTML = rows.length ? `<p class="hint">${rows.length} machine${rows.length === 1 ? '' : 's'}</p><div style="overflow-x:auto"><table><thead><tr><th><input type="checkbox" id="ps-all" title="Select all ${rows.length} machines (all pages)" ${rows.every((m) => P.sel.has(m.id)) ? 'checked' : ''}></th><th>Rider</th><th>Emp ID</th><th>Nexus ID</th><th>Region</th><th>Sub-region / City</th><th>S/N</th><th>MID</th><th>TID</th><th>Bank</th><th>Device</th><th>Issued</th><th>Charger</th><th>Status</th><th></th></tr></thead><tbody>${rows.slice(0, P.shown).map((m) => machineRow(m, d)).join('')}</tbody></table></div>${rows.length > P.shown ? `<button class="btn small outline" id="ps-more" style="margin-top:8px">Show 100 more (${rows.length - P.shown} left)</button>` : ''}` : '<div class="empty-state"><p>No machines match.</p></div>';
       info();
     };
-    const info = () => { host.querySelector('#ps-selinfo').textContent = P.sel.size ? P.sel.size + ' selected' : ''; };
+    const info = () => { host.querySelector('#ps-selinfo').innerHTML = P.sel.size ? P.sel.size + ' selected <button class="btn small outline" id="ps-clr" type="button">Clear</button>' : ''; };
     const bind = (id, k) => { const e = host.querySelector(id); e.onchange = e.oninput = () => { f[k] = e.type === 'checkbox' ? (e.checked ? '1' : '') : e.value; P.shown = 100; draw(); }; };
     bind('#ps-q', 'q'); bind('#ps-st', 'status'); bind('#ps-rg', 'region'); bind('#ps-bk', 'bank'); bind('#ps-ch', 'charger'); bind('#ps-dv', 'device'); bind('#ps-lk', 'link');
     draw();
     host.onclick = async (e) => {
       const t = e.target;
       if (t.id === 'ps-more') { P.shown += 100; draw(); return; }
-      if (t.id === 'ps-all') { filtered(d).slice(0, P.shown).forEach((m) => (t.checked ? P.sel.add(m.id) : P.sel.delete(m.id))); draw(); return; }
+      if (t.id === 'ps-all') { filtered(d).forEach((m) => (t.checked ? P.sel.add(m.id) : P.sel.delete(m.id))); draw(); return; }
+      if (t.id === 'ps-clr') { P.sel.clear(); draw(); return; }
       if (t.dataset.sel) { t.checked ? P.sel.add(t.dataset.sel) : P.sel.delete(t.dataset.sel); info(); return; }
       const b = t.closest('button'); if (!b) return;
       if (b.id === 'ps-issue') return issueNewModal();
@@ -175,14 +176,16 @@
       if (b.dataset.edit) return editModal(d.mById.get(b.dataset.edit));
       if (b.dataset.hist) return historyModal(d.mById.get(b.dataset.hist));
       if (b.dataset.issue) return issueModal({ machineId: b.dataset.issue });
-      if (b.dataset.back) { const m = d.mById.get(b.dataset.back); const why = prompt('Take back ' + m.sn + ' from ' + (m.rider_name || 'the rider') + '? Add a remark (optional):', ''); if (why === null) return; if (await rpc('fh_pos_take_back', { p_machine: m.id, p_remark: why }, 'Returned to stock')) reload(); return; }
+      if (b.dataset.back) return takeBackModal(d.mById.get(b.dataset.back));
+      if (b.dataset.rep1) return repairModal([b.dataset.rep1]);
       if (b.id === 'ps-up') return uploadModal();
       if (b.id === 'ps-tpl') return xl([{ 'Rider Name': 'Ali Khan', 'Employee ID': '12345', 'Nexus ID': 'NX-001', 'Region Name': 'Lahore', 'Sub Region/City Name': 'Lahore', 'S/N': 'SN123456', MID: '000111222', TID: '12345678', 'Bank Name': 'HBL', 'Android / Non Android': 'Android', 'Issued Date': '01-11-2026', 'Charger Given': 'Yes' }, { 'Rider Name': '', 'Employee ID': '', 'Nexus ID': '', 'Region Name': '', 'Sub Region/City Name': '', 'S/N': 'SN123457', MID: '', TID: '', 'Bank Name': 'Meezan', 'Android / Non Android': 'Non-Android', 'Issued Date': '', 'Charger Given': '' }], 'POS', 'pos-template.xlsx');
       if (b.id === 'ps-dl') return xl(filtered(d).map((m) => ({ 'Rider Name': m.rider_name || '', 'Employee ID': m.employee_id || '', 'Nexus ID': m.nexus_id || '', 'Region Name': d.regName.get(regionOf(m, d)) || '', 'Sub Region/City Name': d.subName.get(subOf(m, d)) || '', 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', 'Bank Name': m.bank_name || '', 'Android / Non Android': DEV[m.device_type] || '', 'Issued Date': m.issued_date || '', 'Charger Given': m.charger_given ? 'Yes' : 'No', Status: (STATUS[m.status] || [m.status])[0] })), 'POS', 'pos-machines.xlsx');
       if (b.id === 'ps-link') { const n = await rpc('fh_pos_link', {}, null); if (n !== false) { toast(n + ' machine(s) linked to rider logins'); reload(); } return; }
       if (b.dataset.bulk) {
-        const ids = [...P.sel]; if (!ids.length) { toast('Tick the machines first'); return; }
+        const ids = [...P.sel];
         if (b.dataset.bulk === 'rep') return repairModal(ids);
+        if (!ids.length) { toast('Tick the machines first'); return; }
         if (b.dataset.bulk === 'del') { if (!confirm('Permanently delete ' + ids.length + ' machine(s) with their history and repair records?\n\nThis cannot be undone.')) return; if (await rpc('fh_pos_delete', { p_ids: ids }, ids.length + ' deleted')) { P.sel.clear(); reload(); } return; }
         if (await rpc('fh_pos_set_charger', { p_ids: ids, p_given: b.dataset.bulk === 'chg1' }, 'Updated')) { P.sel.clear(); reload(); }
       }
@@ -247,10 +250,15 @@
       } };
   }
   // ---- Issue POS: rider from the roster + machine details
-  function issueNewModal(preRider) {
+  const ROSTER_ONLY = /lahore|kasur|raiwind/i;   // riders of these regions must come from the roster
+  function issueNewModal(preRider, replacesRepair) {
     const d = P.data, rp = riderPicker(d, preRider || '');
     const banks = [...new Set(d.machines.map((m) => (m.bank_name || '').trim()).filter(Boolean))].sort();
-    openModal(`<h2>Issue POS</h2><form id="pn-form">${rp.html}
+    openModal(`<h2>${replacesRepair ? 'Issue replacement POS' : 'Issue POS'}</h2><form id="pn-form"><div id="pn-roster">${rp.html}</div>
+      <label class="hint"><input type="checkbox" id="pn-man"> Rider is not on the roster (only for regions other than Lahore, Kasur and Raiwind)</label>
+      <div id="pn-manual" style="display:none"><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"><div class="form-row"><label>Employee ID *</label><input id="pm-emp"></div><div class="form-row"><label>Name *</label><input id="pm-name"></div>
+        <div class="form-row"><label>Region *</label><select id="pm-reg"><option value="">— choose —</option>${d.regs.map((r) => `<option value="${r.id}" ${ROSTER_ONLY.test(r.name) ? 'disabled' : ''}>${esc(r.name)}${ROSTER_ONLY.test(r.name) ? ' (roster only)' : ''}</option>`).join('')}</select></div>
+        <div class="form-row"><label>Sub-region / City</label><select id="pm-sub"><option value="">—</option></select></div></div></div>
       <div class="form-row"><label>S/N (serial number) *</label><input id="pn-sn" required></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"><div class="form-row"><label>MID</label><input id="pn-mid"></div><div class="form-row"><label>TID</label><input id="pn-tid"></div>
       <div class="form-row"><label>Bank name</label><input id="pn-bank" list="pn-banks"><datalist id="pn-banks">${banks.map((b) => `<option value="${esc(b)}">`).join('')}</datalist></div><div class="form-row"><label>Nexus ID</label><input id="pn-nx"></div></div>
@@ -258,12 +266,21 @@
       <div class="form-row"><label>Issued date</label><input type="date" id="pn-date" value="${new Date().toLocaleDateString('en-CA')}"></div>
       <div class="form-row"><label><input type="checkbox" id="pn-chg"> Charger given with this machine</label><span class="hint">Leave unticked if the charger is still pending.</span></div>
       <button class="btn-primary" type="submit">Issue POS</button></form>`);
+    const man = document.getElementById('pn-man');
+    man.onchange = () => { document.getElementById('pn-roster').style.display = man.checked ? 'none' : ''; document.getElementById('pn-manual').style.display = man.checked ? '' : 'none'; };
+    document.getElementById('pm-reg').onchange = (e) => { document.getElementById('pm-sub').innerHTML = '<option value="">—</option>' + d.subs.filter((x) => x.region_id === e.target.value).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); };
     const get = rp.bind((w) => { const nx = w && d.machines.find((m) => m.rider_id === w.id && m.nexus_id); const el = document.getElementById('pn-nx'); if (nx && !el.value) el.value = nx.nexus_id; });
     document.getElementById('pn-form').onsubmit = async (ev) => {
-      ev.preventDefault(); const w = get(); if (!w) { toast('Choose a rider from the list'); return; }
-      if (w.has && !confirm(w.name + ' already has a POS. Issue another one?')) return;
-      const v = (id) => document.getElementById(id).value.trim();
-      if (await rpc('fh_pos_issue_new', { p_rider: w.id, p_sn: v('pn-sn'), p_mid: v('pn-mid'), p_tid: v('pn-tid'), p_bank: v('pn-bank'), p_nexus: v('pn-nx'), p_device: v('pn-dev'), p_date: v('pn-date') || null, p_charger: document.getElementById('pn-chg').checked }, 'POS issued. The rider has been notified.')) { closeModal(); reload(); }
+      ev.preventDefault(); const v = (id) => document.getElementById(id).value.trim();
+      const common = { p_sn: v('pn-sn'), p_mid: v('pn-mid'), p_tid: v('pn-tid'), p_bank: v('pn-bank'), p_nexus: v('pn-nx'), p_device: v('pn-dev'), p_date: v('pn-date') || null, p_charger: document.getElementById('pn-chg').checked };
+      if (man.checked) {
+        if (!v('pm-emp') || !v('pm-name') || !v('pm-reg')) { toast('Enter Employee ID, name and region'); return; }
+        if (await rpc('fh_pos_issue_manual', { p_emp: v('pm-emp'), p_name: v('pm-name'), p_region: v('pm-reg'), p_sub: v('pm-sub') || null, ...common }, 'POS issued')) { closeModal(); reload(); }
+        return;
+      }
+      const w = get(); if (!w) { toast('Choose a rider from the list'); return; }
+      if (w.has && !replacesRepair && !confirm(w.name + ' already has a POS. Issue another one?')) return;
+      if (await rpc('fh_pos_issue_new', { p_rider: w.id, p_sn: v('pn-sn'), p_mid: v('pn-mid'), p_tid: v('pn-tid'), p_bank: v('pn-bank'), p_nexus: v('pn-nx'), p_device: v('pn-dev'), p_date: v('pn-date') || null, p_charger: document.getElementById('pn-chg').checked, p_replaces_repair: replacesRepair || null }, 'POS issued. The rider has been notified.')) { closeModal(); reload(); }
     };
   }
 
@@ -291,18 +308,71 @@
     };
   }
 
-  // ---- send to Accounts
+  // ---- send to Accounts: choose the fault, then find each machine by TID / MID / S/N (its details are fetched)
   function repairModal(ids) {
-    const d = P.data; const ms = ids.map((i) => d.mById.get(i)).filter((m) => m && (m.status === 'issued' || m.status === 'in_stock'));
-    if (!ms.length) { toast('Only issued or in-stock machines can be sent'); return; }
-    openModal(`<h2>Send to Accounts for repair</h2><p class="hint">${ms.length} machine(s): ${esc(ms.slice(0, 5).map((m) => m.sn).join(', '))}${ms.length > 5 ? '…' : ''}</p><form id="pr-form">
-      <div class="form-row"><label>Fault *</label><select id="pr-f" required>${faultOpts(d)}</select></div><div class="form-row"><label>Remark</label><textarea id="pr-r" rows="2" maxlength="300"></textarea></div>
+    const d = P.data; const ok = (m) => m && (m.status === 'issued' || m.status === 'in_stock');
+    let chosen = ids.map((i) => d.mById.get(i)).filter(ok);
+    const cand = d.machines.filter(ok);
+    const lab = (m) => `TID ${m.tid || '—'} · MID ${m.mid || '—'} · S/N ${m.sn} · ${m.rider_name || 'in stock'}`;
+    openModal(`<h2>Send to Accounts for repair</h2><form id="pr-form">
+      <div class="form-row"><label>Fault *</label><select id="pr-f" required>${faultOpts(d)}</select></div>
+      <div class="form-row"><label>Find the machine by TID, MID or S/N</label><div style="display:flex;gap:6px"><input id="pr-find" list="pr-list" placeholder="Type or pick" autocomplete="off" style="flex:1"><button class="btn small" id="pr-add" type="button">Add</button></div>
+        <datalist id="pr-list">${cand.map((m) => `<option value="${esc(lab(m))}">`).join('')}</datalist></div>
+      <div id="pr-sel"></div>
+      <div class="form-row"><label>Remark</label><textarea id="pr-r" rows="2" maxlength="300"></textarea></div>
       <label class="hint"><input type="checkbox" id="pr-dl" checked> Also download the list for Accounts</label><br><button class="btn-primary" type="submit" style="margin-top:8px">Send to Accounts</button></form>`);
+    const draw = () => {
+      document.getElementById('pr-sel').innerHTML = chosen.length ? chosen.map((m) => `<div class="card" style="padding:8px 10px;margin-bottom:6px;display:flex;gap:8px;align-items:center;justify-content:space-between"><div><b class="mono">${esc(m.sn)}</b> <span class="hint">${esc(m.bank_name || '')}</span><div class="hint">TID ${esc(m.tid || '—')} · MID ${esc(m.mid || '—')} · ${esc(m.rider_name || 'in stock')} ${esc(m.employee_id || '')}</div></div><button class="btn small outline" type="button" data-rm="${m.id}">✕</button></div>`).join('') : '<p class="hint">No machine added yet.</p>';
+    };
+    const add = () => {
+      const f = document.getElementById('pr-find'), t = f.value.trim(); if (!t) return;
+      const q = norm(t);
+      const hit = cand.find((m) => lab(m) === t) || cand.filter((m) => [m.tid, m.mid, m.sn].some((x) => norm(x) === q))[0];
+      if (!hit) { toast('No machine with that TID, MID or S/N (only issued or in-stock machines can be sent)'); return; }
+      if (!chosen.some((m) => m.id === hit.id)) chosen.push(hit);
+      f.value = ''; draw();
+    };
+    draw();
+    document.getElementById('pr-add').onclick = add;
+    document.getElementById('pr-find').onchange = () => { const t = document.getElementById('pr-find').value.trim(); if (cand.some((m) => lab(m) === t)) add(); };
+    document.getElementById('pr-sel').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { chosen = chosen.filter((m) => m.id !== b.dataset.rm); draw(); } };
     document.getElementById('pr-form').onsubmit = async (ev) => {
       ev.preventDefault(); const f = document.getElementById('pr-f').value, rem = document.getElementById('pr-r').value;
-      const n = await rpc('fh_pos_send_repair', { p_ids: ms.map((m) => m.id), p_fault: f, p_remark: rem }, null); if (n === false) return;
-      if (document.getElementById('pr-dl').checked) { const fn = (d.faults.find((x) => x.id === f) || {}).name || ''; await xl(ms.map((m) => ({ 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', Bank: m.bank_name || '', Rider: m.rider_name || '', 'Employee ID': m.employee_id || '', Fault: fn, Remark: rem, 'Sent on': new Date().toLocaleDateString('en-GB') })), 'For Accounts', 'pos-for-accounts.xlsx'); }
+      if (!chosen.length) { toast('Add at least one machine'); return; }
+      const n = await rpc('fh_pos_send_repair', { p_ids: chosen.map((m) => m.id), p_fault: f, p_remark: rem }, null); if (n === false) return;
+      if (document.getElementById('pr-dl').checked) { const fn = (d.faults.find((x) => x.id === f) || {}).name || ''; await xl(chosen.map((m) => ({ 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', Bank: m.bank_name || '', Rider: m.rider_name || '', 'Employee ID': m.employee_id || '', Fault: fn, Remark: rem, 'Sent on': new Date().toLocaleDateString('en-GB') })), 'For Accounts', 'pos-for-accounts.xlsx'); }
       closeModal(); toast(n + ' machine(s) sent to Accounts'); P.sel.clear(); reload();
+    };
+  }
+
+  // ---- take back: a reason is required; a faulty machine can go straight to Accounts; a replacement can be issued
+  function takeBackModal(m) {
+    const d = P.data;
+    openModal(`<h2>Take back POS</h2><p class="hint"><b class="mono">${esc(m.sn)}</b> · ${esc(m.bank_name || '')} · TID ${esc(m.tid || '—')} · from ${esc(m.rider_name || '—')} ${esc(m.employee_id || '')}</p><form id="tb-form">
+      <div class="form-row"><label>Reason *</label><select id="tb-reason" required><option value="">— choose —</option><option value="resigned">Resigned / terminated / left</option><option value="fault">Machine fault (send to Accounts for repair)</option><option value="replace">Replacement needed</option><option value="other">Other</option></select></div>
+      <div class="form-row" id="tb-faultrow" style="display:none"><label>Fault *</label><select id="tb-fault">${faultOpts(d)}</select></div>
+      <div class="form-row"><label>Remark</label><textarea id="tb-rem" rows="2" maxlength="300"></textarea></div>
+      <div class="form-row" id="tb-reprow"><label>After taking it back</label>
+        <label style="display:block"><input type="radio" name="tb-rp" value="no" checked> Take back without replacement</label>
+        <label style="display:block"><input type="radio" name="tb-rp" value="yes"> Take back and issue a replacement to the same rider</label></div>
+      <button class="btn-primary" type="submit">Take back</button></form>`);
+    const rs = document.getElementById('tb-reason');
+    rs.onchange = () => {
+      document.getElementById('tb-faultrow').style.display = rs.value === 'fault' ? '' : 'none';
+      document.getElementById('tb-reprow').style.display = rs.value === 'resigned' || !m.rider_id ? 'none' : '';
+      if (rs.value === 'replace') document.querySelector('input[name=tb-rp][value=yes]').checked = true;
+    };
+    document.getElementById('tb-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const reason = rs.value, fault = reason === 'fault' ? document.getElementById('tb-fault').value : null;
+      if (reason === 'fault' && !fault) { toast('Choose the fault'); return; }
+      const label = rs.options[rs.selectedIndex].text, rem = document.getElementById('tb-rem').value;
+      const wantRep = document.querySelector('input[name=tb-rp]:checked').value === 'yes' && reason !== 'resigned' && m.rider_id;
+      const r = await sb.rpc('fh_pos_take_back_v2', { p_machine: m.id, p_reason: label, p_remark: rem, p_fault: fault });
+      if (r.error) { toast(/function|schema/i.test(r.error.message) ? 'Please run migration_59.sql first' : 'Could not save: ' + r.error.message); return; }
+      closeModal(); toast(fault ? 'Taken back and sent to Accounts' : 'Taken back into stock');
+      await reload();
+      if (wantRep) issueNewModal(r.data && r.data.rider_id || m.rider_id, r.data && r.data.repair_id || null);
     };
   }
 
@@ -316,7 +386,7 @@
     const dt = new Date(s); return isNaN(dt) ? '' : dt.toISOString().slice(0, 10);
   }
   function uploadModal() {
-    openModal(`<h2>Upload POS Excel</h2><p class="hint">Columns: Rider Name, Employee ID, Nexus ID, Region Name, Sub Region/City Name, S/N, MID, TID, Bank Name, Android / Non Android, Issued Date, Charger Given. <b>S/N is the key</b>: new S/N are added, existing ones are updated. Empty cells never erase saved data. Rows without a rider are added as stock.</p>
+    openModal(`<h2>Upload POS Excel</h2><p class="hint">Columns: Rider Name, Employee ID, Nexus ID, Region Name, Sub Region/City Name, S/N, MID, TID, Bank Name, Android / Non Android, Issued Date, Charger Given. <b>S/N is the key</b>: new S/N are added, existing ones are updated. Empty cells never erase saved data. Rows without a rider are added as stock. When an Employee ID is on the roster, the rider's <b>name, region and sub-region are taken from the roster</b>. Riders of Lahore / Kasur / Raiwind who are not on the roster are skipped.</p>
       <input type="file" id="pu-file" accept=".xlsx,.xls,.csv"><div id="pu-prev" style="margin-top:10px"></div>`);
     let rows = [];
     document.getElementById('pu-file').onchange = async (ev) => {
