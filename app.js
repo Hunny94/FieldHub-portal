@@ -6738,6 +6738,7 @@ const GRANTABLE_PERMISSIONS = [
   ['tool_bulk_update', 'Bulk-update Tool records'],
   ['roster_bulk_add', 'Roster — Bulk Add'],
   ['roster_bulk_update', 'Roster — Bulk Update'],
+  ['roster_ai_apply', 'Roster — apply the AI day-off plan'],
   ['team_bulk_add', 'Team — Bulk Add Riders'],
   ['team_bulk_approve', 'Team — Bulk Approve pending members'],
   ['hotspot_bulk_add', 'Hotspots — Bulk Add'],
@@ -11434,6 +11435,7 @@ async function renderRosterMain(){
     <div style="display:flex; gap:8px; margin-bottom:10px;">
       <button class="btn small outline" id="roster-download-filtered-btn">Download Filtered</button>
       <button class="btn small outline" id="roster-download-all-btn">Download All</button>
+      ${state.profile.role !== 'rider' ? '<button class="btn small" id="roster-ai-btn" type="button">🧠 AI analysis &amp; day-off plan</button>' : ''}
     </div>
     <div id="roster-list">${renderRows(entries)}</div>`;
 
@@ -11449,6 +11451,7 @@ async function renderRosterMain(){
   document.getElementById('roster-download-all-btn').onclick = () => {
     downloadCSV(`roster-all-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(entries)));
   };
+  { const ai = document.getElementById('roster-ai-btn'); if (ai) ai.onclick = () => { const f = ROSTER_F || {}; const bits = [f.region && 'region filter', f.sub && 'sub-region filter', f.shift && 'shift filter', f.desig && 'designation filter'].filter(Boolean); if (typeof fhRosterAI !== 'function'){ toast('Roster AI file (roster-ai.js) is missing'); return; } fhRosterAI(currentFiltered && currentFiltered.length ? currentFiltered : entries, bits.length ? 'Roster as filtered (' + bits.join(', ') + ')' : 'Whole roster you can see'); }; }
   document.getElementById('roster-download-filtered-btn').onclick = () => {
     downloadCSV(`roster-filtered-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(currentFiltered)));
   };
