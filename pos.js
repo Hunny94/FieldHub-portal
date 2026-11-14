@@ -131,8 +131,8 @@
   const machineRow = (m, d) => `<tr><td><input type="checkbox" data-sel="${m.id}" ${P.sel.has(m.id) ? 'checked' : ''}></td>
     <td>${esc(m.rider_name || '—')}${m.employee_id && !m.rider_id ? ' <span title="No portal login matches this Employee ID" style="color:#b9770e">⚠</span>' : ''}</td><td class="mono">${esc(m.employee_id || '')}</td><td class="mono">${esc(m.nexus_id || '')}</td>
     <td>${esc(d.regName.get(regionOf(m, d)) || '')}</td><td>${esc(d.subName.get(subOf(m, d)) || '')}</td><td class="mono">${esc(m.sn)}</td><td class="mono">${esc(m.mid || '')}</td><td class="mono">${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${DEV[m.device_type] || '—'}</td><td>${fd(m.issued_date)}</td>
-    <td>${m.status === 'issued' || m.status === 'in_repair' ? (m.charger_given ? '<span class="badge active">Given</span>' : '<span class="badge open">Pending</span>') : '—'}</td><td>${badge(m.status)}</td>
-    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'issued' || m.status === 'in_stock' ? ` <button class="btn small outline" data-rep1="${m.id}">Send to Accounts</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''} <button class="btn small outline" data-del="${m.id}" style="color:#c0392b;border-color:#c0392b">Delete</button></td></tr>`;
+    <td>${m.status === 'issued' || m.status === 'in_repair' ? (m.charger_given ? '<span class="badge active">Given</span>' : '<span class="badge open">Pending</span>') : m.status === 'in_stock' && m.charger_in_stock ? '<span class="badge active" title="Charger came back with the machine">With machine</span>' : '—'}</td><td>${badge(m.status)}</td>
+    <td style="white-space:nowrap"><button class="btn small outline" data-edit="${m.id}">Edit</button> <button class="btn small outline" data-hist="${m.id}">History</button>${m.status === 'in_stock' ? ` <button class="btn small" data-issue="${m.id}">Issue</button>` : ''}${m.status === 'retired' ? ` <button class="btn small outline" data-unret="${m.id}">Back to stock</button>` : ''}${m.status === 'issued' || m.status === 'in_stock' ? ` <button class="btn small outline" data-rep1="${m.id}">Send to Accounts</button>` : ''}${m.status === 'issued' || m.status === 'retired' ? ` <button class="btn small outline" data-back="${m.id}">Take back</button>` : ''} <button class="btn small outline" data-del="${m.id}" style="color:#c0392b;border-color:#c0392b">Delete</button></td></tr>`;
   function filtered(d) {
     const f = P.f, q = norm(f.q);
     return d.machines.filter((m) => (!f.status || m.status === f.status) && (!f.region || regionOf(m, d) === f.region) && (!f.bank || norm(m.bank_name) === norm(f.bank)) &&
@@ -142,14 +142,14 @@
   function pageStock(host) {
     const d = P.data, f = P.f;
     const banks = [...new Set(d.machines.map((m) => (m.bank_name || '').trim()).filter(Boolean))].sort();
+    const cnt = (k, v) => v ? d.machines.filter((m) => k === 'status' ? m.status === v : k === 'device' ? (v === 'none' ? !m.device_type : m.device_type === v) : ((m.status === 'issued' || m.status === 'in_repair') && (v === 'pending' ? !m.charger_given : m.charger_given))).length : d.machines.length;
+    const chipRow = (k, label, opts) => `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span class="hint" style="min-width:58px;font-weight:600">${label}</span>${opts.map(([v, l]) => `<button type="button" data-chip="${k}:${v}" class="btn small ${(f[k] || '') === v ? '' : 'outline'}" style="border-radius:999px;padding:5px 12px">${l} <span style="opacity:.7;font-size:11px">${cnt(k, v)}</span></button>`).join('')}</div>`;
     host.innerHTML = `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
       <input id="ps-q" class="input" placeholder="Search S/N, MID, TID, rider, ID…" value="${esc(f.q)}" style="max-width:240px">
-      <select id="ps-st" class="input" style="max-width:130px"><option value="">All status</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${v[0]}</option>`).join('')}</select>
       <select id="ps-rg" class="input" style="max-width:150px"><option value="">All regions</option>${d.regs.map((r) => `<option value="${r.id}" ${f.region === r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
       <select id="ps-bk" class="input" style="max-width:140px"><option value="">All banks</option>${banks.map((b) => `<option ${norm(f.bank) === norm(b) ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
-      <select id="ps-ch" class="input" style="max-width:150px"><option value="">Charger: all</option><option value="pending" ${f.charger === 'pending' ? 'selected' : ''}>Charger pending</option><option value="given" ${f.charger === 'given' ? 'selected' : ''}>Charger given</option></select>
-      <select id="ps-dv" class="input" style="max-width:150px"><option value="">Android / Non-Android</option><option value="android" ${f.device === 'android' ? 'selected' : ''}>Android</option><option value="non_android" ${f.device === 'non_android' ? 'selected' : ''}>Non-Android</option><option value="none" ${f.device === 'none' ? 'selected' : ''}>Not set</option></select>
       <label class="hint"><input type="checkbox" id="ps-lk" ${f.link ? 'checked' : ''}> Rider has no login yet</label></div>
+      <div id="ps-chips" style="margin-bottom:10px">${chipRow('status', 'Status', [['', 'All'], ...Object.entries(STATUS).map(([k, v]) => [k, v[0]])])}${chipRow('device', 'Device', [['', 'All'], ['android', 'Android'], ['non_android', 'Non-Android'], ['none', 'Not set']])}${chipRow('charger', 'Charger', [['', 'All'], ['pending', 'Pending'], ['given', 'Given']])}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn small" id="ps-issue" type="button">💳 Issue POS</button><button class="btn small outline" id="ps-add" type="button">Add to stock</button><button class="btn small outline" id="ps-up" type="button">⬆ Upload Excel</button><button class="btn small outline" id="ps-tpl" type="button">Template</button><button class="btn small outline" id="ps-dl" type="button">⬇ Download</button><button class="btn small outline" id="ps-link" type="button" title="Match Employee IDs to rider logins">Link riders</button>
         <span style="flex:1"></span><span class="hint" id="ps-selinfo"></span>
         <button class="btn small outline" data-bulk="chg1" type="button">Charger given</button><button class="btn small outline" data-bulk="chg0" type="button">Charger pending</button><button class="btn small outline" data-bulk="rep" type="button">Send to Accounts…</button><button class="btn small outline" data-bulk="del" type="button" style="color:#c0392b;border-color:#c0392b">Delete selected</button></div>
@@ -161,7 +161,7 @@
     };
     const info = () => { host.querySelector('#ps-selinfo').innerHTML = P.sel.size ? P.sel.size + ' selected <button class="btn small outline" id="ps-clr" type="button">Clear</button>' : ''; };
     const bind = (id, k) => { const e = host.querySelector(id); e.onchange = e.oninput = () => { f[k] = e.type === 'checkbox' ? (e.checked ? '1' : '') : e.value; P.shown = 100; draw(); }; };
-    bind('#ps-q', 'q'); bind('#ps-st', 'status'); bind('#ps-rg', 'region'); bind('#ps-bk', 'bank'); bind('#ps-ch', 'charger'); bind('#ps-dv', 'device'); bind('#ps-lk', 'link');
+    bind('#ps-q', 'q'); bind('#ps-rg', 'region'); bind('#ps-bk', 'bank'); bind('#ps-lk', 'link');
     draw();
     host.onclick = async (e) => {
       const t = e.target;
@@ -170,6 +170,7 @@
       if (t.id === 'ps-clr') { P.sel.clear(); draw(); return; }
       if (t.dataset.sel) { t.checked ? P.sel.add(t.dataset.sel) : P.sel.delete(t.dataset.sel); info(); return; }
       const b = t.closest('button'); if (!b) return;
+      if (b.dataset.chip) { const [k, v] = b.dataset.chip.split(':'); f[k] = v; P.shown = 100; host.querySelector('#ps-chips').innerHTML = [['status', 'Status', [['', 'All'], ...Object.entries(STATUS).map(([k2, v2]) => [k2, v2[0]])]], ['device', 'Device', [['', 'All'], ['android', 'Android'], ['non_android', 'Non-Android'], ['none', 'Not set']]], ['charger', 'Charger', [['', 'All'], ['pending', 'Pending'], ['given', 'Given']]]].map((x) => chipRow(...x)).join(''); draw(); return; }
       if (b.id === 'ps-issue') return issueNewModal();
       if (b.id === 'ps-add') return editModal(null);
       if (b.dataset.del) { const m = d.mById.get(b.dataset.del); if (!confirm('Permanently delete S/N ' + m.sn + (m.rider_name ? ' (issued to ' + m.rider_name + ')' : '') + '?\n\nIts history and repair records are deleted too. This cannot be undone.')) return; if (await rpc('fh_pos_delete', { p_ids: [m.id] }, 'Deleted')) { P.sel.delete(m.id); reload(); } return; }
@@ -178,6 +179,7 @@
       if (b.dataset.issue) return issueModal({ machineId: b.dataset.issue });
       if (b.dataset.back) return takeBackModal(d.mById.get(b.dataset.back));
       if (b.dataset.rep1) return repairModal([b.dataset.rep1]);
+      if (b.dataset.unret) { if (confirm('Put this retired machine back in stock?') && await rpc('fh_pos_unretire', { p_ids: [b.dataset.unret] }, 'Back in stock')) reload(); return; }
       if (b.id === 'ps-up') return uploadModal();
       if (b.id === 'ps-tpl') return xl([{ 'Rider Name': 'Ali Khan', 'Employee ID': '12345', 'Nexus ID': 'NX-001', 'Region Name': 'Lahore', 'Sub Region/City Name': 'Lahore', 'S/N': 'SN123456', MID: '000111222', TID: '12345678', 'Bank Name': 'HBL', 'Android / Non Android': 'Android', 'Issued Date': '01-11-2026', 'Charger Given': 'Yes' }, { 'Rider Name': '', 'Employee ID': '', 'Nexus ID': '', 'Region Name': '', 'Sub Region/City Name': '', 'S/N': 'SN123457', MID: '', TID: '', 'Bank Name': 'Meezan', 'Android / Non Android': 'Non-Android', 'Issued Date': '', 'Charger Given': '' }], 'POS', 'pos-template.xlsx');
       if (b.id === 'ps-dl') return xl(filtered(d).map((m) => ({ 'Rider Name': m.rider_name || '', 'Employee ID': m.employee_id || '', 'Nexus ID': m.nexus_id || '', 'Region Name': d.regName.get(regionOf(m, d)) || '', 'Sub Region/City Name': d.subName.get(subOf(m, d)) || '', 'S/N': m.sn, MID: m.mid || '', TID: m.tid || '', 'Bank Name': m.bank_name || '', 'Android / Non Android': DEV[m.device_type] || '', 'Issued Date': m.issued_date || '', 'Charger Given': m.charger_given ? 'Yes' : 'No', Status: (STATUS[m.status] || [m.status])[0] })), 'POS', 'pos-machines.xlsx');
@@ -352,6 +354,9 @@
       <div class="form-row"><label>Reason *</label><select id="tb-reason" required><option value="">— choose —</option><option value="resigned">Resigned / terminated / left</option><option value="fault">Machine fault (send to Accounts for repair)</option><option value="replace">Replacement needed</option><option value="other">Other</option></select></div>
       <div class="form-row" id="tb-faultrow" style="display:none"><label>Fault *</label><select id="tb-fault">${faultOpts(d)}</select></div>
       <div class="form-row"><label>Remark</label><textarea id="tb-rem" rows="2" maxlength="300"></textarea></div>
+      <div class="form-row"><label>Charger *</label>
+        <label style="display:block"><input type="radio" name="tb-ch" value="yes"> With charger</label>
+        <label style="display:block"><input type="radio" name="tb-ch" value="no"> Without charger</label></div>
       <div class="form-row" id="tb-reprow"><label>After taking it back</label>
         <label style="display:block"><input type="radio" name="tb-rp" value="no" checked> Take back without replacement</label>
         <label style="display:block"><input type="radio" name="tb-rp" value="yes"> Take back and issue a replacement to the same rider</label></div>
@@ -366,10 +371,11 @@
       ev.preventDefault();
       const reason = rs.value, fault = reason === 'fault' ? document.getElementById('tb-fault').value : null;
       if (reason === 'fault' && !fault) { toast('Choose the fault'); return; }
+      const chk = document.querySelector('input[name=tb-ch]:checked'); if (!chk) { toast('Say whether the charger came back'); return; }
       const label = rs.options[rs.selectedIndex].text, rem = document.getElementById('tb-rem').value;
       const wantRep = document.querySelector('input[name=tb-rp]:checked').value === 'yes' && reason !== 'resigned' && m.rider_id;
-      const r = await sb.rpc('fh_pos_take_back_v2', { p_machine: m.id, p_reason: label, p_remark: rem, p_fault: fault });
-      if (r.error) { toast(/function|schema/i.test(r.error.message) ? 'Please run migration_59.sql first' : 'Could not save: ' + r.error.message); return; }
+      const r = await sb.rpc('fh_pos_take_back_v2', { p_machine: m.id, p_reason: label, p_remark: rem, p_fault: fault, p_charger: chk.value === 'yes' });
+      if (r.error) { toast(/function|schema/i.test(r.error.message) ? 'Please run migration_60.sql first' : 'Could not save: ' + r.error.message); return; }
       closeModal(); toast(fault ? 'Taken back and sent to Accounts' : 'Taken back into stock');
       await reload();
       if (wantRep) issueNewModal(r.data && r.data.rider_id || m.rider_id, r.data && r.data.repair_id || null);
@@ -426,14 +432,14 @@
         const m = mach(r), rep = r.replacement_machine_id ? d.mById.get(r.replacement_machine_id) : null;
         return `<tr><td class="mono">${esc(m.sn || '—')}</td><td class="mono">${esc(m.mid || '')} / ${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${esc(r.rider_name || '—')} <span class="mono">${esc(r.rider_employee_id || '')}</span></td><td>${esc(r.fault_name || '—')}${r.remark ? `<div class="hint">${esc(r.remark)}</div>` : ''}</td>
           <td>${fd(T === 'reported' ? r.reported_at : r.sent_date)}</td>${T === 'closed' ? `<td>${esc(REPAIR_STATUS[r.status])}<div class="hint">${fd(r.returned_date)} ${esc(r.outcome_remark || '')}</div></td><td class="mono">${rep ? esc(rep.sn) : '—'}</td>` : ''}
-          <td style="white-space:nowrap">${T === 'reported' ? `<button class="btn small" data-send="${r.machine_id}">Send to Accounts</button> <button class="btn small outline" data-res="${r.id}:cancelled">Dismiss</button>` : ''}${T === 'with_accounts' ? `<button class="btn small" data-res="${r.id}:repaired">Repaired</button> <button class="btn small outline" data-res="${r.id}:irreparable">Cannot repair</button> ${!r.replacement_machine_id ? `<button class="btn small outline" data-repl="${r.id}">Issue replacement</button>` : '<span class="badge active">Replaced</span>'}` : ''}${T === 'closed' && r.status === 'irreparable' && !r.replacement_machine_id && m.rider_id ? `<button class="btn small" data-repl="${r.id}">Issue replacement</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-state"><p>Nothing here.</p></div>'}</div>`;
+          <td style="white-space:nowrap">${T === 'reported' ? `<button class="btn small" data-send="${r.machine_id}">Send to Accounts</button> <button class="btn small outline" data-res="${r.id}:cancelled">Dismiss</button>` : ''}${T === 'with_accounts' ? `<button class="btn small" data-res="${r.id}:repaired">Received back → stock</button> <button class="btn small outline" data-res="${r.id}:irreparable">Will not be received (retire)</button> ${!r.replacement_machine_id ? `<button class="btn small outline" data-repl="${r.id}">Issue replacement</button>` : '<span class="badge active">Replaced</span>'}` : ''}${T === 'closed' && r.status === 'irreparable' && !r.replacement_machine_id && m.rider_id ? `<button class="btn small" data-repl="${r.id}">Issue replacement</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-state"><p>Nothing here.</p></div>'}</div>`;
     host.onclick = async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.tab) { P.tab = b.dataset.tab; return pageRepairs(host); }
       if (b.dataset.act === 'faults') { settingsTab = 'posfaults'; return navigateTo('settings'); }
       if (b.dataset.send) return repairModal([b.dataset.send]);
       if (b.dataset.repl) return issueModal({ repairId: b.dataset.repl });
-      if (b.dataset.res) { const [id, out] = b.dataset.res.split(':'); const rem = prompt(out === 'repaired' ? 'Machine repaired and received back. Remark (optional):' : out === 'irreparable' ? 'Cannot be repaired. Remark (optional):' : 'Dismiss this report? Remark (optional):', ''); if (rem === null) return; if (await rpc('fh_pos_repair_result', { p_repair: id, p_outcome: out, p_remark: rem }, 'Saved')) reload(); }
+      if (b.dataset.res) { const [id, out] = b.dataset.res.split(':'); const rem = prompt(out === 'repaired' ? 'Machine repaired and received back from Accounts: it goes back into stock, ready to issue to a rider. Remark (optional):' : out === 'irreparable' ? 'Machine will NOT be received back (cannot be repaired / lost). It is marked Retired. Remark (optional):' : 'Dismiss this report? Remark (optional):', ''); if (rem === null) return; if (await rpc('fh_pos_repair_result', { p_repair: id, p_outcome: out, p_remark: rem }, 'Saved')) reload(); }
     };
   }
 
