@@ -2516,6 +2516,7 @@ async function renderDashboard(){
   const expiringDueRows = (expiring.data||[]).filter(i => i.status !== 'closed' && new Date(i.expiry_date) <= soonCutoff);
   const expiringSoon = new Set(expiringDueRows.map(i => i.group_id || i.id)).size;
 
+  setTimeout(fhStartLiveClock, 0);
   let posTile = ''; try { if (typeof fhPosTileHtml === 'function') posTile = await fhPosTileHtml(); } catch (_e) {}
   main.innerHTML = `
     ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden; cursor:pointer;" id="dashboard-banner-click">
@@ -2529,7 +2530,7 @@ async function renderDashboard(){
         <h2>${escapeHtml(wTitle ? wTitle.replace(/\{name\}/gi, state.profile.full_name) : 'Welcome, ' + state.profile.full_name)}</h2>
         <p>${escapeHtml(wText ? wText.replace(/\{name\}/gi, state.profile.full_name) : 'Use the menu on the left to post circulars, assign tasks, review rider requests, and track upcoming expiries.')}</p>
       </div>
-      <div class="dt"><b>${new Date().toLocaleDateString('en-GB', {weekday:'long'})}</b>${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div>
+      <div class="dt" id="fh-live-dt"><b id="fh-lt-day"></b><span id="fh-lt-date"></span><div id="fh-lt-time" style="font-size:22px;font-weight:700;letter-spacing:.5px;margin-top:4px;font-variant-numeric:tabular-nums"></div><div id="fh-lt-zone" style="font-size:11px;opacity:.8"></div></div>
     </div>
     ${posTile}
     <div class="grid grid-4 fh-stagger">
@@ -3465,7 +3466,10 @@ async function changeRequestStatus(requestId, newStatus){
     const { error } = await sb.from('requests').update(payload).eq('id', requestId);
     if (error){ toast('Could not update: ' + error.message + (newStatus === 'cancelled' ? ' — please run migration_44.sql in Supabase.' : '')); return; }
     let toolMsg = '';
-    if (toolOn && reqRow) {
+    let toolDup = null;
+    if (toolOn && reqRow) toolDup = await fhToolDup(reqRow.rider_id, document.getElementById('rs-tool').value, document.getElementById('rs-tdate').value, document.getElementById('rs-serial').value);
+    if (toolOn && reqRow && toolDup) toolMsg = ' ' + fhToolDupMsg(toolDup);
+    else if (toolOn && reqRow) {
       const ins = await sb.from('tool_issuances').insert({ rider_id: reqRow.rider_id, region_id: reqRow.region_id || null, tool_type_id: document.getElementById('rs-tool').value, issued_date: document.getElementById('rs-tdate').value, serial_number: (document.getElementById('rs-serial').value || '').trim() || null, recorded_by: state.user.id, request_id: requestId });
       toolMsg = ins.error ? ' The tool could not be recorded: ' + ins.error.message + (/request_id/.test(ins.error.message) ? ' — please run migration_44.sql in Supabase.' : '') : ' Tool recorded in Tool Issuance.';
     }
@@ -3613,6 +3617,7 @@ async function openNewRequestModal(){
     <form id="request-form">
       <div class="form-row"><label>Category</label><select id="r-category">${options}</select></div>
       <div id="r-blocked" role="alert" style="display:none;margin:0 0 12px;padding:10px 12px;border-radius:9px;background:#fde7e1;color:#a63d1f;font-weight:600;line-height:1.45;border:1px solid #f0c0b2"></div>
+      <div id="r-dup" role="alert" style="display:none;margin:0 0 12px;padding:10px 12px;border-radius:9px;background:#fff4dc;color:#8a5a00;font-weight:600;line-height:1.45;border:1px solid #f0d9a0"></div>
       <div class="form-row"><label>Description</label><textarea id="r-desc" required placeholder="Describe the issue…"></textarea></div>
       <button class="btn-primary" type="submit" id="r-submit">Submit request</button>
     </form>
@@ -3623,12 +3628,22 @@ async function openNewRequestModal(){
     box.style.display = b ? 'block' : 'none'; box.textContent = b ? FH_REQ_BLOCKED_MSG : '';
     document.getElementById('r-submit').disabled = b;
   };
-  document.getElementById('r-category').onchange = showBlocked; showBlocked();
+  let dupReq = null;
+  const checkDup = async () => {
+    const box = document.getElementById('r-dup'); if (!box) return;
+    dupReq = isBlocked() ? null : await fhReqDup(state.user.id, document.getElementById('r-category').value);
+    if (!document.getElementById('r-dup')) return;
+    box.style.display = dupReq ? 'block' : 'none';
+    box.textContent = dupReq ? 'You already have a "' + (dupReq.category || 'same') + '" request, added on ' + formatDate(dupReq.created_at) + '. Its status now: ' + (FH_REQ_STATUS_TXT[dupReq.status] || dupReq.status) + '. Please wait for it to be handled, or open it from the list to add a comment, instead of sending it again.' : '';
+    if (dupReq) document.getElementById('r-submit').disabled = true;
+  };
+  document.getElementById('r-category').onchange = () => { showBlocked(); checkDup(); }; showBlocked(); checkDup();
   document.getElementById('request-form').onsubmit = async (e) => {
     e.preventDefault();
     if (isBlocked()){ showBlocked(); toast(FH_REQ_BLOCKED_MSG); return; }
     const categoryId = document.getElementById('r-category').value;
     const category = state.categories.find(c=>c.id===categoryId);
+    { const dp = await fhReqDup(state.user.id, categoryId); if (dp){ dupReq = dp; await checkDup(); toast('You already have this request (' + formatDate(dp.created_at) + ', ' + (FH_REQ_STATUS_TXT[dp.status] || dp.status) + ')'); return; } }
     const assignedPocId = await fhPickHandler(state.user.id, categoryId);
 
     const { data: inserted, error } = await sb.from('requests').insert({
@@ -7482,6 +7497,22 @@ function openToolTypeModal(row){
   };
 }
 
+// ---- duplicate checks (v80)
+const FH_REQ_STATUS_TXT = { open:'Open (waiting)', in_progress:'In progress', resolved:'Resolved (waiting for your confirmation)' };
+async function fhReqDup(riderId, categoryId){
+  if (!riderId || !categoryId) return null;
+  const { data } = await sb.from('requests').select('id, status, created_at, category').eq('rider_id', riderId).eq('category_id', categoryId)
+    .is('deleted_at', null).in('status', ['open','in_progress','resolved']).order('created_at', { ascending:false }).limit(1);
+  return (data && data[0]) || null;
+}
+async function fhToolDup(riderId, toolTypeId, date, serial){
+  if (!riderId || !toolTypeId) return null;
+  const { data } = await sb.from('tool_issuances').select('id, issued_date, serial_number').eq('rider_id', riderId).eq('tool_type_id', toolTypeId).order('issued_date', { ascending:false }).limit(50);
+  const sn = (serial||'').trim().toLowerCase();
+  return (data||[]).find(x => (date && x.issued_date === date) || (sn && (x.serial_number||'').trim().toLowerCase() === sn)) || null;
+}
+function fhToolDupMsg(x, same){ return 'Already issued: this tool was recorded for this rider on ' + formatDate(x.issued_date) + (x.serial_number ? ' (serial ' + x.serial_number + ')' : '') + '. Not added again.'; }
+
 function openBulkToolIssuanceModal(){
   openModal(`
     <h2>Bulk issue tool</h2>
@@ -7517,6 +7548,7 @@ EMP1003"></textarea></div>
       const rider = state.profilesInScope.find(p => (p.employee_id||'').toLowerCase() === (empId||'').toLowerCase());
       if (!rider){ rows.push({ empId, ok:false, msg:'No rider found with this Employee ID (or outside your access)' }); continue; }
       if (!fhLive(rider)){ rows.push({ empId, ok:false, msg:'This person is disabled / removed — not issued' }); continue; }
+      { const dp = await fhToolDup(rider.id, toolTypeId, issuedDate, serial); if (dp){ rows.push({ empId, ok:false, msg: fhToolDupMsg(dp) }); continue; } }
       const { error } = await sb.from('tool_issuances').insert({
         rider_id: rider.id, region_id: rider.region_id, tool_type_id: toolTypeId,
         issued_date: issuedDate, recorded_by: state.user.id, serial_number: serial
@@ -7684,6 +7716,7 @@ async function openNewToolIssuanceModal(){
     if (!confirm('Confirm this tool issuance?')) return;
     const riderId = riderSelect.value;
     const rider = state.profilesInScope.find(p=>p.id===riderId);
+    { const dp = await fhToolDup(riderId, toolSelect.value, document.getElementById('ti-date').value, document.getElementById('ti-serial').value); if (dp){ toast(fhToolDupMsg(dp)); return; } }
     const { error } = await sb.from('tool_issuances').insert({
       rider_id: riderId, region_id: rider?.region_id,
       tool_type_id: toolSelect.value,
@@ -11390,6 +11423,7 @@ async function renderRosterMain(){
     </details>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
       <select id="rf-region"><option value="">All Regions</option>${state.regions.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
+      <select id="rf-sub"><option value="">All Sub-regions</option></select>
       <select id="rf-designation"><option value="">All Designations</option>${desigLabels.map(l=>`<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')}</select>
       <select id="rf-shift"><option value="">All Shifts</option>${shiftNames.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}</select>
       <select id="rf-dayoff"><option value="">All Day-Offs</option>${dayOffs.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}</select>
@@ -11419,17 +11453,29 @@ async function renderRosterMain(){
     downloadCSV(`roster-filtered-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(currentFiltered)));
   };
 
+  // sub-region filter: only the sub-regions that exist on the roster, narrowed to the chosen region
+  const fillSub = (keep) => {
+    const rg = document.getElementById('rf-region').value, seen = new Map();
+    (entries||[]).forEach(e => { if (e.sub_region_id && e.sub_regions?.name && (!rg || e.region_id === rg)) seen.set(e.sub_region_id, e.sub_regions.name); });
+    const sel = document.getElementById('rf-sub');
+    sel.innerHTML = '<option value="">All Sub-regions</option>' + [...seen.entries()].sort((a,b)=>a[1].localeCompare(b[1])).map(([id,n]) => `<option value="${id}">${escapeHtml(n)}</option>`).join('');
+    if (keep && seen.has(keep)) sel.value = keep;
+  };
+  fillSub('');
+  document.getElementById('rf-region').addEventListener('change', () => fillSub(''));
   const applyFilters = () => {
     const region = document.getElementById('rf-region').value;
+    const sub = document.getElementById('rf-sub').value;
     const desig = document.getElementById('rf-designation').value;
     const shift = document.getElementById('rf-shift').value;
     const dayOff = document.getElementById('rf-dayoff').value;
     const status = document.getElementById('rf-status').value;
     const reason = document.getElementById('rf-reason')?.value || '';
     const q = document.getElementById('rf-search').value.toLowerCase();
-    ROSTER_F = { region, desig, shift, dayOff, status, reason, q: document.getElementById('rf-search').value };
+    ROSTER_F = { region, sub, desig, shift, dayOff, status, reason, q: document.getElementById('rf-search').value };
     const filtered = entries.filter(e =>
       (!region || e.region_id === region) &&
+      (!sub || e.sub_region_id === sub) &&
       (!desig || entryDesig(e) === desig) &&
       (!shift || e.shift_types?.name === shift) &&
       (!dayOff || e.day_off === dayOff) &&
@@ -11444,7 +11490,7 @@ async function renderRosterMain(){
     document.getElementById('roster-list').innerHTML = renderRows(filtered);
     bindRowActions();
   };
-  ['rf-region','rf-designation','rf-shift','rf-dayoff','rf-status','rf-reason'].forEach(id => {
+  ['rf-region','rf-sub','rf-designation','rf-shift','rf-dayoff','rf-status','rf-reason'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.onchange = applyFilters;
   });
@@ -11452,8 +11498,8 @@ async function renderRosterMain(){
   // coming back from an edit: keep the same filters and the same place on the page
   if (ROSTER_F) {
     const f = ROSTER_F, set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
-    set('rf-region', f.region); set('rf-designation', f.desig); set('rf-shift', f.shift); set('rf-dayoff', f.dayOff); set('rf-status', f.status); set('rf-reason', f.reason); set('rf-search', f.q);
-    if (f.region || f.desig || f.shift || f.dayOff || f.status || f.reason || f.q) applyFilters();
+    set('rf-region', f.region); fillSub(f.sub); set('rf-sub', f.sub); set('rf-designation', f.desig); set('rf-shift', f.shift); set('rf-dayoff', f.dayOff); set('rf-status', f.status); set('rf-reason', f.reason); set('rf-search', f.q);
+    if (f.region || f.sub || f.desig || f.shift || f.dayOff || f.status || f.reason || f.q) applyFilters();
   }
   if (_rkeep && _rsc) { _rsc.scrollTop = _rkeep; setTimeout(() => { _rsc.scrollTop = _rkeep; }, 60); setTimeout(() => { _rsc.scrollTop = _rkeep; }, 300); }
 
@@ -12215,8 +12261,7 @@ window.addEventListener('keydown', (e) => {
   // Esc: close the topmost modal, or dismiss the newest toast if no modal is open
   if (e.key === 'Escape'){
     if (document.getElementById('active-modal')){ requestCloseModal(); return; }
-    const toasts = document.querySelectorAll('.toast');
-    if (toasts.length) toasts[toasts.length-1].remove();
+    if (FH_TQ.cur) fhToastClose();
     return;
   }
   // Ctrl/Cmd+K: focus the most relevant search box on the current page
@@ -12231,9 +12276,27 @@ window.addEventListener('keydown', (e) => {
     if (btn){ e.preventDefault(); btn.click(); }
   }
 });
-function toast(msg){
-  const m = String(msg || '');
-  // one stack for all pop-ups so several messages sit one above the other and never overlap
+// live date + time from the device's own clock and time zone (so it follows wherever the person is logged in from)
+let _fhClockT = null;
+function fhStartLiveClock(){
+  clearInterval(_fhClockT);
+  let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_e) {}
+  const place = tz ? tz.split('/').pop().replace(/_/g, ' ') : '';
+  const tick = () => {
+    const day = document.getElementById('fh-lt-day');
+    if (!day){ clearInterval(_fhClockT); return; }
+    const n = new Date();
+    day.textContent = n.toLocaleDateString('en-GB', { weekday:'long' }) + ' ';
+    document.getElementById('fh-lt-date').textContent = n.toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' });
+    document.getElementById('fh-lt-time').textContent = n.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true });
+    let off = ''; try { off = new Intl.DateTimeFormat('en-GB', { timeZoneName:'short' }).formatToParts(n).find(p => p.type === 'timeZoneName')?.value || ''; } catch (_e) {}
+    document.getElementById('fh-lt-zone').textContent = (place ? '📍 ' + place : '') + (off ? ' · ' + off : '');
+  };
+  tick(); _fhClockT = setInterval(tick, 1000);
+}
+// one notice at a time: the next one appears when this one is closed (✕) or after a few seconds; the portal stays usable meanwhile
+const FH_TQ = { q: [], cur: null, timer: null };
+function fhToastBox(){
   let box = document.getElementById('fh-toasts');
   if (!box){
     box = document.createElement('div'); box.id = 'fh-toasts';
@@ -12241,18 +12304,33 @@ function toast(msg){
     document.body.appendChild(box);
     if (window.matchMedia && window.matchMedia('(max-width:480px)').matches){ box.style.left = '12px'; box.style.right = '12px'; box.style.alignItems = 'stretch'; box.style.maxWidth = 'none'; }
   }
-  const same = Array.from(box.children).find(x => x.dataset.msg === m);
-  if (same){ same.remove(); }
-  while (box.children.length >= 4) box.firstChild.remove();
+  return box;
+}
+function fhToastMore(){ const el = FH_TQ.cur && FH_TQ.cur.querySelector('.tq-more'); if (el) el.textContent = FH_TQ.q.length ? '+' + FH_TQ.q.length + ' more' : ''; }
+function fhToastClose(){
+  clearTimeout(FH_TQ.timer);
+  if (FH_TQ.cur){ FH_TQ.cur.remove(); FH_TQ.cur = null; }
+  setTimeout(fhToastNext, 220);
+}
+function fhToastNext(){
+  if (FH_TQ.cur) return;
+  const m = FH_TQ.q.shift(); if (m === undefined) return;
+  const box = fhToastBox();
   const t = document.createElement('div');
   t.className = 'toast'; t.dataset.msg = m;
   t.style.cssText = 'position:relative!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;margin:0!important;pointer-events:auto;';
   const kind = /could not|can.?t |cannot|failed|error|denied|blocked|invalid|not allowed|unable|wrong|required|please run|must /i.test(m) ? 'err' : /saved|updated|added|created|submitted|deleted|enabled|disabled|applied|recorded|acknowledged|done|restored|sent|set to|assigned|issued|marked|cancelled|resolved|published|uploaded|copied|filled/i.test(m) ? 'ok' : '';
   if (kind) t.classList.add(kind);
-  t.innerHTML = `<span class="ti">${kind === 'err' ? '⚠️' : kind === 'ok' ? '✅' : 'ℹ️'}</span><span style="flex:1">${escapeHtml(m)}</span><button class="toast-close" aria-label="Dismiss">✕</button>`;
-  box.appendChild(t);
-  const timer = setTimeout(()=>t.remove(), 12000);
-  t.querySelector('.toast-close').onclick = () => { clearTimeout(timer); t.remove(); };
+  t.innerHTML = `<span class="ti">${kind === 'err' ? '⚠️' : kind === 'ok' ? '✅' : 'ℹ️'}</span><span style="flex:1">${escapeHtml(m)}</span><span class="tq-more hint" style="font-size:11px;white-space:nowrap;color:#B9C2E8"></span><button class="toast-close" aria-label="Dismiss">✕</button>`;
+  box.appendChild(t); FH_TQ.cur = t; fhToastMore();
+  FH_TQ.timer = setTimeout(fhToastClose, kind === 'err' ? 8000 : 5000);
+  t.querySelector('.toast-close').onclick = fhToastClose;
+}
+function toast(msg){
+  const m = String(msg || ''); if (!m) return;
+  if (FH_TQ.cur && FH_TQ.cur.dataset.msg === m){ clearTimeout(FH_TQ.timer); FH_TQ.timer = setTimeout(fhToastClose, 5000); return; }
+  if (!FH_TQ.q.includes(m)) FH_TQ.q.push(m);
+  if (FH_TQ.cur) fhToastMore(); else fhToastNext();
 }
 function emptyState(msg){
   return `<div class="empty-state">
