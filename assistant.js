@@ -68,6 +68,15 @@
     if (!t) return 'empty';
     if (/^(hi|hello|hey|salam|assalam|aoa|help|menu|start)\b|what can you do|kya kar sakte/.test(t)) return 'help';
     if (/\b(thanks|thank you|shukriya|jazak|ok thanks)\b/.test(t)) return 'thanks';
+    if (/\b(how are you|kaise ho|kya haal|who are you|your name|are you (a )?(bot|human|real)|good (morning|afternoon|evening|night)|bye|goodbye|khuda hafiz|joke)\b/.test(t)) return 'chat';
+    if (/\b\d{4,}\b/.test(t) && /(hot ?spot|where.*(work|duty|located|posted)|coordinates?|location|map|pin)/.test(t)) return 'hsid';
+    if (/(what('?s| is) (the )?(time|date|day)|today'?s date|time (now|is it)|aaj (kya|ki)|\bdate today\b)/.test(t)) return 'clock';
+    if (/top performers?|best performers?|star (rider|performer)/.test(t)) return 'toppers';
+    if (/\b(pos|tid|mid|swipe machine|card machine)\b/.test(t)) return 'pos';
+    if (/\bmy (tools?|issued items?|issuances?|uniform|bag)\b|tools? (issued|i have|history)|what (tools|items) (do i have|were issued)/.test(t)) return 'mytools';
+    if (/how many (riders?|people|staff|employees|members|active|working)|head ?count|team strength|total (riders|staff)/.test(t)) return 'count';
+    if (!/\bmy\b/.test(t) && /who('?s| is| are)? .*(off|day ?off)|(off|day ?off) (today|tomorrow|on (mon|tue|wed|thu|fri|sat|sun))|riders? off\b/.test(t)) return 'dayoff';
+    if (/^(who is|find|search|look ?up|number of|phone (number )?of|contact (of|for)|call|details of|info (of|about)|show rider)\s+\S+/.test(t) && !/expir|hot ?spot|incharge|in charge|supervisor|coordinator|\bpoc\b|team lead|manager|\bmy\b|\bme\b|tools?|requests?|tasks?|circular|visit|eligib|same/.test(t)) return 'who';
     if (/expir|vial|reagent|near expiry|shelf life/.test(t)) return 'expiry';
     if (/(coordinates?|lat(itude)?\b|long(itude)?\b|location|map|where is|pin)/.test(t) && /(hot ?spot|rider|\b\d{4,}\b|region|city|sub ?region|area)/.test(t) && !/same (area|spot)/.test(t)) return 'hscoord';
     if (/hot ?spot|same (area|spot|location)|colleague|team ?mate|who (works|is working) (in|at|with)|riders? (in|at|of) /.test(t)) return 'hotspot';
@@ -281,6 +290,93 @@
     return `<div class="fb-line"><b>Region:</b> ${esc(regionName(r.region_id) || '—')}<br><b>Hotspot:</b> ${esc(r.hotspot || '—')}<br><b>Shift:</b> ${esc(shift || '—')}<br><b>Day off:</b> ${esc(r.day_off || '—')}</div>`;
   }
 
+
+  // ----- humanising helpers -----
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const firstName = () => ((state.profile && state.profile.full_name) || '').split(' ')[0];
+  const hello = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
+  const sug = (arr) => '<div class="fb-chips2">' + arr.map((x) => btn(x, `data-say="${esc(x)}"`)).join('') + '</div>';
+  const MORE = { expiry: ['Open requests', 'My tasks'], requests: ['My tasks', 'Latest circulars'], tasks: ['Open requests', 'Latest circulars'], circulars: ['My tasks', 'My requests'], myinfo: ['Who is my Area Incharge?', 'Who has the same hotspot as me?'], supervisor: ['My roster details', 'My requests'], mytools: ['Am I eligible for a new rain coat?', 'My requests'], pos: ['My requests'], toppers: ['Latest circulars', 'My tasks'], count: ['Who is off today?', 'Vials expiring soon'], dayoff: ['How many riders are working?', 'Open requests'] };
+
+  async function chat(raw) {
+    const t = norm(raw), n = firstName();
+    if (/how are you|kaise ho|kya haal/.test(t)) return pick(['I am doing great, thank you for asking! 😊 How can I help you' + (n ? ', ' + esc(n) : '') + '?', 'All good on my side! 🙂 What do you need today?']) + sug(isRiderRole() ? ['Show my requests', 'Who is my Area Incharge?'] : ['Vials expiring soon', 'Open requests']);
+  if (/who are you|your name|bot|human|real/.test(t)) return 'I am the <b>FieldHub Assistant</b>, a helper built into this portal. 🤖 I am not a person, but I read the same portal data you are allowed to see and I can find things for you in seconds. Ask me about requests, tasks, tools, expiries, rosters, hotspots, POS and more.';
+    if (/bye|goodbye|hafiz|night/.test(t)) return pick(['Take care' + (n ? ', ' + esc(n) : '') + '! 👋 I am here whenever you need me.', 'Khuda hafiz! 👋 Come back any time.']);
+    if (/joke/.test(t)) return pick(['Why did the rider bring a ladder to work? Because the team said to <i>reach higher</i>! 😄', 'I would tell you a joke about sample tubes, but it is a bit too <i>spun</i> out. 😄']) + ' Now, what can I really help you with?';
+    return hello() + (n ? ', <b>' + esc(n) + '</b>' : '') + '! 👋 How can I help?';
+  }
+  async function clock() {
+    const d = new Date(), tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) { return ''; } })();
+    return `It is <b>${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true })}</b> on <b>${d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</b>${tz ? ' (' + esc(tz.replace(/_/g, ' ')) + ')' : ''}.`;
+  }
+  // anyone signed in may look up a rider's hotspot by employee ID (migration_62 returns only name, region, hotspot, coordinates)
+  async function hsid(raw) {
+    const m = raw.match(/\b(\d{4,})\b/); if (!m) return 'Please add the employee ID, for example <i>hotspot of 20345</i>.';
+    const r = await sb.rpc('fh_rider_hotspot', { p_emp: m[1] });
+    if (r.error) return /function|schema cache|does not exist/i.test(r.error.message || '') ? 'This lookup is almost ready: the admin still needs to run <b>migration_62.sql</b> in Supabase.' : 'I could not look that up: ' + esc(r.error.message);
+    const x = r.data || {};
+    if (!x.found) return `I could not find an active rider with Employee ID <b>${esc(m[1])}</b>. Please check the number.`;
+    const has = x.lat != null && x.lng != null;
+    return `<div class="fb-h">${esc(x.name)} ${esc(x.employee_id || '')}</div><div class="fb-line"><b>Hotspot:</b> ${esc(x.hotspot || 'not set')}<div class="fb-dim">${esc([x.region, x.sub_region].filter(Boolean).join(' · '))}</div>` +
+      (has ? `<div class="fb-dim">${Number(x.lat).toFixed(5)}, ${Number(x.lng).toFixed(5)}</div><div class="fb-act">${mapLink({ lat: x.lat, lng: x.lng })}</div>` : '<div class="fb-dim">Coordinates not added yet</div>') + '</div>';
+  }
+  async function toppers() {
+    try {
+      const { data } = await sb.from('top_performers').select('rider_name, employee_id, region_name, perf_month').gte('expires_on', new Date().toISOString().slice(0, 10)).order('perf_month', { ascending: false }).limit(12);
+      if (!data || !data.length) return 'No top performers are on display right now.';
+      return '⭐ <b>Our current top performers</b>' + data.map((t) => `<div class="fb-line"><b>${esc(t.rider_name)}</b> <span class="fb-dim">${esc(t.employee_id || '')} · ${esc(t.region_name || '')} · ${esc(new Date(t.perf_month + 'T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }))}</span></div>`).join('');
+    } catch (_) { return 'I could not load the top performers just now.'; }
+  }
+  async function mytools() {
+    const { data, error } = await sb.from('tool_issuances').select('issued_date, next_due_date, serial_number, tool_types(name)').eq('rider_id', state.user.id).order('issued_date', { ascending: false }).limit(12);
+    if (error) return 'I could not read your tool history: ' + esc(error.message);
+    if (!data || !data.length) return 'No tool has been issued to you on record yet.';
+    return `<b>${data.length}</b> tool record${data.length === 1 ? '' : 's'} for you (latest first):` + data.map((x) => `<div class="fb-line"><b>${esc((x.tool_types && x.tool_types.name) || 'Tool')}</b> · issued ${fdate(x.issued_date)}${x.next_due_date ? ' · next due ' + fdate(x.next_due_date) : ''}${x.serial_number ? ' · S/N ' + esc(x.serial_number) : ''}</div>`).join('') + `<div class="fb-acts">${goBtn('Open Tool Issuance', 'tools')}</div>`;
+  }
+  async function pos() {
+    if (isRiderRole()) {
+      const { data, error } = await sb.from('pos_machines').select('*').eq('rider_id', state.user.id).order('issued_date', { ascending: false }).limit(3);
+      if (error) return /relation|schema cache/i.test(error.message || '') ? 'POS is not set up yet.' : 'I could not read your POS: ' + esc(error.message);
+      if (!data || !data.length) return 'No POS machine is issued to you right now. If you need one, please contact your supervisor.';
+      return 'Your POS machine' + (data.length > 1 ? 's' : '') + ':' + data.map((m) => `<div class="fb-line"><b>S/N ${esc(m.sn || '—')}</b> · TID ${esc(m.tid || '—')} · MID ${esc(m.mid || '—')}<br><span class="fb-dim">${esc(m.bank_name || '')} ${m.device_type === 'android' ? '· Android' : m.device_type ? '· Non-Android' : ''} · charger ${m.charger_given ? 'given' : 'pending'}</span></div>`).join('') + `<div class="fb-acts">${allowed('my_pos') ? goBtn('Open My POS', 'my_pos') : ''}</div>`;
+    }
+    const { data, error } = await sb.from('pos_machines').select('status').limit(5000);
+    if (error || !data) return noAccess('POS Management');
+    const c = {}; data.forEach((m) => { c[m.status] = (c[m.status] || 0) + 1; });
+    if (!data.length) return noAccess('POS Management');
+    const L = { issued: 'Issued', in_stock: 'In stock', in_repair: 'With Accounts (repair)', retired: 'Retired' };
+    return `<b>${data.length}</b> POS machines in total:` + Object.keys(c).map((k) => `<div class="fb-line">${esc(L[k] || k)}: <b>${c[k]}</b></div>`).join('') + `<div class="fb-acts">${allowed('pos') ? goBtn('Open POS Management', 'pos') : ''}</div>`;
+  }
+  // counts and day-offs come from the roster the person can already open (database rules limit it to their own area)
+  async function rosterRows() {
+    const { data, error } = await sb.from('roster_entries').select('region_id, day_off, hotspot, regions(name), shift_types(name), profiles!rider_id(full_name, employee_id, phone, role)').neq('status', 'removed').limit(5000);
+    if (error) throw new Error(error.message);
+    return data || [];
+  }
+  async function count(raw) {
+    if (isRiderRole() || (!allowed('roster') && !allowed('hierarchy'))) return noAccess('the Roster');
+    const rows = await rosterRows(); if (!rows.length) return 'I could not find any active roster entries in your area.';
+    const by = {}; rows.forEach((r) => { const k = (r.regions && r.regions.name) || 'No region'; by[k] = (by[k] || 0) + 1; });
+    return `<b>${rows.length}</b> active people on the roster you can see:` + Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => `<div class="fb-line">${esc(k)}: <b>${v}</b></div>`).join('') + `<div class="fb-acts">${goBtn('Open Roster', 'roster')}</div>`;
+  }
+  async function dayoff(raw) {
+    if (isRiderRole() || !allowed('roster')) return noAccess('the Roster');
+    const t = norm(raw), D = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    let day = D.find((d) => t.includes(d.toLowerCase()) || t.includes(d.slice(0, 3).toLowerCase() + ' ')); const now = new Date();
+    if (!day) day = /tomorrow|kal/.test(t) ? D[(now.getDay() + 1) % 7] : D[now.getDay()];
+    const rows = (await rosterRows()).filter((r) => r.day_off === day);
+    if (!rows.length) return `Nobody on your roster has <b>${day}</b> as a day off.`;
+    return `<b>${rows.length}</b> ${rows.length === 1 ? 'person has' : 'people have'} <b>${day}</b> off:` + rows.slice(0, 30).map((r) => personRow({ ...r.profiles, region_name: r.regions && r.regions.name, hotspot: r.hotspot })).join('') + (rows.length > 30 ? note('…and ' + (rows.length - 30) + ' more. ') + goBtn('Open Roster', 'roster') : '');
+  }
+  async function who(raw) {
+    if (isRiderRole() || (!allowed('roster') && !allowed('hierarchy'))) return 'For privacy, riders can look up a colleague\'s <b>hotspot</b> by Employee ID only. Try <i>hotspot of 20345</i>.';
+    const q = raw.replace(/^(who is|find|search|look ?up|number of|phone (number )?of|contact (of|for)|call|details of|info (of|about)|show rider)\s+/i, '').trim();
+    const people = await findPerson(q);
+    if (!people.length) return `I could not find anyone called “${esc(q)}”. Try the Employee ID.`;
+    return `I found ${people.length} match${people.length === 1 ? '' : 'es'}:` + people.map((p) => personRow(p)).join('');
+  }
+
   // ----- Knowledge Base + circular search (also the fallback for anything else) -----
   async function kb(raw, fallback) {
     const kw = words(raw).slice(0, 4);
@@ -312,7 +408,16 @@
     switch (intent) {
       case 'empty': return help();
       case 'help': return help();
-      case 'thanks': return 'You are welcome! 😊 Ask me anything else.';
+      case 'chat': return chat(raw);
+      case 'hsid': return hsid(raw);
+      case 'clock': return clock();
+      case 'toppers': return toppers();
+      case 'pos': return pos();
+      case 'mytools': return mytools();
+      case 'count': return count(raw);
+      case 'dayoff': return dayoff(raw);
+      case 'who': return who(raw);
+      case 'thanks': return pick(['You are welcome! 😊 Ask me anything else.', 'Happy to help' + (firstName() ? ', ' + esc(firstName()) : '') + '! 🙌', 'Anytime! 😊']);
       case 'expiry': return expiry(raw);
       case 'hotspot': return hotspot(raw);
       case 'hscoord': return hsCoord(raw);
@@ -346,10 +451,12 @@
     let out, it = detect(text);
     try {
       const off = typeof navigator !== 'undefined' && navigator.onLine === false;
+      await new Promise((r) => setTimeout(r, 450));
       out = fixed ? esc(fixed).replace(/\n/g, '<br>') : (off ? '📴 <i>You are offline: this answer comes from the last data saved on this phone.</i><br><br>' : '') + await answer(text);
       if (fixed) it = 'quick';
     } catch (e) { console.warn(e); out = 'Sorry, something went wrong while looking that up. Please try again.'; it = 'error'; }
     typing(false); A.busy = false;
+    if (MORE[it] && !fixed && !/fb-chips2/.test(out) && !/^I could not|^Sorry/.test(plain(out))) out += '<div class="fb-dim" style="margin-top:8px">Anything else?</div>' + sug(MORE[it]);
     push('bot', out);
     const m = A.msgs[A.msgs.length - 1];
     logChat(text, out, it).then((id) => { if (id && m) { m.lid = id; render(); } });
@@ -368,13 +475,15 @@
   function startSession() {
     A.msgs = []; A.pending = null; A.sid = '';
     const n = (state.profile && state.profile.full_name || '').split(' ')[0];
-    A.msgs.push({ who: 'bot', html: `Hello${n ? ' <b>' + esc(n) + '</b>' : ''}! I am the FieldHub Assistant.<br>I answer from the portal data you have access to. Pick a quick question below or type your own.` });
+    A.msgs.push({ who: 'bot', html: `${hello()}${n ? ' <b>' + esc(n) + '</b>' : ''}! 👋 I am your FieldHub helper.<br>Ask me anything about what you can see in the portal, for example <i>my requests</i>, <i>vials expiring</i>, <i>who is off today</i> or <i>hotspot of 20345</i>. Or just tap a quick question below.` });
     render();
   }
 
   // ---------- UI ----------
   const CSS = `
-#fh-bot-btn{position:fixed;right:18px;bottom:76px;z-index:9001;width:54px;height:54px;border-radius:50%;border:0;cursor:pointer;background:var(--ink,#1E2A6E);color:#fff;box-shadow:0 6px 18px rgba(20,28,80,.35);display:none;align-items:center;justify-content:center;font-size:24px}
+#fh-bot-btn{position:fixed;right:18px;bottom:76px;z-index:9001;height:48px;padding:0 18px 0 14px;border-radius:26px;border:0;cursor:pointer;background:var(--ink,#1E2A6E);color:#fff;box-shadow:0 6px 18px rgba(20,28,90,.35);display:none;align-items:center;gap:8px;font-weight:700;font-size:14px;font-family:inherit}
+#fh-bot-btn .fb-hint{position:absolute;right:6px;bottom:56px;background:#fff;color:#1b2150;border:1px solid #d9def0;border-radius:12px;padding:7px 11px;font-size:12.5px;font-weight:600;white-space:nowrap;box-shadow:0 4px 12px rgba(20,28,90,.18);animation:fbhint 6s ease forwards}
+@keyframes fbhint{0%{opacity:0;transform:translateY(6px)}8%,85%{opacity:1;transform:none}100%{opacity:0;visibility:hidden}}
 body.fh-app #fh-bot-btn{display:flex}
 #fh-bot-btn:hover{filter:brightness(1.12)}
 #fh-bot{position:fixed;right:18px;bottom:140px;z-index:9002;width:380px;max-width:calc(100vw - 24px);height:560px;max-height:calc(100vh - 160px);background:#fff;border:1px solid #d9def0;border-radius:16px;box-shadow:0 14px 40px rgba(20,28,80,.28);display:none;flex-direction:column;overflow:hidden;font-size:14px;color:#1b2150}
@@ -435,12 +544,13 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
   function build() {
     if (el('fh-bot')) return;
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
-    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.type = 'button'; b.title = 'FieldHub Assistant'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
-    b.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6A8 8 0 1 1 21 12z"/><circle cx="9" cy="12" r=".8" fill="currentColor"/><circle cx="13" cy="12" r=".8" fill="currentColor"/><circle cx="17" cy="12" r=".8" fill="currentColor"/></svg>';
+    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.type = 'button'; b.title = 'Need help? Talk to me'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
+    b.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6A8 8 0 1 1 21 12z"/><circle cx="9" cy="12" r=".8" fill="currentColor"/><circle cx="13" cy="12" r=".8" fill="currentColor"/><circle cx="17" cy="12" r=".8" fill="currentColor"/></svg><span>Help · Talk to me</span>';
     const p = document.createElement('div'); p.id = 'fh-bot'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'FieldHub Assistant');
     p.innerHTML = '<div class="fb-head"><div><b>FieldHub Assistant</b><small>Answers from your portal data</small></div><span style="display:flex;gap:8px;align-items:center"><button type="button" class="fb-new">New chat</button><button type="button" class="fb-x" aria-label="Close">✕</button></span></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
     document.body.appendChild(p); document.body.appendChild(b);
-    b.onclick = () => toggle();
+    b.onclick = () => { const h = b.querySelector('.fb-hint'); if (h) h.remove(); toggle(); };
+    setTimeout(() => { if (!A.open && !el('fh-bot-btn').querySelector('.fb-hint')) { try { if (sessionStorage.getItem('fh_bot_hint')) return; sessionStorage.setItem('fh_bot_hint', '1'); } catch (_) {} const h = document.createElement('div'); h.className = 'fb-hint'; h.textContent = '👋 Need help? Ask me anything'; b.appendChild(h); setTimeout(() => h.remove(), 6200); } }, 2500);
     p.querySelector('.fb-x').onclick = () => toggle(false);
     p.querySelector('.fb-form').onsubmit = (e) => { e.preventDefault(); const i = p.querySelector('input'); const v = i.value; i.value = ''; ask(v); };
     p.addEventListener('click', (e) => {
