@@ -2518,6 +2518,7 @@ async function renderDashboard(){
 
   setTimeout(fhStartLiveClock, 0);
   let posTile = ''; try { if (typeof fhPosTileHtml === 'function') posTile = await fhPosTileHtml(); } catch (_e) {}
+  let topTile = ''; try { if (typeof fhTopHomeHtml === 'function') { topTile = await fhTopHomeHtml(); if (typeof fhTopTidy === 'function') fhTopTidy(); } } catch (_e) {}
   main.innerHTML = `
     ${bannerVisible ? `<div class="card" style="padding:0; overflow:hidden; cursor:pointer;" id="dashboard-banner-click">
       <img src="${escapeHtml(banner.data.image_url)}" style="width:100%; max-height:280px; object-fit:contain; background:#f4f4f4; display:block;">
@@ -2532,6 +2533,7 @@ async function renderDashboard(){
       </div>
       <div class="dt" id="fh-live-dt"><b id="fh-lt-day"></b><span id="fh-lt-date"></span><div id="fh-lt-time" style="font-size:22px;font-weight:700;letter-spacing:.5px;margin-top:4px;font-variant-numeric:tabular-nums"></div><div id="fh-lt-zone" style="font-size:11px;opacity:.8"></div></div>
     </div>
+    ${topTile}
     ${posTile}
     <div class="grid grid-4 fh-stagger">
       ${[['clay','requests',openReq.count ?? 0,'Open requests','M9 12h6M9 16h6M9 8h6M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z'],
@@ -11349,6 +11351,7 @@ async function renderRosterMain(){
         <button class="btn small outline" data-edit-roster="${e.id}">Edit</button>
         ${e.status!=='removed' ? `<button class="btn small danger" data-remove-roster="${e.id}" title="Mark Resigned / Terminated / Transferred">Change Status</button>` : ''}
         ${(e.status==='removed' && isSuperAdmin()) ? `<button class="btn small outline" data-reinstate-roster="${e.id}">Reinstate (undo mistake)</button>` : ''}
+        ${(isSuperAdmin() && e.status!=='removed') ? `<button class="btn small outline" data-top-roster="${e.id}" title="Mark as top performer">⭐ Top performer</button>` : ''}
         ${isSuperAdmin() ? `<button class="btn small danger" data-delete-roster="${e.id}">Delete Permanently</button>` : ''}
       </td>` : ''}
     </tr>`).join('')}
@@ -11556,6 +11559,9 @@ async function renderRosterMain(){
   function bindRowActions(){
     document.querySelectorAll('[data-edit-roster]').forEach(btn => {
       btn.onclick = () => openRosterModal(entries.find(e=>e.id===btn.dataset.editRoster));
+    });
+    document.querySelectorAll('[data-top-roster]').forEach(btn => {
+      btn.onclick = () => { if (typeof fhTopModal === 'function') fhTopModal(entries.find(e=>e.id===btn.dataset.topRoster)); else toast('top-performers.js is missing'); };
     });
     document.querySelectorAll('[data-remove-roster]').forEach(btn => {
       btn.onclick = () => {
