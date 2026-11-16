@@ -28,7 +28,7 @@
     const loc = ph ? toLocalPhone(ph) : '';
     const digits = ph ? String(toE164(ph) || '').replace(/\D/g, '') : '';
     return `<div class="fb-person"><div><b>${esc(p.full_name || '—')}</b> <span class="fb-dim">${esc(p.employee_id || '')}</span>
-      <div class="fb-dim">${esc(ROLE_LABEL[p.role] || '')}${p.region_name ? ' · ' + esc(p.region_name) : ''}${p.hotspot ? ' · ' + esc(p.hotspot) : ''}${p.day_off ? ' · Day off: ' + esc(p.day_off) : ''}</div></div>
+      <div class="fb-dim">${esc(ROLE_LABEL[p.role] || '')}${p.region_name ? ' · ' + esc(p.region_name) : ''}${p.hotspot ? ' · ' + esc(p.hotspot) : ''}${p.day_off ? ' · Day off: ' + esc(p.day_off) : ''}${p.shift ? ' · ' + esc(p.shift) : ''}</div>${p.personal_mobile ? `<div class="fb-dim">Personal: <a href="tel:${esc(toLocalPhone(p.personal_mobile))}">${esc(toLocalPhone(p.personal_mobile))}</a></div>` : ''}</div>
       ${loc ? `<div class="fb-act"><a href="tel:${esc(loc)}">📞 ${esc(loc)}</a>${digits ? `<a href="https://wa.me/${digits}" target="_blank" rel="noopener">WhatsApp</a>` : ''}</div>` : '<div class="fb-dim">No number on file</div>'}</div>`;
   }
   const regionName = (id) => ((state.regions || []).find((r) => r.id === id) || {}).name || '';
@@ -314,12 +314,22 @@
   async function hsid(raw) {
     const m = raw.match(/\b(\d{4,})\b/); if (!m) return 'Please add the employee ID, for example <i>hotspot of 20345</i>.';
     const r = await sb.rpc('fh_rider_hotspot', { p_emp: m[1] });
-    if (r.error) return /function|schema cache|does not exist/i.test(r.error.message || '') ? 'This lookup is almost ready: the admin still needs to run <b>migration_62.sql</b> in Supabase.' : 'I could not look that up: ' + esc(r.error.message);
+    if (r.error) return /function|schema cache|does not exist/i.test(r.error.message || '') ? 'This lookup is almost ready: the admin still needs to run <b>migration_63.sql</b> in Supabase.' : 'I could not look that up: ' + esc(r.error.message);
     const x = r.data || {};
     if (!x.found) return `I could not find an active rider with Employee ID <b>${esc(m[1])}</b>. Please check the number.`;
     const has = x.lat != null && x.lng != null;
+    let contact = '', full = null;
+    if (!isRiderRole()) {   // supervisors / admins: full details, limited by their own access (database rules)
+      try {
+        const q = await sb.from('roster_entries').select('hotspot, day_off, official_mobile, personal_mobile, regions(name), shift_types(name), profiles!rider_id!inner(full_name, employee_id, phone, role, status)').neq('status', 'removed').ilike('profiles.employee_id', m[1]).limit(1);
+        if (q.data && q.data[0]) { const e = q.data[0]; full = { ...e.profiles, phone: e.official_mobile || e.profiles.phone, official_mobile: e.official_mobile, personal_mobile: e.personal_mobile, hotspot: e.hotspot, day_off: e.day_off, shift: e.shift_types && e.shift_types.name, region_name: e.regions && e.regions.name }; }
+      } catch (_) {}
+      contact = full ? personRow(full) : note('Contact numbers are not shown because this rider is outside the area you have access to.');
+    } else if (x.same_hotspot) {   // riders: numbers only for people in their own hotspot
+      contact = personRow({ full_name: x.name, employee_id: x.employee_id, role: 'rider', phone: x.official_mobile || x.phone, personal_mobile: x.personal_mobile, hotspot: x.hotspot, region_name: x.region });
+    } else contact = note('Contact numbers are shown only for riders in your own hotspot.');
     return `<div class="fb-h">${esc(x.name)} ${esc(x.employee_id || '')}</div><div class="fb-line"><b>Hotspot:</b> ${esc(x.hotspot || 'not set')}<div class="fb-dim">${esc([x.region, x.sub_region].filter(Boolean).join(' · '))}</div>` +
-      (has ? `<div class="fb-dim">${Number(x.lat).toFixed(5)}, ${Number(x.lng).toFixed(5)}</div><div class="fb-act">${mapLink({ lat: x.lat, lng: x.lng })}</div>` : '<div class="fb-dim">Coordinates not added yet</div>') + '</div>';
+      (has ? `<div class="fb-dim">${Number(x.lat).toFixed(5)}, ${Number(x.lng).toFixed(5)}</div><div class="fb-act">${mapLink({ lat: x.lat, lng: x.lng })}</div>` : '<div class="fb-dim">Coordinates not added yet</div>') + '</div>' + contact;
   }
   async function toppers() {
     try {
@@ -481,12 +491,12 @@
 
   // ---------- UI ----------
   const CSS = `
-#fh-bot-btn{position:fixed;right:18px;bottom:76px;z-index:9001;height:48px;padding:0 18px 0 14px;border-radius:26px;border:0;cursor:pointer;background:var(--ink,#1E2A6E);color:#fff;box-shadow:0 6px 18px rgba(20,28,90,.35);display:none;align-items:center;gap:8px;font-weight:700;font-size:14px;font-family:inherit}
-#fh-bot-btn .fb-hint{position:absolute;right:6px;bottom:56px;background:#fff;color:#1b2150;border:1px solid #d9def0;border-radius:12px;padding:7px 11px;font-size:12.5px;font-weight:600;white-space:nowrap;box-shadow:0 4px 12px rgba(20,28,90,.18);animation:fbhint 6s ease forwards}
+#fh-bot-btn{position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:700}
+#fh-bot-btn .fb-hint{position:absolute;right:0;top:100%;margin-top:8px;z-index:9003;background:#fff;color:#1b2150;border:1px solid #d9def0;border-radius:12px;padding:7px 11px;font-size:12.5px;font-weight:600;white-space:nowrap;box-shadow:0 4px 12px rgba(20,28,90,.18);animation:fbhint 6s ease forwards}
 @keyframes fbhint{0%{opacity:0;transform:translateY(6px)}8%,85%{opacity:1;transform:none}100%{opacity:0;visibility:hidden}}
-body.fh-app #fh-bot-btn{display:flex}
+#fh-bot-btn.fb-float{position:fixed;top:10px;right:10px;z-index:9001;background:var(--ink,#1E2A6E);color:#fff;border:0;border-radius:20px;padding:8px 14px}
 #fh-bot-btn:hover{filter:brightness(1.12)}
-#fh-bot{position:fixed;right:18px;bottom:140px;z-index:9002;width:380px;max-width:calc(100vw - 24px);height:560px;max-height:calc(100vh - 160px);background:#fff;border:1px solid #d9def0;border-radius:16px;box-shadow:0 14px 40px rgba(20,28,80,.28);display:none;flex-direction:column;overflow:hidden;font-size:14px;color:#1b2150}
+#fh-bot{position:fixed;right:14px;top:62px;z-index:9002;width:380px;max-width:calc(100vw - 24px);height:560px;max-height:calc(100vh - 80px);background:#fff;border:1px solid #d9def0;border-radius:16px;box-shadow:0 14px 40px rgba(20,28,80,.28);display:none;flex-direction:column;overflow:hidden;font-size:14px;color:#1b2150}
 #fh-bot.open{display:flex}
 #fh-bot .fb-head{background:var(--ink,#1E2A6E);color:#fff;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
 #fh-bot .fb-head small{display:block;opacity:.8;font-size:11.5px;margin-top:2px}
@@ -523,9 +533,9 @@ html.fh-dark #fh-bot .fb-form input{background:#0d1230;border-color:#2b3470;colo
 html.fh-dark #fh-bot .fb-link,html.fh-dark #fh-bot .fb-act a{background:#232c63;color:#cdd5ff;border-color:#34408a}
 html.fh-dark #fh-bot .fb-line,html.fh-dark #fh-bot .fb-person{border-color:#2b3470}
 html.fh-dark #fh-bot .fb-dim,html.fh-dark #fh-bot .fb-h{color:#9aa4dd}
-html.fh-dark #fh-bot-btn{background:#8da0ff;color:#0d1230}
+html.fh-dark #fh-bot-btn.fb-float{background:#8da0ff;color:#0d1230}
 html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
-@media (max-width:560px){#fh-bot{right:8px;left:8px;width:auto;max-width:none;bottom:8px;height:78vh;max-height:none;border-radius:14px}#fh-bot-btn{bottom:72px;right:14px}}`;
+@media (max-width:560px){#fh-bot{right:8px;left:8px;width:auto;max-width:none;bottom:8px;height:78vh;max-height:none;border-radius:14px}}`;
 
   function el(id) { return document.getElementById(id); }
   function msgsBox() { return document.querySelector('#fh-bot .fb-msgs'); }
@@ -544,11 +554,13 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
   function build() {
     if (el('fh-bot')) return;
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
-    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.type = 'button'; b.title = 'Need help? Talk to me'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
-    b.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6A8 8 0 1 1 21 12z"/><circle cx="9" cy="12" r=".8" fill="currentColor"/><circle cx="13" cy="12" r=".8" fill="currentColor"/><circle cx="17" cy="12" r=".8" fill="currentColor"/></svg><span>Help · Talk to me</span>';
+    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.className = 'ribbon-link'; b.type = 'button'; b.title = 'Need help? Talk to me'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
+    b.innerHTML = '💬 <span>Help</span>';
     const p = document.createElement('div'); p.id = 'fh-bot'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'FieldHub Assistant');
     p.innerHTML = '<div class="fb-head"><div><b>FieldHub Assistant</b><small>Answers from your portal data</small></div><span style="display:flex;gap:8px;align-items:center"><button type="button" class="fb-new">New chat</button><button type="button" class="fb-x" aria-label="Close">✕</button></span></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
-    document.body.appendChild(p); document.body.appendChild(b);
+    document.body.appendChild(p);
+    const ribbon = document.querySelector('.top-ribbon-actions');   // the Help button lives in the top bar, so it never covers page content
+    if (ribbon) ribbon.insertBefore(b, ribbon.firstChild); else { b.classList.add('fb-float'); document.body.appendChild(b); }
     b.onclick = () => { const h = b.querySelector('.fb-hint'); if (h) h.remove(); toggle(); };
     setTimeout(() => { if (!A.open && !el('fh-bot-btn').querySelector('.fb-hint')) { try { if (sessionStorage.getItem('fh_bot_hint')) return; sessionStorage.setItem('fh_bot_hint', '1'); } catch (_) {} const h = document.createElement('div'); h.className = 'fb-hint'; h.textContent = '👋 Need help? Ask me anything'; b.appendChild(h); setTimeout(() => h.remove(), 6200); } }, 2500);
     p.querySelector('.fb-x').onclick = () => toggle(false);
