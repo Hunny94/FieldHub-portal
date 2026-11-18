@@ -404,7 +404,10 @@ input[type=checkbox],input[type=radio]{accent-color:#1E2A6E}
   .btn,.btn-primary,.btn-secondary,.fv-btn{min-height:42px}.btn.small{min-height:36px}
   input:not([type=checkbox]):not([type=radio]),select,textarea{font-size:15px}
   .two-col{grid-template-columns:1fr!important}
-  .fh-hero{padding:18px}.fh-hero h2{font-size:20px}.fh-hero .dt{text-align:left}
+  .fh-hero{padding:10px 14px;margin-bottom:10px;gap:4px 10px;flex-wrap:nowrap;align-items:center}
+  .fh-hero .hi{font-size:10.5px}.fh-hero h2{font-size:15px;margin:1px 0 0;line-height:1.25}.fh-hero p{display:none}
+  .fh-hero>div:first-child{min-width:0;flex:1}.fh-hero .dt{text-align:right;font-size:11px;white-space:nowrap;flex:0 0 auto}
+  .fh-hero .dt b{display:inline;font-size:11.5px;margin-right:4px}.fh-hero #fh-lt-time{font-size:15px!important;margin-top:1px!important}.fh-hero #fh-lt-zone{font-size:10px!important;max-width:150px;overflow:hidden;text-overflow:ellipsis;margin-left:auto}
   .modal-overlay{align-items:flex-end!important;padding:0!important}
   .modal{width:100%!important;max-width:100%!important;max-height:92vh!important;border-radius:20px 20px 0 0!important;animation:fhSheet .28s cubic-bezier(.2,.8,.2,1)!important}
   .fh-stk td:first-child,.fh-stk th:first-child{position:sticky;left:0;z-index:2;background:#fff;box-shadow:1px 0 0 #e3e8f2;width:112px;min-width:112px;max-width:112px;white-space:normal;overflow-wrap:break-word;font-size:12.5px;line-height:1.3}
@@ -1553,8 +1556,8 @@ async function setupDesktopNotifications(){
   sb.channel('expiry-notify-' + state.user.id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expiry_notices', filter: `user_id=eq.${state.user.id}` }, (payload) => {
       fire('FieldHub: ' + (payload.new.title || 'Expiry update'), payload.new.body || '');
-      const pk = payload.new.kind === 'pos_issued', fa = pk || payload.new.kind === 'force_ack';
-      pushNotification({ type: fa ? 'Tool' : 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: pk ? 'my_pos' : (fa ? 'tools' : 'expiries') });
+      const pk = payload.new.kind === 'pos_issued', fa = pk || payload.new.kind === 'force_ack' || payload.new.kind === 'circ_remind';
+      pushNotification({ type: payload.new.kind === 'circ_remind' ? 'Circular' : fa ? 'Tool' : 'Expiry', title: payload.new.title || 'Expiry update', body: payload.new.body || '', created_at: payload.new.created_at, view: payload.new.kind === 'circ_remind' ? 'circulars' : pk ? 'my_pos' : (fa ? 'tools' : 'expiries') });
       fhExpiryPopup();
     })
     .subscribe();
@@ -1577,7 +1580,7 @@ async function fhExpiryPopup(){
     if (r.error) return; rows = r.data || [];
   } catch (_e) { return; }
   if (!rows.length) return;
-  openModal(`<div id="exp-pop"><h2>${rows.every(n => n.kind === 'force_ack' || n.kind === 'pos_issued') ? '🔔 Notice' : '⚠ Expiry notice'}${rows.length > 1 ? 's' : ''}</h2>
+  openModal(`<div id="exp-pop"><h2>${rows.every(n => n.kind === 'force_ack' || n.kind === 'pos_issued' || n.kind === 'circ_remind') ? '🔔 Notice' : '⚠ Expiry notice'}${rows.length > 1 ? 's' : ''}</h2>
     ${rows.map(n => `<div style="padding:10px 12px;margin:8px 0;border-radius:10px;border-left:4px solid ${n.kind === 'closed' ? '#1d7a47' : '#C1502E'};background:#f6f7fc"><b>${escapeHtml(n.title || 'Expiry update')}</b><div style="margin-top:4px;font-size:14px;line-height:1.45">${escapeHtml(n.body || '')}</div><div class="hint" style="margin:4px 0 0;font-size:12px">${formatDateTime(n.created_at)}</div></div>`).join('')}
     <button class="btn-primary" id="exp-pop-ok" type="button" style="margin-top:6px">OK, I understand</button></div>`);
   document.getElementById('exp-pop-ok').onclick = async () => {
@@ -1662,7 +1665,7 @@ async function loadAndShowNotifications(){
   }
   try {
     const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
-    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:(x.kind === 'force_ack' || x.kind === 'pos_issued') ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'pos_issued' ? 'my_pos' : (x.kind === 'force_ack' ? 'tools' : 'expiries') }));
+    if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:x.kind === 'circ_remind' ? 'Circular' : (x.kind === 'force_ack' || x.kind === 'pos_issued') ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'circ_remind' ? 'circulars' : x.kind === 'pos_issued' ? 'my_pos' : (x.kind === 'force_ack' ? 'tools' : 'expiries') }));
   } catch (_e) {}
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
     const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
@@ -1671,6 +1674,7 @@ async function loadAndShowNotifications(){
 
   items.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
   state.notifications = items.slice(0, retainCount);
+  { const rs = fhNotifReadSet(); state.notifications.forEach(n => { if (rs.has(n.id)) n.read = true; }); }
 
   // Each item gets its own toast, instead of one combined line
   state.notifications.forEach(n => toast(`${n.title}: ${n.body}`));
@@ -1723,6 +1727,10 @@ function updateNotificationBadge(){
 // Notifications are grouped by type into expandable sections. Clicking
 // one marks it read (dims it, moves the unread count down) but it stays
 // visible in the list — nothing disappears just from being read.
+// which notifications were marked read (kept on this device, per person)
+function fhNotifReadSet(){ try { return new Set(JSON.parse(localStorage.getItem('fh_notif_read_' + (state.user && state.user.id)) || '[]')); } catch (_e) { return new Set(); } }
+function fhNotifMarkRead(ids){ try { const s = fhNotifReadSet(); ids.forEach(i => s.add(i)); localStorage.setItem('fh_notif_read_' + state.user.id, JSON.stringify([...s].slice(-300))); } catch (_e) {} (state.notifications || []).forEach(n => { if (ids.includes(n.id)) n.read = true; }); }
+
 function toggleNotificationDropdown(){
   const existing = document.getElementById('notif-dropdown');
   if (existing){ existing.remove(); return; }
@@ -1746,29 +1754,37 @@ function renderNotificationDropdown(bell){
   const groups = new Map();
   state.notifications.forEach(n => { if (!groups.has(n.type)) groups.set(n.type, []); groups.get(n.type).push(n); });
 
-  dropdown.innerHTML = state.notifications.length
+  dropdown.innerHTML = (state.notifications.some(n => !n.read) ? `<div style="display:flex;justify-content:flex-end;padding:2px 4px 6px"><button type="button" class="btn small outline" id="notif-readall">✓ Mark all as read</button></div>` : '') + (state.notifications.length
     ? Array.from(groups.entries()).map(([type, list]) => {
         const unreadCount = list.filter(n=>!n.read).length;
         return `<details ${unreadCount?'open':''} style="margin-bottom:6px;">
           <summary style="cursor:pointer; font-weight:600; font-size:13px; padding:6px 4px; list-style:none;">
             ${escapeHtml(type)} ${unreadCount ? `<span class="badge pending" style="margin-left:4px;">${unreadCount} new</span>` : ''}
           </summary>
-          ${list.map(n => `<div data-notif-item="${n.id}" style="padding:8px 6px; border-bottom:1px solid var(--line); cursor:pointer; ${n.read?'opacity:0.55;':''}">
-            <div style="font-weight:${n.read?'400':'600'}; font-size:13px;">${escapeHtml(n.title)}</div>
-            <div style="font-size:12.5px; color:var(--muted);">${escapeHtml(n.body||'')}</div>
-            <div class="mono" style="font-size:11px; margin-top:2px;">${formatDateTime(n.created_at)}</div>
+          ${list.map(n => `<div data-notif-item="${n.id}" style="padding:6px 6px; border-bottom:1px solid var(--line); ${n.read?'opacity:0.55;':''}">
+            <div data-notif-tag="${n.id}" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Tap to read">
+              <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:${n.read?'400':'700'};font-size:13px;">${n.read ? '' : '● '}${escapeHtml(n.title)}</span>
+              <span style="font-size:11px;opacity:.7" data-notif-arrow="${n.id}">▾</span>
+            </div>
+            <div data-notif-full="${n.id}" style="display:none;margin-top:4px">
+              <div style="font-size:12.5px; color:var(--muted); white-space:pre-wrap;">${escapeHtml(n.body||'')}</div>
+              <div class="mono" style="font-size:11px; margin-top:2px;">${formatDateTime(n.created_at)}</div>
+              <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${n.view ? `<button type="button" class="btn small" data-notif-go="${n.id}">Open</button>` : ''}${n.read ? '' : `<button type="button" class="btn small outline" data-notif-read="${n.id}">✓ Mark as read</button>`}</div>
+            </div>
           </div>`).join('')}
         </details>`;
       }).join('')
-    : `<div style="padding:14px; color:var(--muted); font-size:13px;">No recent notifications.</div>`;
+    : `<div style="padding:14px; color:var(--muted); font-size:13px;">No recent notifications.</div>`);
 
-  dropdown.querySelectorAll('[data-notif-item]').forEach(el => {
-    el.onclick = () => {
-      const n = state.notifications.find(x=>x.id===el.dataset.notifItem);
-      if (n && !n.read){ n.read = true; updateNotificationBadge(); renderNotificationDropdown(bell); }
-      if (n && n.view) { try { navigateTo(n.view); } catch (_e) {} }
-    };
-  });
+  const keepOpen = () => { const open = [...dropdown.querySelectorAll('[data-notif-full]')].filter(x => x.style.display !== 'none').map(x => x.dataset.notifFull); return open; };
+  dropdown.onclick = (e) => {
+    const t = e.target.closest('[data-notif-tag],[data-notif-read],[data-notif-go],#notif-readall'); if (!t) return;
+    e.stopPropagation();
+    if (t.id === 'notif-readall') { fhNotifMarkRead(state.notifications.map(n => n.id)); updateNotificationBadge(); renderNotificationDropdown(bell); return; }
+    if (t.dataset.notifRead) { fhNotifMarkRead([t.dataset.notifRead]); updateNotificationBadge(); const open = keepOpen(); renderNotificationDropdown(bell); return; }
+    if (t.dataset.notifGo) { const n = state.notifications.find(x => x.id === t.dataset.notifGo); if (n) { fhNotifMarkRead([n.id]); updateNotificationBadge(); if (n.view) { dropdown.remove(); try { navigateTo(n.view); } catch (_e) {} } } return; }
+    if (t.dataset.notifTag) { const id = t.dataset.notifTag, full = dropdown.querySelector('[data-notif-full="' + id + '"]'), ar = dropdown.querySelector('[data-notif-arrow="' + id + '"]'), show = full.style.display === 'none'; full.style.display = show ? 'block' : 'none'; ar.textContent = show ? '▴' : '▾'; }
+  };
 
   if (isNew){
     const closeOnOutside = (e) => {
@@ -2187,6 +2203,7 @@ function getAllowedViews(){
   const viewerOnly = !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only');
   const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : []), ...(state.hasPos && !(NAV_BY_ROLE[state.profile.role] || []).includes('my_pos') ? ['my_pos'] : [])];
   const extra = [];
+  if (!viewerOnly && state.profile.role !== 'rider' && base.includes('roster')) { extra.push('roster_ai'); if (state.profile.role !== 'coordinator' || isAdmin()) extra.push('resigned'); if (isAdmin() || state.profile.role === 'regional_poc') extra.push('roster_log'); }
   // any page can be switched on for one person (Settings > Access Control)
   Object.keys(NAV_LABEL).forEach(v => { if (!v.startsWith('ft_') && !v.startsWith('pos_') && v !== 'my_pos' && v !== 'dashboard' && !base.includes(v) && hasPermission('page:' + v)) extra.push(v); });
   if (isAdmin()) return [...base, ...extra];
@@ -2206,13 +2223,13 @@ const NAV_LABEL = {
   fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
   fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI',
   ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File',
-  pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs', my_pos:'My POS'
+  pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs', my_pos:'My POS', roster_ai:'Roster AI Plan', resigned:'Resigned Staff & Tools', roster_log:'Roster Change Log'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
 const NAV_GROUPS = [
   { id: 'g_dash',       label: null,            items: ['dashboard'] },
   { id: 'g_knowledge',  label: 'Knowledgebase', items: ['knowledgebase','resources','releasenotes'] },
-  { id: 'g_people',     label: 'People',        items: ['team','roster','hierarchy'] },
+  { id: 'g_people',     label: 'People',        items: ['team','roster','roster_ai','resigned','roster_log','hierarchy'] },
   { id: 'g_operations', label: 'Operations',    items: ['circulars','tasks','requests','warnings','compliance'] },
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
   { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools','my_pos'] },
@@ -2413,6 +2430,9 @@ async function navigateTo(view){
     else if (view.startsWith('ft_')) await renderFuelTrends(view);
     else if (view === 'my_pos') { if (typeof renderMyPos === 'function') await renderMyPos(); }
     else if (view.startsWith('pos_')) { if (typeof renderPos === 'function') await renderPos(view); else main.innerHTML = '<div class="empty-state">POS Management is loading. Please refresh the page.</div>'; }
+    else if (view==='roster_ai') { if (typeof renderRosterAI === 'function') await renderRosterAI(); }
+    else if (view==='resigned') { if (typeof renderResignedStaff === 'function') await renderResignedStaff(); }
+    else if (view==='roster_log') { if (typeof renderRosterLog === 'function') await renderRosterLog(); }
     else if (view==='myprofile') await renderMyProfile();
   }catch(err){
     console.error(err);
@@ -2769,7 +2789,8 @@ async function showCircularTracker(circularId, circular, el){
   const ackMap = new Map((acks||[]).map(a=>[a.user_id, a.acknowledged_at]));
   const ackedCount = (audience||[]).filter(p=>ackMap.has(p.id)).length;
   el.innerHTML = `<div class="mono" style="margin:8px 0;">Posted ${formatDateTime(circular.created_at)} · ${ackedCount} acknowledged, ${(audience||[]).length - ackedCount} pending
-    <button class="btn small outline" id="tracker-csv-btn" style="margin-left:8px;">Export CSV</button></div>
+    <button class="btn small outline" id="tracker-csv-btn" style="margin-left:8px;">Export CSV</button>
+    ${(isSuperAdmin() || circular.created_by === state.user.id) && (audience||[]).length - ackedCount > 0 ? `<button class="btn small" id="tracker-remind-btn" style="margin-left:8px;">🔔 Remind ${(audience||[]).length - ackedCount} pending</button>` : ''}</div>
   <table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>When</th></tr></thead><tbody>
     ${(audience||[]).map(p=>{
       const ackedAt = ackMap.get(p.id);
@@ -2778,6 +2799,12 @@ async function showCircularTracker(circularId, circular, el){
         <td class="mono">${ackedAt ? formatDateTime(ackedAt) : '—'}</td></tr>`;
     }).join('')}
   </tbody></table>`;
+  { const rb = document.getElementById('tracker-remind-btn'); if (rb) rb.onclick = async () => {
+      if (!confirm('Send a reminder (in the app, on the web and as a phone notification) to everyone who has not acknowledged "' + circular.title + '"?')) return;
+      rb.disabled = true; const r = await sb.rpc('fh_circular_remind', { p_circular: circularId });
+      if (r.error) { toast(/function|schema cache/i.test(r.error.message) ? 'Please run migration_65.sql first' : 'Could not send: ' + r.error.message); rb.disabled = false; return; }
+      toast('Reminder sent to ' + r.data + ' people');
+    }; }
   document.getElementById('tracker-csv-btn').onclick = () => {
     const rows = (audience||[]).map(p => ({
       Name: p.full_name, Role: designationLabel(p),
@@ -11454,7 +11481,7 @@ async function renderRosterMain(){
   document.getElementById('roster-download-all-btn').onclick = () => {
     downloadCSV(`roster-all-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(entries)));
   };
-  { const ai = document.getElementById('roster-ai-btn'); if (ai) ai.onclick = () => { const f = ROSTER_F || {}; const bits = [f.region && 'region filter', f.sub && 'sub-region filter', f.shift && 'shift filter', f.desig && 'designation filter'].filter(Boolean); if (typeof fhRosterAI !== 'function'){ toast('Roster AI file (roster-ai.js) is missing'); return; } fhRosterAI(currentFiltered && currentFiltered.length ? currentFiltered : entries, bits.length ? 'Roster as filtered (' + bits.join(', ') + ')' : 'Whole roster you can see'); }; }
+  { const ai = document.getElementById('roster-ai-btn'); if (ai) ai.onclick = () => navigateTo('roster_ai'); }
   document.getElementById('roster-download-filtered-btn').onclick = () => {
     downloadCSV(`roster-filtered-${new Date().toISOString().slice(0,10)}.csv`, toCSV(toCsvRows(currentFiltered)));
   };
@@ -12286,7 +12313,39 @@ window.addEventListener('keydown', (e) => {
   }
 });
 // live date + time from the device's own clock and time zone (so it follows wherever the person is logged in from)
-let _fhClockT = null;
+let _fhClockT = null, _fhPlace = null, _fhPlaceBusy = false;
+// shows the real current place (GPS, asked once) instead of a time-zone label; falls back to the time-zone city
+function fhPaintPlace(tzCity){
+  const z = document.getElementById('fh-lt-zone'); if (!z) return;
+  if (_fhPlace) { z.textContent = '📍 ' + _fhPlace; return; }
+  if (!z.dataset.ready) {
+    z.dataset.ready = '1'; z.innerHTML = '';
+    let cached = null; try { cached = JSON.parse(sessionStorage.getItem('fh_place') || 'null'); } catch (_e) {}
+    if (cached && Date.now() - cached.t < 6 * 3600 * 1000) { _fhPlace = cached.n; z.textContent = '📍 ' + _fhPlace; return; }
+    const ask = () => fhFindPlace(z, tzCity);
+    if (!navigator.geolocation) { z.textContent = tzCity ? '📍 ' + tzCity : ''; return; }
+    if (navigator.permissions && navigator.permissions.query) navigator.permissions.query({ name: 'geolocation' }).then(p => {
+      if (p.state === 'granted') ask();
+      else if (p.state === 'prompt') { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>' + (tzCity ? ' · ' + tzCity : ''); document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; }
+      else z.textContent = tzCity ? '📍 ' + tzCity : '';
+    }).catch(() => { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>'; document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; });
+    else { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>'; document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; }
+  }
+}
+function fhFindPlace(z, tzCity){
+  if (_fhPlaceBusy) return; _fhPlaceBusy = true; z.textContent = '📍 Finding your location…';
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    try {
+      const r = await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&accept-language=en&lat=' + pos.coords.latitude + '&lon=' + pos.coords.longitude);
+      const j = await r.json(), a = j.address || {};
+      const n = [a.suburb || a.neighbourhood || a.city_district || a.village, a.city || a.town || a.county || a.state_district, a.country].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 3).join(', ');
+      if (n) { _fhPlace = n; try { sessionStorage.setItem('fh_place', JSON.stringify({ n, t: Date.now() })); } catch (_e) {} z.textContent = '📍 ' + n; _fhPlaceBusy = false; return; }
+    } catch (_e) {}
+    _fhPlaceBusy = false; z.textContent = tzCity ? '📍 ' + tzCity : '';
+  }, () => { _fhPlaceBusy = false; z.textContent = tzCity ? '📍 ' + tzCity : ''; }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 });
+}
+
+
 function fhStartLiveClock(){
   clearInterval(_fhClockT);
   let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_e) {}
@@ -12299,7 +12358,7 @@ function fhStartLiveClock(){
     document.getElementById('fh-lt-date').textContent = n.toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' });
     document.getElementById('fh-lt-time').textContent = n.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true });
     let off = ''; try { off = new Intl.DateTimeFormat('en-GB', { timeZoneName:'short' }).formatToParts(n).find(p => p.type === 'timeZoneName')?.value || ''; } catch (_e) {}
-    document.getElementById('fh-lt-zone').textContent = (place ? '📍 ' + place : '') + (off ? ' · ' + off : '');
+    fhPaintPlace(place);
   };
   tick(); _fhClockT = setInterval(tick, 1000);
 }
