@@ -376,7 +376,7 @@
       const label = rs.options[rs.selectedIndex].text, rem = document.getElementById('tb-rem').value;
       const wantRep = document.querySelector('input[name=tb-rp]:checked').value === 'yes' && reason !== 'resigned' && m.rider_id;
       const r = await sb.rpc('fh_pos_take_back_v2', { p_machine: m.id, p_reason: label, p_remark: rem, p_fault: fault, p_charger: chk.value === 'yes' });
-      if (r.error) { toast(/function|schema/i.test(r.error.message) ? 'Please run migration_60.sql first' : 'Could not save: ' + r.error.message); return; }
+      if (r.error) { toast(/function|schema/i.test(r.error.message) ? 'Please run migration_64.sql first' : 'Could not save: ' + r.error.message); return; }
       closeModal(); toast(fault ? 'Taken back and sent to Accounts' : 'Taken back into stock');
       await reload();
       if (wantRep) issueNewModal(r.data && r.data.rider_id || m.rider_id, r.data && r.data.repair_id || null);
@@ -421,6 +421,25 @@
     };
   }
 
+  // received back from Accounts: choose the date, charger back or not
+  function receiveModal(repairId) {
+    const r = P.data.repairs.find((x) => x.id === repairId) || {}, m = P.data.mById.get(r.machine_id) || {}, today = new Date().toISOString().slice(0, 10);
+    openModal(`<div style="max-width:440px"><h2>Machine received back</h2>
+      <p><b>S/N ${esc(m.sn || '—')}</b> · TID ${esc(m.tid || '—')}${r.sent_date ? '<br><span class="hint">Sent to Accounts on ' + fd(r.sent_date) + '</span>' : ''}</p>
+      <form id="rc-form">
+        <div class="form-row"><label>Date received back *</label><input type="date" id="rc-date" value="${today}" max="${today}" ${r.sent_date ? 'min="' + String(r.sent_date).slice(0, 10) + '"' : ''} required></div>
+        <div class="form-row"><label>Charger *</label><label style="display:block"><input type="radio" name="rc-ch" value="yes"> Came back with charger</label><label style="display:block"><input type="radio" name="rc-ch" value="no"> Without charger</label></div>
+        <div class="form-row"><label>Remark (optional)</label><input id="rc-rem" class="input" placeholder="e.g. battery replaced"></div>
+        <p class="hint">The machine goes back into stock, ready to issue to a rider.</p>
+        <button class="btn" type="submit">Save</button></form></div>`);
+    document.getElementById('rc-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const ch = document.querySelector('input[name=rc-ch]:checked'); if (!ch) { toast('Say whether the charger came back'); return; }
+      const ok = await rpc('fh_pos_repair_receive', { p_repair: repairId, p_date: document.getElementById('rc-date').value, p_charger: ch.value === 'yes', p_remark: document.getElementById('rc-rem').value.trim() || null }, 'Received back: in stock');
+      if (ok) { closeModal(); reload(); }
+    };
+  }
+
   // ---------------------------------------------------------------- REPAIRS
   function pageRepairs(host) {
     const d = P.data, T = P.tab;
@@ -433,13 +452,15 @@
         const m = mach(r), rep = r.replacement_machine_id ? d.mById.get(r.replacement_machine_id) : null;
         return `<tr><td class="mono">${esc(m.sn || '—')}</td><td class="mono">${esc(m.mid || '')} / ${esc(m.tid || '')}</td><td>${esc(m.bank_name || '')}</td><td>${esc(r.rider_name || '—')} <span class="mono">${esc(r.rider_employee_id || '')}</span></td><td>${esc(r.fault_name || '—')}${r.remark ? `<div class="hint">${esc(r.remark)}</div>` : ''}</td>
           <td>${fd(T === 'reported' ? r.reported_at : r.sent_date)}</td>${T === 'closed' ? `<td>${esc(REPAIR_STATUS[r.status])}<div class="hint">${fd(r.returned_date)} ${esc(r.outcome_remark || '')}</div></td><td class="mono">${rep ? esc(rep.sn) : '—'}</td>` : ''}
-          <td style="white-space:nowrap">${T === 'reported' ? `<button class="btn small" data-send="${r.machine_id}">Send to Accounts</button> <button class="btn small outline" data-res="${r.id}:cancelled">Dismiss</button>` : ''}${T === 'with_accounts' ? `<button class="btn small" data-res="${r.id}:repaired">Received back → stock</button> <button class="btn small outline" data-res="${r.id}:irreparable">Will not be received (retire)</button> ${!r.replacement_machine_id ? `<button class="btn small outline" data-repl="${r.id}">Issue replacement</button>` : '<span class="badge active">Replaced</span>'}` : ''}${T === 'closed' && r.status === 'irreparable' && !r.replacement_machine_id && m.rider_id ? `<button class="btn small" data-repl="${r.id}">Issue replacement</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-state"><p>Nothing here.</p></div>'}</div>`;
+          <td style="white-space:nowrap">${T === 'reported' ? `<button class="btn small" data-send="${r.machine_id}">Send to Accounts</button> <button class="btn small outline" data-res="${r.id}:cancelled">Dismiss</button>` : ''}${T === 'with_accounts' ? `<button class="btn small" data-rcv="${r.id}">Received back → stock</button> <button class="btn small outline" data-rev="${r.id}" title="Sent to Accounts by mistake">↩ Revert</button> <button class="btn small outline" data-res="${r.id}:irreparable">Will not be received (retire)</button> ${!r.replacement_machine_id ? `<button class="btn small outline" data-repl="${r.id}">Issue replacement</button>` : '<span class="badge active">Replaced</span>'}` : ''}${T === 'closed' && r.status === 'irreparable' && !r.replacement_machine_id && m.rider_id ? `<button class="btn small" data-repl="${r.id}">Issue replacement</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-state"><p>Nothing here.</p></div>'}</div>`;
     host.onclick = async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.tab) { P.tab = b.dataset.tab; return pageRepairs(host); }
       if (b.dataset.act === 'faults') { settingsTab = 'posfaults'; return navigateTo('settings'); }
       if (b.dataset.send) return repairModal([b.dataset.send]);
       if (b.dataset.repl) return issueModal({ repairId: b.dataset.repl });
+      if (b.dataset.rcv) return receiveModal(b.dataset.rcv);
+      if (b.dataset.rev) { const why = prompt('Send to Accounts was a mistake. The machine goes back to the rider (if he is free) or to stock.\n\nReason (required):', ''); if (why === null) return; if (!why.trim()) { toast('Please write a reason'); return; } const out = await rpc('fh_pos_repair_revert', { p_repair: b.dataset.rev, p_reason: why.trim() }, 'Reverted'); if (out) reload(); return; }
       if (b.dataset.res) { const [id, out] = b.dataset.res.split(':'); const rem = prompt(out === 'repaired' ? 'Machine repaired and received back from Accounts: it goes back into stock, ready to issue to a rider. Remark (optional):' : out === 'irreparable' ? 'Machine will NOT be received back (cannot be repaired / lost). It is marked Retired. Remark (optional):' : 'Dismiss this report? Remark (optional):', ''); if (rem === null) return; if (await rpc('fh_pos_repair_result', { p_repair: id, p_outcome: out, p_remark: rem }, 'Saved')) reload(); }
     };
   }
