@@ -12321,16 +12321,20 @@ function fhPaintPlace(tzCity){
   if (!z.dataset.ready) {
     z.dataset.ready = '1'; z.innerHTML = '';
     let cached = null; try { cached = JSON.parse(sessionStorage.getItem('fh_place') || 'null'); } catch (_e) {}
-    if (cached && Date.now() - cached.t < 6 * 3600 * 1000) { _fhPlace = cached.n; z.textContent = '📍 ' + _fhPlace; return; }
+    if (cached && Date.now() - cached.t < 1 * 3600 * 1000) { _fhPlace = cached.n; z.textContent = '📍 ' + _fhPlace; return; }
     const ask = () => fhFindPlace(z, tzCity);
-    if (!navigator.geolocation) { z.textContent = tzCity ? '📍 ' + tzCity : ''; return; }
+    if (!navigator.geolocation) { z.textContent = tzCity ? '🕒 ' + tzCity : ''; return; }
     if (navigator.permissions && navigator.permissions.query) navigator.permissions.query({ name: 'geolocation' }).then(p => {
       if (p.state === 'granted') ask();
       else if (p.state === 'prompt') { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>' + (tzCity ? ' · ' + tzCity : ''); document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; }
-      else z.textContent = tzCity ? '📍 ' + tzCity : '';
+      else z.textContent = tzCity ? '🕒 ' + tzCity : '';
     }).catch(() => { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>'; document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; });
     else { z.innerHTML = '<a href="#" id="fh-geo-ask" style="color:inherit;text-decoration:underline">📍 Show my location</a>'; document.getElementById('fh-geo-ask').onclick = (e) => { e.preventDefault(); ask(); }; }
   }
+}
+function fhGeoRetry(z, tzCity, why){
+  z.innerHTML = '<span title="' + why + '. Allow location in the browser / phone settings, then tap Retry.">🕒 ' + (tzCity || '') + ' · <a href="#" id="fh-geo-retry" style="color:inherit;text-decoration:underline">📍 Retry location</a></span>';
+  const a = document.getElementById('fh-geo-retry'); if (a) a.onclick = (e) => { e.preventDefault(); try { sessionStorage.removeItem('fh_place'); } catch (_e) {} fhFindPlace(z, tzCity); };
 }
 function fhFindPlace(z, tzCity){
   if (_fhPlaceBusy) return; _fhPlaceBusy = true; z.textContent = '📍 Finding your location…';
@@ -12341,15 +12345,15 @@ function fhFindPlace(z, tzCity){
       const n = [a.suburb || a.neighbourhood || a.city_district || a.village, a.city || a.town || a.county || a.state_district, a.country].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 3).join(', ');
       if (n) { _fhPlace = n; try { sessionStorage.setItem('fh_place', JSON.stringify({ n, t: Date.now() })); } catch (_e) {} z.textContent = '📍 ' + n; _fhPlaceBusy = false; return; }
     } catch (_e) {}
-    _fhPlaceBusy = false; z.textContent = tzCity ? '📍 ' + tzCity : '';
-  }, () => { _fhPlaceBusy = false; z.textContent = tzCity ? '📍 ' + tzCity : ''; }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 });
+    _fhPlaceBusy = false; fhGeoRetry(z, tzCity, 'Place name not found');
+  }, (err) => { _fhPlaceBusy = false; fhGeoRetry(z, tzCity, err && err.code === 1 ? 'Location is blocked for this app/site' : 'Location not available'); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 });
 }
 
 
 function fhStartLiveClock(){
   clearInterval(_fhClockT);
   let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_e) {}
-  const place = tz ? tz.split('/').pop().replace(/_/g, ' ') : '';
+  let place = ''; try { place = new Intl.DateTimeFormat('en-GB', { timeZoneName:'long' }).formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value || ''; } catch (_e) {} if (!place && tz) place = tz.split('/').pop().replace(/_/g, ' ');
   const tick = () => {
     const day = document.getElementById('fh-lt-day');
     if (!day){ clearInterval(_fhClockT); return; }
