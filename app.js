@@ -10144,7 +10144,7 @@ function ftMonthsRange(all) {
 // limits (max litres per month per category) and Rs/KM per month
 async function ftLoadSettings(force) {
   if (FT.set && !force) return FT.set;
-  const set = { limits: new Map(), lim2: new Map(), rates: new Map(), ok: true };
+  const set = { limits: new Map(), lim2: new Map(), rates: new Map(), centers: [], ok: true };
   try {
     const [a0, b] = await Promise.all([sb.from('fuel_limits').select('category,max_liters,max_amount,max_km,max_lpv'), sb.from('fuel_rates').select('month,rs_per_km')]);
     let a = a0; if (a0.error) a = await sb.from('fuel_limits').select('category,max_liters');   // before migration_40
@@ -10152,10 +10152,19 @@ async function ftLoadSettings(force) {
     (a.data || []).forEach(x => { const k = String(x.category).toLowerCase(); if (+x.max_liters > 0) set.limits.set(k, +x.max_liters); set.lim2.set(k, { liters: +x.max_liters || null, amount: +x.max_amount || null, km: +x.max_km || null, lpv: +x.max_lpv || null }); });
     (b.data || []).forEach(x => set.rates.set(String(x.month).slice(0, 7), +x.rs_per_km));
   } catch (e) { set.ok = false; set.err = e.message || String(e); }
+  try { const c = await sb.from('fuel_centers').select('id,month,category,region_name,centers').order('month'); if (c.error) set.cenErr = c.error.message; else set.centers = (c.data || []).map(x => ({ id: x.id, month: String(x.month).slice(0, 7), category: x.category, region_name: x.region_name, centers: +x.centers })); } catch (e) { set.cenErr = e.message || String(e); }   // before migration_66 this simply stays empty
   FT.set = set; return set;
 }
 const ftLimit = (c) => (FT.set && FT.set.limits.get(String(c || '').toLowerCase())) || null;
 const ftLim = (c, k) => { const o = FT.set && FT.set.lim2 && FT.set.lim2.get(String(c || '').toLowerCase()); return (o && o[k]) || null; };
+// centre count per month for the current scope: all categories / regions, or only the chosen ones. A month with no entry of its own uses the latest earlier entry.
+function ftCentersSeries(ms, cat) {
+  const c = FT.set && FT.set.centers; if (!c || !c.length) return ms.map(() => null);
+  const regs = (FT.f.region || []).map(x => String(x).toLowerCase()), cats = cat ? [String(cat).toLowerCase()] : ((FT.f.cat && FT.f.cat.length) ? FT.f.cat.map(x => String(x).toLowerCase()) : null), by = new Map();
+  c.forEach(x => { const cl = String(x.category).toLowerCase(), rl = String(x.region_name).toLowerCase(); if (cats && !cats.includes(cl)) return; if (regs.length && !regs.includes(rl)) return; const k = cl + '|' + rl; if (!by.has(k)) by.set(k, []); by.get(k).push([x.month, x.centers]); });
+  by.forEach(a => a.sort((p, q) => p[0] < q[0] ? -1 : 1));
+  return ms.map(m => { let tot = 0, any = false; by.forEach(a => { let v = null; for (const [mm, n] of a) { if (mm <= m) v = n; else break; } if (v != null) { tot += v; any = true; } }); return any ? tot : null; });
+}
 const ftNationwide = () => !['lead', 'region', 'location', 'city', 'rider'].some(k => FT.f[k].length);
 // ▲ / ▼ text against the limit
 function ftStatus(l, lim, u) {
@@ -10274,7 +10283,7 @@ async function ftBigView(s, tool) {
 async function ftRenderCharts(host, specs) {
   await ftEnsurePlotly();
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
-  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}" style="--acc:${s.accent || '#1E2A6E'}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small>${s.toggle ? `<button type="button" class="ft-tg ${s.toggle.on ? 'on' : ''}" data-tg="${i}" title="${escapeHtml(s.toggle.title || '')}">${escapeHtml(s.toggle.label)}</button>` : ''}<button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
+  host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}" style="--acc:${s.accent || '#1E2A6E'}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small>${s.toggle ? `<button type="button" class="ft-tg ${s.toggle.on ? 'on' : ''}" data-tg="${i}" title="${escapeHtml(s.toggle.title || '')}">${escapeHtml(s.toggle.label)}</button>` : ''}${s.toggle2 ? `<button type="button" class="ft-tg ${s.toggle2.on ? 'on' : ''}" data-tg2="${i}" title="${escapeHtml(s.toggle2.title || '')}">${escapeHtml(s.toggle2.label)}</button>` : ''}<button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
   const plots = host.querySelectorAll('.ft-plot'), anim0 = !ftReduced();
   specs.forEach((s, i) => {
@@ -10300,6 +10309,7 @@ async function ftRenderCharts(host, specs) {
     host.querySelector(`[data-png="${i}"]`).onclick = () => ftSavePng(d, s.id, s.title);
     host.querySelector(`[data-csv="${i}"]`).onclick = () => { if (!s.csv || !s.csv.length) { toast('Nothing to download'); return; } downloadCSV(s.id + '.csv', toCSV(s.csv)); };
     const tg = host.querySelector(`[data-tg="${i}"]`); if (tg && s.toggle && s.toggle.fn) tg.onclick = () => s.toggle.fn();
+    const tg2 = host.querySelector(`[data-tg2="${i}"]`); if (tg2 && s.toggle2 && s.toggle2.fn) tg2.onclick = () => s.toggle2.fn();
   });
 }
 // ---- chart building blocks: every bar and point shows its number ----
@@ -10316,20 +10326,20 @@ function ftLine(ms, vals, name, color, d) {
 const ftLimShape = (lim, yref) => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref, y0: lim, y1: lim, line: { color: '#c0532f', width: 2, dash: 'dash' } });
 const ftLimNote = (lim, yref) => ({ xref: 'paper', x: 1, xanchor: 'right', yref, y: lim, yanchor: 'bottom', text: `Limit ${ftFmt(lim)} L`, showarrow: false, font: { color: '#c0532f', size: 11 } });
 function ftCsvMonths(ms, tots, cols) { return ms.map((m, i) => { const o = { Month: ftMonthLabel(m) }; cols.forEach(c => { const v = ftVal(tots[i], c); o[ftMetricName(c)] = v == null ? '' : Math.round(v * 100) / 100; }); return o; }); }
-const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3', km: '#2a8fa8', mem: '#b5483a' };
+const FT_C = { amount: '#1E2A6E', liters: '#2e7d4f', visits: '#d9962b', lpv: '#8a4fb3', km: '#2a8fa8', mem: '#b5483a', cen: '#6a5acd' };
 
 // ---- one chart with several "lanes" (each measure has its own band, numbers on every point) ----
 function ftLaneSpec(ms, defs, id, title, csv) {
   const L = ms.map(ftMonthLabel), traces = [], shapes = [], ann = [], list = defs.filter(d => d.vals.some(v => v != null)), n = list.length || 1, h = 1 / n;
   list.forEach((df, i) => {
-    const b1 = 1 - i * h, b0 = b1 - h, f0 = b0 + 0.12 * h, f1 = b1 - 0.34 * h, nn = df.vals.filter(v => v != null), lo = Math.min(...nn), hi = Math.max(...nn), d = df.d || 0;
+    const b1 = 1 - i * h, b0 = b1 - h, f0 = b0 + 0.08 * h, f1 = b1 - 0.46 * h, nn = df.vals.filter(v => v != null), lo = Math.min(...nn), hi = Math.max(...nn), d = df.d || 0;
     const y = df.vals.map(v => v == null ? null : (hi === lo ? (f0 + f1) / 2 : f0 + (v - lo) / (hi - lo) * (f1 - f0)));
-    traces.push({ type: 'scatter', mode: 'lines+markers+text', x: L, y, customdata: df.vals, name: df.label, text: df.vals.map(v => v == null ? '' : ftFmt(v, d)), textposition: 'top center', cliponaxis: false, textfont: { size: ms.length > 10 ? 9 : 11, color: df.color },
+    traces.push({ type: 'scatter', mode: 'lines+markers+text', x: L, y, customdata: df.vals, name: df.label, text: df.vals.map(v => v == null ? '' : '<b>' + ftFmt(v, d) + '</b>'), textposition: 'top center', cliponaxis: false, textfont: { size: ms.length > 10 ? 12 : 15, color: df.color },
       marker: { color: df.color, size: 8, line: { color: '#fff', width: 1.5 } }, line: { color: df.color, width: 3, shape: 'spline', smoothing: 0.5 }, connectgaps: false, hovertemplate: `<b>%{customdata:,.${d}f}</b><extra>${df.label}</extra>` });
-    ann.push({ xref: 'paper', yref: 'paper', x: 0, y: b1, xanchor: 'left', yanchor: 'top', text: `<b>${df.label}</b>`, showarrow: false, font: { size: 12, color: df.color } });
+    ann.push({ xref: 'paper', yref: 'paper', x: 0, y: b1, xanchor: 'left', yanchor: 'top', text: `<b>${df.label}</b>`, showarrow: false, font: { size: 14, color: df.color } });
     if (i) shapes.push({ type: 'line', xref: 'paper', yref: 'paper', x0: 0, x1: 1, y0: b1, y1: b1, line: { color: '#e6e9f4', width: 1 } });
   });
-  return { id, title, sub: `${n} measures, same months`, wide: true, h: 118 * n + 56, traces, csv,
+  return { id, title, sub: `${n} measures, same months`, wide: true, h: 92 * n + 50, traces, csv,
     layout: (narrow) => ({ margin: { l: 14, r: 14, t: 6, b: 36 }, hovermode: 'x unified', showlegend: false, shapes, annotations: ann, yaxis: { range: [0, 1], visible: false, fixedrange: true },
       xaxis: { type: 'category', gridcolor: '#f0f2f9', automargin: true, tickfont: { size: narrow ? 9 : 11 } } }) };
 }
@@ -10343,10 +10353,13 @@ function ftCatSpecs(rows, ms, cat, tag) {
   if (hs) lanes.push({ k: 'visits', label: 'Visits', vals: V, color: FT_C.visits });
   lanes.push({ k: 'km', label: hs ? 'KM' : 'KM (mileage)', vals: K, color: FT_C.km });
   const combTitle = `${cat} — ${lanes.map(l => l.label.split(' ')[0]).join(', ')} together`, withM = !!(FT.memOn && FT.memOn[tag]), memC = ftMembersByMonth(rows, ms);
+  const cen = ftCentersSeries(ms, cat), hasCen = cen.some(v => v != null), withC = !!(FT.cenOn && FT.cenOn[tag]);
   if (withM) lanes.push({ k: 'members', label: 'Team members', vals: memC, color: FT_C.mem });
-  const csvC = ftCsvMonths(ms, tots, hs ? ['liters', 'visits', 'km', 'amount'] : ['liters', 'km', 'amount']); if (withM) csvC.forEach((r, i) => { r['Team members'] = memC[i]; });
+  if (withC && hasCen) lanes.push({ k: 'centers', label: 'Centers', vals: cen, color: FT_C.cen });
+  const csvC = ftCsvMonths(ms, tots, hs ? ['liters', 'visits', 'km', 'amount'] : ['liters', 'km', 'amount']); if (withM) csvC.forEach((r, i) => { r['Team members'] = memC[i]; }); if (hasCen) csvC.forEach((r, i) => { r['Centers'] = cen[i] == null ? '' : cen[i]; });
   const comb = ftLaneSpec(ms, lanes, `${tag}-combined`, combTitle, csvC);
   comb.toggle = { on: withM, label: withM ? '− Team members' : '+ Team members', title: withM ? 'Remove the Team members line from this graph' : 'Add the Team members count to this graph' };
+  comb.toggle2 = { on: withC && hasCen, label: (withC && hasCen) ? '− Centers' : '+ Centers', title: hasCen ? 'Add or remove the Centers count on this graph' : 'No centre counts added yet: Fuel Trends > Limits & Rs/KM > Centers' };
   const one = (k, title, vals, d, extra) => {
     const lm = extra && extra.lim, L = ms.map(ftMonthLabel);
     const t = k === 'lpv' ? ftLine(ms, vals, title, FT_C[k], d) : ftBar(ms, vals, title, FT_C[k], d, extra && extra.colors);
@@ -10356,12 +10369,13 @@ function ftCatSpecs(rows, ms, cat, tag) {
     const sub = lm ? `${over} of ${nn.length} months over the limit · dotted = trend` : 'dotted = trend';
     return { id: `${tag}-${k}`, title: `${cat} — ${title}`, sub, accent: FT_C[k], h: 280, traces: [t, ftTrendTrace(L, vals)],
       layout: { showlegend: false, hovermode: 'closest', bargap: 0.4, yaxis: { range: [0, Math.max(1, ...nn, lm || 0) * (lm && k !== 'lpv' ? 1.42 : 1.25)], gridcolor: '#eef0f7', zeroline: false, separatethousands: true, automargin: true, tickfont: { size: 10 } },
-        shapes: lm ? [ftLimShape(lm, 'y')] : [], annotations: lm ? [ftLimNote(lm, 'y')] : [] }, csv: ftCsvMonths(ms, tots, [k]) };
+        shapes: lm ? [ftLimShape(lm, 'y')] : [], annotations: lm ? [ftLimNote(lm, 'y')] : [] }, csv: (extra && extra.csv) || ftCsvMonths(ms, tots, [k]) };
   };
   const out = [comb, one('liters', 'Litres', Lt, 0, { colors: lcols, lim })];
   if (hs) out.push(one('visits', 'Visits', V, 0));
   out.push(one('km', hs ? 'KM' : 'KM (mileage)', K, 0, { colors: limK ? K.map(v => v > limK ? '#c0532f' : '#2e7d4f') : null, lim: limK }));
   if (hs) out.push(one('lpv', 'Litres per visit', P, 2, { lim: limP }));
+  if (hasCen) out.push(one('cen', 'Centers', cen, 0, { csv: ms.map((m, i) => ({ Month: ftMonthLabel(m), Centers: cen[i] == null ? '' : cen[i] })) }));
   out.push(one('amount', 'Amount (Rs)', A, 0, { colors: limA ? A.map(v => v > limA ? '#c0532f' : '#2e7d4f') : null, lim: limA }));
   return out;
 }
@@ -10372,7 +10386,7 @@ async function ftRenderCat(box, rows, ms, cat, tag) {
     ms.map((m, i) => { const t = tots[i], p = i ? tots[i - 1] : null; return `<tr><td>${ftMonthLabel(m)}</td><td class="n">${ftFmt(t.liters)}${p ? dl2(t.liters, p.liters) : ''}</td>${hs ? `<td class="n">${ftFmt(t.visits)}${p ? dl2(t.visits, p.visits) : ''}</td>` : ''}<td class="n">${ftFmt(t.km)}${p ? dl2(t.km, p.km) : ''}</td>${hs ? `<td class="n">${t.visits ? ftFmt(t.liters / t.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(t.amount)}${p ? dl2(t.amount, p.amount) : ''}</td><td class="n">${ftFmt(memC[i])}</td></tr>`; }).join('')
   }<tr class="tot"><td>Total</td><td class="n">${ftFmt(sum.liters)}</td>${hs ? `<td class="n">${ftFmt(sum.visits)}</td>` : ''}<td class="n">${ftFmt(sum.km)}</td>${hs ? `<td class="n">${sum.visits ? ftFmt(sum.liters / sum.visits, 2) : '–'}</td>` : ''}<td class="n">${ftFmt(sum.amount)}</td><td class="n">${ftFmt(new Set(rows.map(r => r.rk)).size)}</td></tr></tbody></table></div></details>`;
   box.innerHTML = `<div class="ft-cg"></div>${tbl}`;
-  const drawCg = async () => { const sp = ftCatSpecs(rows, ms, cat, tag); sp[0].toggle.fn = async () => { FT.memOn = FT.memOn || {}; FT.memOn[tag] = !FT.memOn[tag]; await drawCg(); }; await ftRenderCharts(box.querySelector('.ft-cg'), sp); };
+  const drawCg = async () => { const sp = ftCatSpecs(rows, ms, cat, tag); sp[0].toggle.fn = async () => { FT.memOn = FT.memOn || {}; FT.memOn[tag] = !FT.memOn[tag]; await drawCg(); }; sp[0].toggle2.fn = async () => { if (!ftCentersSeries(ms, cat).some(v => v != null)) { toast('No centre counts yet. Add them in Limits & Rs/KM > Centers.'); return; } FT.cenOn = FT.cenOn || {}; FT.cenOn[tag] = !FT.cenOn[tag]; await drawCg(); }; await ftRenderCharts(box.querySelector('.ft-cg'), sp); };
   await drawCg();
 }
 // pie with a "thick" 3-D look: a darker copy sits just below the pie. The slice under the pointer slides out and a detail box shows its name, amount, share and rank.
@@ -10459,6 +10473,12 @@ function ftOverallSpecs(rows, ms, cats, redraw) {
   };
   out.push(mk('amount'), mk('liters'));
   ['Home Sampling', 'Home Care'].forEach(tp => { if (cats.some(c => ftVT(c) === tp)) { out.push(mk('visits', tp)); out.push(ftLpvOverall(rows, ms, tp)); } });
+  const cenAll = ftCentersSeries(ms, null);
+  if (cenAll.some(v => v != null)) {
+    const rg = (FT.f.region || []).length ? FT.f.region.join(', ') : 'all regions', nn = cenAll.filter(v => v != null), last = cenAll.length - 1;
+    out.push({ id: 'all-centers', title: `Centers by month — ${rg}`, sub: 'a month without its own entry keeps the last count · dotted = trend', accent: FT_C.cen, wide: true, h: 300, traces: [ftBar(ms, cenAll, 'Centers', FT_C.cen, 0), ftTrendTrace(L, cenAll)], csv: ms.map((m, i) => ({ Month: ftMonthLabel(m), Centers: cenAll[i] == null ? '' : cenAll[i] })),
+      layout: { showlegend: false, hovermode: 'closest', bargap: 0.42, yaxis: { range: [0, Math.max(1, ...nn) * 1.3], gridcolor: '#eef0f7', zeroline: false, separatethousands: true, automargin: true, tickfont: { size: 10 } }, margin: { l: 56, r: 14, t: 18, b: 40 } } });
+  }
   // share of each category in the latest month — one slim strip per measure
   const lm = ms[ms.length - 1], rs = rows.filter(r => r.m === lm);
   if (rs.length) {
@@ -10835,7 +10855,8 @@ async function ftRatesBox(box, all, allMs, changed) {
     <div class="ft-sec"><h4>Rs/KM by month</h4><p class="fv-note" style="margin:0 0 8px">Type the Rs/KM of any month (also months not uploaded yet) and press Save. Clear the box and Save to remove it.</p>
       <div class="ft-tb"><input id="ft-nm" type="month" ${inp}><input id="ft-nr" type="number" min="0" step="any" ${inp} placeholder="Rs/KM"><button class="fv-btn" id="ft-add" type="button" style="height:30px">Add / update</button><span style="flex:1"></span><button class="fv-btn ghost" id="ft-dl-rate" type="button">Download Rs/KM (CSV)</button></div>
       <div class="ft-wrap" style="max-height:340px"><table class="fv-table"><thead><tr><th>Month</th><th>Rs/KM</th><th></th></tr></thead><tbody>
-      ${rateMonths.map(m => `<tr><td>${ftMonthLabel(m)}</td><td><input ${inp} type="number" min="0" step="any" data-rate="${m}" value="${set.rates.has(m) ? set.rates.get(m) : ''}" placeholder="–"></td><td><button class="fv-btn" data-sr="${m}" type="button" style="height:28px">Save</button></td></tr>`).join('')}</tbody></table></div></div>`;
+      ${rateMonths.map(m => `<tr><td>${ftMonthLabel(m)}</td><td><input ${inp} type="number" min="0" step="any" data-rate="${m}" value="${set.rates.has(m) ? set.rates.get(m) : ''}" placeholder="–"></td><td><button class="fv-btn" data-sr="${m}" type="button" style="height:28px">Save</button></td></tr>`).join('')}</tbody></table></div></div><div class="ft-sec" id="ft-cen"></div>`;
+  ftCentersBox(box.querySelector('#ft-cen'), all, cats, allMs, set, changed);
   if (!hasPermission('ft_upload')) {
     box.querySelectorAll('input').forEach(i => { i.disabled = true; });
     box.querySelectorAll('[data-sl],[data-sr],#ft-add,#ft-nm,#ft-nr').forEach(b => { b.style.display = 'none'; });
@@ -10847,6 +10868,63 @@ async function ftRatesBox(box, all, allMs, changed) {
   box.querySelector('#ft-add').onclick = () => { const m = box.querySelector('#ft-nm').value, v = box.querySelector('#ft-nr').value; if (!m || v === '') { toast('Choose a month and enter the Rs/KM'); return; } rpc('fuel_set_rate', { p_month: m + '-01', p_rate: +v }, 'Rs/KM saved'); };
   box.querySelector('#ft-dl-rate').onclick = () => { const r = [...set.rates].sort().map(([m, v]) => ({ Month: ftMonthLabel(m), 'Rs/KM': v })); if (!r.length) { toast('No Rs/KM saved yet'); return; } downloadCSV('fuel-rs-per-km.csv', toCSV(r)); };
   box.querySelector('#ft-dl-lim').onclick = () => { const r = cats.map(c => { const o = { Category: c, 'Max litres per month': ftLimit(c) || '', 'Max amount (Rs)': ftLim(c, 'amount') || '', 'Max KM': ftLim(c, 'km') || '', 'Max litres per visit': ftLim(c, 'lpv') || '' }; last12.forEach(m => { const l = ftSum(all.filter(x => x.m === m && (x.category || 'Uncategorised').toLowerCase() === c.toLowerCase())).liters, lim = ftLimit(c); o[ftMonthLabel(m) + ' litres'] = Math.round(l); o[ftMonthLabel(m) + ' status'] = lim && l ? (l > lim ? 'Over by ' + Math.round(l - lim) : l < lim ? 'Under by ' + Math.round(lim - l) : 'At limit') : ''; }); return o; }); downloadCSV('fuel-limits-status.csv', toCSV(r)); };
+}
+
+
+// ---------------- Centers: count of centres per region, category and month (add / edit / remove / bulk) ----------------
+function ftCentersBox(host, all, cats, allMs, set, changed) {
+  const can = isSuperAdmin(), inp = 'style="height:30px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;font:inherit;font-size:12px;box-sizing:border-box"';
+  const regions = [...new Set([...all.map(r => r.region_name).filter(Boolean), ...set.centers.map(x => x.region_name)])].sort((a, b) => a.localeCompare(b));
+  const curM = ftMonthsRange(all).slice(-1)[0] || new Date().toISOString().slice(0, 7);
+  const monthsHave = [...new Set(set.centers.map(x => x.month))].sort().reverse();
+  let sel = FT.cenMonth || monthsHave[0] || curM;
+  if (set.cenErr) { host.innerHTML = `<h4>Centers by region</h4><div class="fv-note">Centre counts are not available yet${can ? ': please run <strong>migration_66.sql</strong> in Supabase (SQL Editor), then reopen this page.' : '.'}</div>`; return; }
+  const save = async (rows, msg) => {
+    let n = 0; for (let i = 0; i < rows.length; i += 400) { const { data, error } = await sb.rpc('fuel_centers_bulk', { p_rows: rows.slice(i, i + 400) }); if (error) { toast('Could not save: ' + error.message + (/fuel_centers_bulk|schema cache/i.test(error.message) ? ' — please run migration_66.sql in Supabase.' : '')); return false; } n += +data || 0; }
+    toast((msg || 'Saved') + ' (' + n + ' row' + (n === 1 ? '' : 's') + ')'); FT.cenMonth = sel; changed(); return true;
+  };
+  const draw = () => {
+    const rows = set.centers.filter(x => x.month === sel).sort((a, b) => a.category.localeCompare(b.category) || a.region_name.localeCompare(b.region_name)), tot = rows.reduce((a, x) => a + x.centers, 0);
+    host.innerHTML = `<h4>Centers by region</h4><p class="fv-note" style="margin:0 0 8px">How many centres each region has, per category. They appear on the Summary charts (switch <b>+ Centers</b> on a category graph; a separate Centers graph is also shown) and follow the Region / Category filters. A month without its own entry keeps the last count, so you only enter a month when the number changes.${can ? '' : ' <b>View only — the Super Admin can change them.</b>'}</p>
+      <div class="ft-tb"><label class="fv-note">Month</label><input type="month" id="cn-m" value="${sel}" ${inp}>${monthsHave.length ? `<select id="cn-pick" ${inp}><option value="">Months with entries…</option>${monthsHave.map(m => `<option value="${m}">${ftMonthLabel(m)}</option>`).join('')}</select>` : ''}<span style="flex:1"></span><button class="fv-btn ghost" id="cn-dl" type="button">Download all (CSV)</button></div>
+      ${can ? `<div class="ft-tb" style="margin-top:8px"><select id="cn-c" ${inp}>${cats.map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select><input id="cn-r" list="cn-rl" placeholder="Region" ${inp}><datalist id="cn-rl">${regions.map(r => `<option value="${escapeHtml(r)}">`).join('')}</datalist><input id="cn-n" type="number" min="0" step="1" placeholder="Centers" style="width:90px;height:30px;border:1px solid #dfe3ee;border-radius:8px;padding:0 9px;box-sizing:border-box"><button class="fv-btn" id="cn-add" type="button" style="height:30px">Add / update</button></div>` : ''}
+      <div class="ft-wrap" style="max-height:340px;margin-top:8px"><table class="fv-table"><thead><tr><th>Category</th><th>Region</th><th class="n">Centers</th>${can ? '<th></th>' : ''}</tr></thead><tbody>
+      ${rows.map(x => `<tr><td>${escapeHtml(x.category)}</td><td>${escapeHtml(x.region_name)}</td><td class="n">${can ? `<input type="number" min="0" step="1" data-cv="${x.id}" value="${x.centers}" style="width:84px;height:28px;border:1px solid #dfe3ee;border-radius:8px;padding:0 8px;box-sizing:border-box">` : x.centers}</td>${can ? `<td><button class="fv-btn" data-cs="${x.id}" type="button" style="height:28px">Save</button> <button class="fv-btn ghost" data-cd="${x.id}" type="button" style="height:28px">Remove</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="4" class="fv-note">No entries for ${ftMonthLabel(sel)}. ${monthsHave.length ? 'Earlier counts are carried forward.' : ''}</td></tr>`}
+      ${rows.length ? `<tr class="tot"><td colspan="2">Total entered for ${ftMonthLabel(sel)}</td><td class="n">${ftFmt(tot)}</td>${can ? '<td></td>' : ''}</tr>` : ''}</tbody></table></div>
+      ${can ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">➕ Add in bulk (paste from Excel or upload a file)</summary>
+        <p class="fv-note" style="margin:6px 0">Paste rows copied from Excel: <b>Region, Centers</b> (uses the category and month chosen here) or <b>Category, Region, Centers</b>, or <b>Month, Category, Region, Centers</b> (month like 2026-11). Existing entries for the same month + category + region are replaced.</p>
+        <div class="ft-tb"><select id="cb-c" ${inp}>${cats.map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select><span class="fv-note">for ${ftMonthLabel(sel)} when a row has no category / month</span></div>
+        <textarea id="cb-t" rows="6" placeholder="Center&#9;41&#10;South&#9;38&#10;North&#9;29" style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid #dfe3ee;border-radius:8px;padding:8px;font:inherit;font-size:12px"></textarea>
+        <div class="ft-tb" style="margin-top:6px"><button class="fv-btn" id="cb-go" type="button">Check rows</button><label class="fv-btn ghost" style="cursor:pointer;display:inline-flex;align-items:center">Upload Excel / CSV<input type="file" id="cb-f" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="fv-btn ghost" id="cb-tpl" type="button">Download template</button><span id="cb-st" class="fv-note"></span></div></details>` : ''}`;
+    const q = (x) => host.querySelector(x);
+    q('#cn-m').onchange = (e) => { if (e.target.value) { sel = e.target.value; FT.cenMonth = sel; draw(); } };
+    const pk = q('#cn-pick'); if (pk) pk.onchange = (e) => { if (e.target.value) { sel = e.target.value; FT.cenMonth = sel; draw(); } };
+    q('#cn-dl').onclick = () => { if (!set.centers.length) { toast('No centre counts saved yet'); return; } downloadCSV('fuel-centers.csv', toCSV(set.centers.slice().sort((a, b) => b.month.localeCompare(a.month) || a.category.localeCompare(b.category) || a.region_name.localeCompare(b.region_name)).map(x => ({ Month: x.month, Category: x.category, Region: x.region_name, Centers: x.centers })))); };
+    if (!can) return;
+    q('#cn-add').onclick = () => { const c = q('#cn-c').value, r = q('#cn-r').value.trim(), n = q('#cn-n').value; if (!c || !r || n === '') { toast('Choose the category, type the region and the number of centers'); return; } save([{ month: sel + '-01', category: c, region_name: r, centers: +n }], 'Saved'); };
+    host.querySelectorAll('[data-cs]').forEach(b => b.onclick = () => { const x = set.centers.find(y => String(y.id) === b.dataset.cs), v = host.querySelector(`[data-cv="${b.dataset.cs}"]`).value; if (!x || v === '') { toast('Type the number of centers'); return; } save([{ month: x.month + '-01', category: x.category, region_name: x.region_name, centers: +v }], 'Saved'); });
+    host.querySelectorAll('[data-cd]').forEach(b => b.onclick = async () => { const x = set.centers.find(y => String(y.id) === b.dataset.cd); if (!x || !confirm(`Remove ${x.category} · ${x.region_name} · ${ftMonthLabel(x.month)}? Later months will then use the previous count.`)) return; const { error } = await sb.from('fuel_centers').delete().eq('id', x.id); if (error) { toast('Could not remove: ' + error.message); return; } toast('Removed'); FT.cenMonth = sel; changed(); });
+    // bulk: parse, show a summary, then save
+    let pend = null; const st = q('#cb-st');
+    const catFix = (c) => cats.find(x => x.toLowerCase() === String(c).trim().toLowerCase()) || String(c).trim();
+    const parse = (lines) => {
+      const out = [], bad = []; const defC = q('#cb-c').value;
+      lines.forEach((cols, i) => {
+        cols = cols.map(x => String(x == null ? '' : x).trim()); if (cols.every(x => !x)) return;
+        const n = cols[cols.length - 1].replace(/,/g, ''); if (!/^\d+(\.\d+)?$/.test(n)) { if (i > 0) bad.push(i + 1); return; }   // header row or bad number
+        let m = sel, c = defC, r = '';
+        if (cols.length >= 4) { m = (ftParseMonth(cols[0]) || '').slice(0, 7); c = catFix(cols[1]); r = cols[2]; } else if (cols.length === 3) { c = catFix(cols[0]); r = cols[1]; } else if (cols.length === 2) { r = cols[0]; } else { bad.push(i + 1); return; }
+        if (!m || !r || !c) { bad.push(i + 1); return; }
+        out.push({ month: m + '-01', category: c, region_name: r, centers: Math.round(+n) });
+      });
+      return { out, bad };
+    };
+    const show = (p) => { pend = p.out; st.innerHTML = pend.length ? `<b>${pend.length}</b> row${pend.length === 1 ? '' : 's'} ready${p.bad.length ? `, ${p.bad.length} skipped (line ${p.bad.slice(0, 6).join(', ')}${p.bad.length > 6 ? ' …' : ''})` : ''}. <button class="fv-btn" id="cb-ok" type="button" style="height:28px">Save these rows</button>` : 'No usable rows found.'; const ok = q('#cb-ok'); if (ok) ok.onclick = async () => { ok.disabled = true; if (!(await save(pend, 'Bulk saved'))) ok.disabled = false; }; };
+    q('#cb-go').onclick = () => show(parse(q('#cb-t').value.split(/\r?\n/).map(l => l.includes('\t') ? l.split('\t') : l.split(/\s*[,;]\s*/))));
+    q('#cb-f').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { await ensureXLSX(); const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' }); const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' }); show(parse(rows)); } catch (err) { toast('Could not read the file: ' + (err.message || err)); } e.target.value = ''; };
+    q('#cb-tpl').onclick = () => downloadCSV('fuel-centers-template.csv', 'Month,Category,Region,Centers\n' + sel + ',' + (cats[0] || 'Home Sampling') + ',Center,41\n' + sel + ',' + (cats[0] || 'Home Sampling') + ',South,38\n');
+  };
+  draw();
 }
 
 // ---------------- Saved data: months, edit rows, tools ----------------
