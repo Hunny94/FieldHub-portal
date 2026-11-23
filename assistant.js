@@ -555,17 +555,17 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
   function build() {
     if (el('fh-bot')) return;
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
-    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.className = 'ribbon-link'; b.type = 'button'; b.title = 'Need help? Talk to me'; b.setAttribute('aria-label', 'Open FieldHub Assistant');
-    b.innerHTML = '💬 <span>Help</span>';
+    const b = document.createElement('button'); b.id = 'fh-bot-btn'; b.className = 'ribbon-link'; b.type = 'button'; b.title = 'Need help? Talk to me'; b.setAttribute('aria-label', 'Ask FieldHub: chat helper');
+    b.innerHTML = '💬 <span>Ask FieldHub</span>';
     const p = document.createElement('div'); p.id = 'fh-bot'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'FieldHub Assistant');
-    p.innerHTML = '<div class="fb-head"><div><b>FieldHub Assistant</b><small>Answers from your portal data</small></div><span style="display:flex;gap:8px;align-items:center"><button type="button" class="fb-new">New chat</button><button type="button" class="fb-min" aria-label="Hide chat" title="Hide (keeps this chat)">▁</button><button type="button" class="fb-x" aria-label="Close" title="Close chat">✕</button></span></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
+    p.innerHTML = '<div class="fb-head"><div><b>Ask FieldHub</b><small>Answers from your portal data</small></div><span style="display:flex;gap:8px;align-items:center"><button type="button" class="fb-new">New chat</button><button type="button" class="fb-min" aria-label="Hide chat" title="Hide (keeps this chat)">▁</button><button type="button" class="fb-x" aria-label="Close" title="Close chat">✕</button></span></div><div class="fb-msgs" aria-live="polite"></div><div class="fb-chips"></div><form class="fb-form"><input type="text" placeholder="Type your question…" autocomplete="off" maxlength="200"><button type="submit">Send</button></form>';
     document.body.appendChild(p);
     const ribbon = document.querySelector('.top-ribbon-actions');   // the Help button lives in the top bar, so it never covers page content
     if (ribbon) ribbon.insertBefore(b, ribbon.firstChild); else { b.classList.add('fb-float'); document.body.appendChild(b); }
     b.onclick = () => { const h = b.querySelector('.fb-hint'); if (h) h.remove(); toggle(); };
     setTimeout(() => { if (!A.open && !el('fh-bot-btn').querySelector('.fb-hint')) { try { if (sessionStorage.getItem('fh_bot_hint')) return; sessionStorage.setItem('fh_bot_hint', '1'); } catch (_) {} const h = document.createElement('div'); h.className = 'fb-hint'; h.textContent = '👋 Need help? Ask me anything'; b.appendChild(h); setTimeout(() => h.remove(), 6200); } }, 2500);
     p.querySelector('.fb-x').onclick = () => toggle(false);
-    p.querySelector('.fb-min').onclick = () => { A.open = false; el('fh-bot').classList.remove('open'); const bb = el('fh-bot-btn'); if (bb) { bb.querySelector('span').textContent = A.msgs.length > 1 ? 'Help ●' : 'Help'; } };   // hide only: the chat is kept
+    p.querySelector('.fb-min').onclick = () => { A.open = false; el('fh-bot').classList.remove('open'); const bb = el('fh-bot-btn'); if (bb) { bb.querySelector('span').textContent = A.msgs.length > 1 ? 'Ask FieldHub ●' : 'Ask FieldHub'; } };   // hide only: the chat is kept
     p.querySelector('.fb-form').onsubmit = (e) => { e.preventDefault(); const i = p.querySelector('input'); const v = i.value; i.value = ''; ask(v); };
     p.addEventListener('click', (e) => {
       const fbk = e.target.closest('[data-fb]'); if (fbk) { rate(fbk.getAttribute('data-lid'), +fbk.getAttribute('data-fb')); return; }
@@ -581,7 +581,7 @@ html.fh-dark #fh-bot .fb-form button{background:#8da0ff;color:#0d1230}
     const open = typeof force === 'boolean' ? force : !A.open, resume = open && A.msgs.length > 1 && !A.open && !el('fh-bot').classList.contains('open');
     A.open = open;
     el('fh-bot').classList.toggle('open', A.open);
-    const bb = el('fh-bot-btn'); if (bb && bb.querySelector('span')) bb.querySelector('span').textContent = 'Help';
+    const bb = el('fh-bot-btn'); if (bb && bb.querySelector('span')) bb.querySelector('span').textContent = 'Ask FieldHub';
     if (!A.open) { A.msgs = []; A.pending = null; A.sid = ''; }
     if (A.open) {
       if (!resume) startSession(); else render();
