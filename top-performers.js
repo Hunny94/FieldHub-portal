@@ -5,34 +5,49 @@
   const monthLabel = (d) => { try { return new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }); } catch (_e) { return d; } };
   const initials = (n) => (n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((x) => x[0]).join('').toUpperCase();
 
-  // picture adjuster: choose the picture, then zoom and move it inside a round frame; the result is a small square JPEG (about 15 KB)
+  // picture adjuster (v94): choose / re-frame a picture inside a rounded-square frame. Zoom in or OUT (white fills the gaps),
+  // drag it anywhere, or use the − / + and arrow buttons for small steps. The result is a small square JPEG (about 15-25 KB).
   function adjuster(file, size) {
     return new Promise((res, rej) => {
       const img = new Image(), url = URL.createObjectURL(file);
       img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('That file is not a picture')); };
       img.onload = () => {
-        const V = 260, st = { z: 1, ox: 0, oy: 0 }, base = Math.max(V / img.width, V / img.height);
+        const V = 260, base = Math.max(V / img.width, V / img.height), fitZ = Math.min(V / img.width, V / img.height) / base;
+        const ZMIN = Math.min(0.5, fitZ), ZMAX = 4, st = { z: 1, ox: 0, oy: 0 };
         const box = document.getElementById('tp-adj'); box.style.display = 'block';
-        box.innerHTML = `<div style="text-align:center"><canvas id="tp-cv" width="${V}" height="${V}" style="width:${V}px;max-width:100%;border-radius:22px;border:3px solid #f0c24b;touch-action:none;cursor:grab;background:#ddd"></canvas></div>
-          <div class="hint" style="text-align:center">Drag the picture to move it. Use the slider to zoom.</div>
-          <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span>➖</span><input type="range" id="tp-zoom" min="1" max="3.5" step="0.02" value="1" style="flex:1"><span>➕</span></div>
-          <div style="text-align:center"><button type="button" class="btn small outline" id="tp-reset">Reset</button></div>`;
-        const cv = document.getElementById('tp-cv'), cx = cv.getContext('2d');
-        const clamp = () => { const w = img.width * base * st.z, h = img.height * base * st.z; st.ox = Math.min(Math.max(st.ox, -(w - V) / 2), (w - V) / 2); st.oy = Math.min(Math.max(st.oy, -(h - V) / 2), (h - V) / 2); };
-        const paint = (c, S) => { const k = S / V; clamp(); const w = img.width * base * st.z * k, h = img.height * base * st.z * k; c.fillStyle = '#fff'; c.fillRect(0, 0, S, S); c.drawImage(img, (S - w) / 2 + st.ox * k, (S - h) / 2 + st.oy * k, w, h); };
-        const draw = () => paint(cx, V); draw();
-        document.getElementById('tp-zoom').oninput = (e) => { st.z = +e.target.value; draw(); };
-        document.getElementById('tp-reset').onclick = () => { st.z = 1; st.ox = st.oy = 0; document.getElementById('tp-zoom').value = 1; draw(); };
+        const b = (id, txt, title) => `<button type="button" class="btn small outline" id="${id}" title="${title}" aria-label="${title}" style="min-width:38px;padding:5px 9px">${txt}</button>`;
+        box.innerHTML = `<div style="text-align:center"><canvas id="tp-cv" width="${V}" height="${V}" style="width:${V}px;max-width:100%;border-radius:22px;border:3px solid #f0c24b;touch-action:none;cursor:grab;background:#fff"></canvas></div>
+          <div class="hint" style="text-align:center;margin:6px 0">Drag the picture to move it. Zoom out to show more (white fills the empty space).</div>
+          <div style="display:flex;align-items:center;gap:8px;margin:6px 0">${b('tp-zout', '−', 'Zoom out')}<input type="range" id="tp-zoom" min="${ZMIN.toFixed(2)}" max="${ZMAX}" step="0.01" value="1" style="flex:1" aria-label="Zoom">${b('tp-zin', '+', 'Zoom in')}</div>
+          <div style="display:flex;justify-content:center;align-items:center;gap:6px;flex-wrap:wrap">${b('tp-l', '←', 'Move left')}${b('tp-u', '↑', 'Move up')}${b('tp-d', '↓', 'Move down')}${b('tp-r', '→', 'Move right')}
+            <button type="button" class="btn small outline" id="tp-fit" title="Show the whole picture">Whole picture</button><button type="button" class="btn small outline" id="tp-reset">Reset</button></div>`;
+        const cv = document.getElementById('tp-cv'), cx = cv.getContext('2d'), zr = document.getElementById('tp-zoom');
+        // the picture may move until only a third of it is still inside the frame (so it can never get lost)
+        const clamp = () => { const w = img.width * base * st.z, h = img.height * base * st.z, lx = Math.max(Math.abs(w - V) / 2, (w + V) / 2 - Math.min(w, V) / 3), ly = Math.max(Math.abs(h - V) / 2, (h + V) / 2 - Math.min(h, V) / 3); st.ox = Math.min(Math.max(st.ox, -lx), lx); st.oy = Math.min(Math.max(st.oy, -ly), ly); };
+        const paint = (c, S) => { const k = S / V; clamp(); const w = img.width * base * st.z * k, h = img.height * base * st.z * k; c.fillStyle = '#fff'; c.fillRect(0, 0, S, S); c.imageSmoothingQuality = 'high'; c.drawImage(img, (S - w) / 2 + st.ox * k, (S - h) / 2 + st.oy * k, w, h); };
+        const draw = () => paint(cx, V);
+        const setZ = (z) => { st.z = Math.min(ZMAX, Math.max(ZMIN, +z)); zr.value = st.z; draw(); };
+        const move = (dx, dy) => { st.ox += dx; st.oy += dy; draw(); };
+        draw();
+        zr.oninput = (e) => setZ(e.target.value);
+        document.getElementById('tp-zin').onclick = () => setZ(st.z + 0.1);
+        document.getElementById('tp-zout').onclick = () => setZ(st.z - 0.1);
+        document.getElementById('tp-l').onclick = () => move(-8, 0);
+        document.getElementById('tp-r').onclick = () => move(8, 0);
+        document.getElementById('tp-u').onclick = () => move(0, -8);
+        document.getElementById('tp-d').onclick = () => move(0, 8);
+        document.getElementById('tp-fit').onclick = () => { st.ox = st.oy = 0; setZ(fitZ); };
+        document.getElementById('tp-reset').onclick = () => { st.ox = st.oy = 0; setZ(1); };
+        cv.addEventListener('wheel', (e) => { e.preventDefault(); setZ(st.z * (e.deltaY < 0 ? 1.06 : 1 / 1.06)); }, { passive: false });
         let drag = null;
         cv.onpointerdown = (e) => { drag = { x: e.clientX, y: e.clientY, ox: st.ox, oy: st.oy }; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; };
         cv.onpointermove = (e) => { if (!drag) return; const r = V / cv.getBoundingClientRect().width; st.ox = drag.ox + (e.clientX - drag.x) * r; st.oy = drag.oy + (e.clientY - drag.y) * r; draw(); };
         cv.onpointerup = cv.onpointercancel = () => { drag = null; cv.style.cursor = 'grab'; };
-        res({ render: () => { const o = document.createElement('canvas'); o.width = o.height = size; paint(o.getContext('2d'), size); let q = 0.72, out = o.toDataURL('image/jpeg', q); while (out.length > 40000 && q > 0.3) { q -= 0.1; out = o.toDataURL('image/jpeg', q); } return out; } });
+        res({ render: () => { const o = document.createElement('canvas'); o.width = o.height = size; paint(o.getContext('2d'), size); let q = 0.8, out = o.toDataURL('image/jpeg', q); while (out.length > 40000 && q > 0.3) { q -= 0.1; out = o.toDataURL('image/jpeg', q); } return out; } });
       };
       img.src = url;
     });
   }
-
   // v92: compact card (photo left, details right) so the home page stays short; Super Admin gets Edit + Revert
   const TP_CSS = `.tp-card{width:290px;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:#fff;border:1px solid #e6e9f2;box-shadow:0 2px 8px rgba(20,30,70,.06);text-align:left;box-sizing:border-box}
 .tp-card.me{background:linear-gradient(160deg,#fff4cf,#ffe39a);border-color:#f0c24b}
@@ -114,7 +129,7 @@ html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0f
     document.querySelectorAll('[data-tpedit]').forEach((b) => { b.onclick = () => window.fhTopEdit(b.dataset.tpedit); });
     document.querySelectorAll('[data-del]').forEach((b) => { b.onclick = async () => { if (!confirm('Remove this top-performer entry?')) return; const r = await sb.from('top_performers').delete().eq('id', b.dataset.del); toast(r.error ? 'Could not remove: ' + r.error.message : 'Removed'); closeModal(); }; });
     let adj = null;
-    document.getElementById('tp-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; const box = document.getElementById('tp-adj'); box.style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 240); } catch (err) { toast(err.message || 'Could not open the picture'); } };
+    document.getElementById('tp-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; const box = document.getElementById('tp-adj'); box.style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 300); } catch (err) { toast(err.message || 'Could not open the picture'); } };
     document.getElementById('tp-form').onsubmit = async (ev) => {
       ev.preventDefault();
       const m = document.getElementById('tp-month').value + '-01', e = document.getElementById('tp-exp').value;
@@ -152,10 +167,10 @@ html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0f
     let adj = null;
     const adjBtn = document.getElementById('tpe-adjust');
     if (adjBtn) adjBtn.onclick = async () => {   // re-frame the picture already saved (no new file needed)
-      try { const bl = await (await fetch(t.photo)).blob(); adj = await adjuster(new File([bl], 'current.jpg', { type: bl.type || 'image/jpeg' }), 240); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; }
+      try { const bl = await (await fetch(t.photo)).blob(); adj = await adjuster(new File([bl], 'current.jpg', { type: bl.type || 'image/jpeg' }), 300); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; }
       catch (err) { toast('Could not open the current picture. Please choose a new one.'); }
     };
-    document.getElementById('tpe-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; document.getElementById('tp-adj').style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 240); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; } catch (err) { toast(err.message || 'Could not open the picture'); } };
+    document.getElementById('tpe-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; document.getElementById('tp-adj').style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 300); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; } catch (err) { toast(err.message || 'Could not open the picture'); } };
     document.getElementById('tpe-form').onsubmit = async (ev) => {
       ev.preventDefault();
       const name = document.getElementById('tpe-name').value.trim(), m = document.getElementById('tpe-month').value, e = document.getElementById('tpe-exp').value;
