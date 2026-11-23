@@ -1,4 +1,4 @@
-/* FieldHub UI layer v3 (portal v91).
+/* FieldHub UI layer v4 (portal v92).
    Look and feel only: phone top bar with a "More" menu (Option A), nothing covering content, Medium animations,
    tidier buttons, a guard against double-tapping Save, and the Fuel Trends "litres per visit" list.
    v2: thin menu line on computers, profile menu (desktop), "Ask FieldHub", glass dashboard with trend lines and a
@@ -208,6 +208,17 @@ body.fh-on-dash #fh-topclock{display:none}
 .fh-ac .hd{stroke:#fff;stroke-width:3.2;stroke-linecap:round}.fh-ac .mn{stroke:#fff;stroke-width:2.2;stroke-linecap:round}.fh-ac .sc{stroke:#5eead4;stroke-width:1.4;stroke-linecap:round}
 .fh-ac .hd,.fh-ac .mn,.fh-ac .sc{transform-origin:35px 35px;transition:transform .35s cubic-bezier(.3,1.6,.5,1)}
 
+/* ---------- v4: shorter welcome banner ---------- */
+@media (min-width:${PHONE + 1}px){
+  .fh-hero{padding:14px 22px!important;align-items:center!important;margin-bottom:12px!important}
+  .fh-hero h2{font-size:21px!important;margin:2px 0!important}
+  .fh-hero #fh-live-dt{padding:8px 14px!important;gap:12px!important;border-radius:14px!important}
+  #fh-live-dt .fh-ac{width:54px!important;height:54px!important}
+  .fh-hero #fh-live-dt b{display:inline!important;font-size:13px!important}
+  #fh-live-dt #fh-lt-date{font-size:12.5px}
+  #fh-live-dt #fh-lt-time{font-size:21px!important;margin-top:1px!important}
+}
+
 /* ---------- v3: Fuel Trends look ---------- */
 .ft-kpi{border-radius:14px!important;padding:10px 13px!important;box-shadow:0 4px 14px rgba(30,42,110,.06)!important;transition:transform .2s ease,box-shadow .2s ease}
 .ft-kpi .n{font-size:20px!important}
@@ -370,6 +381,7 @@ html.fh-dark .fh-ra-menu .btn{color:#e6e9ff!important}html.fh-dark .fh-ra-menu .
     loginPass();
     rosterPass();
     ensureTopClock(); ensureBannerClock();
+    const hp = document.querySelector('.fh-hero p'); if (hp) { const hide = hp.textContent.trim().length <= 1; if ((hp.style.display === 'none') !== hide) hp.style.display = hide ? 'none' : ''; }   // a welcome text of only "." takes no room
     document.body.classList.toggle('fh-on-dash', !!document.getElementById('fh-live-dt') && !!document.querySelector('#main-content .grid-4.fh-stagger'));
     BUSY.forEach((b) => { if (!document.body.contains(b)) clearBusy(b); });
   }
