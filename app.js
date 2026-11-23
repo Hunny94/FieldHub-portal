@@ -10570,7 +10570,7 @@ async function ftPageTrend(host) {
   host.innerHTML = `<button class="ft-tog" type="button" id="ft-tog">Filters ▾</button>
     <div class="ft-bar" id="ft-bar">${FILT.map(([k]) => `<div class="fv-fg" data-d="${k}"></div>`).join('')}
       <div class="fv-fg ft-act"><label id="ft-dirty">&nbsp;</label><div class="ft-btns"><button class="fv-btn" id="ft-apply" type="button">Apply</button><button class="fv-btn ghost" id="ft-clear" type="button">Clear</button></div></div></div>
-    <div id="ft-scope" class="ft-scope"></div><div class="ft-kpis" id="ft-kpis"></div>
+    <div id="ft-scope" class="ft-scope"></div><div class="ft-kpis" id="ft-kpis"></div><div id="ft-alerts"></div>
     <div class="ft-tabs" id="ft-tabs">${[['summary', 'Summary'], ['compare', 'Compare'], ['pies', 'Month pies'], ['rates', 'Limits & Rs/KM'], ['table', 'Table & download']].map(([k, l]) => `<button type="button" data-t="${k}" class="${FT.tab === k ? 'on' : ''}">${l}</button>`).join('')}<span style="flex:1"></span><button type="button" class="ft-tt" id="ft-hall">Hide all graphs</button><button type="button" class="ft-tt" id="ft-sall">Show all</button></div>
     <div id="ft-res"></div>`;
   const drops = [];
@@ -10596,6 +10596,7 @@ async function ftPageTrend(host) {
     ['lead', 'location', 'city', 'rider'].forEach(k => { if (f[k].length) parts.push(f[k].length > 2 ? `${f[k].length} ${FT_GROUPS.find(x => x[0] === k)[1]}` : f[k].join(', ')); });
     parts.push(f.month.length ? `${f.month.length} month${f.month.length > 1 ? 's' : ''}` : `${ftMonthLabel(allMs[0])} – ${ftMonthLabel(allMs[allMs.length - 1])}`);
     FT.any = Object.values(FT.f).some(v => v.length);
+    try { if (typeof fhFuelAlerts === 'function') fhFuelAlerts(host.querySelector('#ft-alerts'), rows, ms); } catch (_e) {}   // v89: litres per visit list (ui.js)
     if (!FT.any) { scope.innerHTML = '<span class="fv-note">Nothing selected yet — choose a category, region, lead … above and press <b>Apply</b> to see its numbers. The overview below covers everything.</span>'; kp.innerHTML = ''; drawBody(); return; }
     scope.innerHTML = `<b>Showing:</b> ${parts.map(p => `<span class="ft-chip">${escapeHtml(p)}</span>`).join('')} <button type="button" class="fv-btn ghost" id="ft-emp" style="height:26px;padding:0 10px;margin-left:6px">👥 Team member details</button><button type="button" class="fv-btn ghost" id="ft-kt" style="height:26px;padding:0 10px;margin-left:6px">${FT.kpiHide ? 'Show summary' : 'Hide summary'}</button>`;
     scope.querySelector('#ft-kt').onclick = (e) => { FT.kpiHide = !FT.kpiHide; kp.style.display = FT.kpiHide ? 'none' : ''; e.target.textContent = FT.kpiHide ? 'Show summary' : 'Hide summary'; };
