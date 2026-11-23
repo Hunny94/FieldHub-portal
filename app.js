@@ -2499,6 +2499,14 @@ function fhEditQuickActions(){
 // ---------------------------------------------------------
 // DASHBOARD
 // ---------------------------------------------------------
+// v90: one "Needs my action" card in place of the separate reset / approval cards (same counts, same pages)
+function fhNeedsCard(rows){
+  const list = rows.filter((r) => r[3]);
+  if (!list.length) return '';
+  const tone = (i) => [['#FDE7E7', '#A32D2D'], ['#FFF1CC', '#7A5200'], ['#E3ECFD', '#1E3F8A']][i % 3];
+  return `<div class="card fh-needs"><h3 style="margin:0 0 6px">Needs my action</h3>` + list.map((r, i) => { const n = Number(r[0]) || 0, t = tone(i);
+    return `<a class="fh-need" onclick="navigateTo('${r[2]}')"><span class="nb" style="${n ? `background:${t[0]};color:${t[1]}` : ''}">${n ? n : '✓'}</span><span class="tx">${escapeHtml(r[1])}</span><span class="ar">›</span></a>`; }).join('') + `</div>`;
+}
 async function renderDashboard(){
   const main = document.getElementById('main-content');
   const uid = state.user.id;
@@ -2536,6 +2544,10 @@ async function renderDashboard(){
   const expiringDueRows = (expiring.data||[]).filter(i => i.status !== 'closed' && new Date(i.expiry_date) <= soonCutoff);
   const expiringSoon = new Set(expiringDueRows.map(i => i.group_id || i.id)).size;
 
+  // v90: requests waiting for me (handler = me), for the "Needs my action" card
+  const isRiderView = state.profile && state.profile.role === 'rider';
+  let mineN = 0;
+  if (!isRiderView) { try { const r = await sb.from('requests').select('id', { count: 'exact', head: true }).is('deleted_at', null).eq('assigned_poc_id', uid).in('status', ['open', 'in_progress']); mineN = r.count || 0; } catch (_e) {} }
   setTimeout(fhStartLiveClock, 0);
   let posTile = ''; try { if (typeof fhPosTileHtml === 'function') posTile = await fhPosTileHtml(); } catch (_e) {}
   let topTile = ''; try { if (typeof fhTopHomeHtml === 'function') { topTile = await fhTopHomeHtml(); if (typeof fhTopTidy === 'function') fhTopTidy(); } } catch (_e) {}
@@ -2565,17 +2577,7 @@ async function renderDashboard(){
         <div class="stat-number" data-count="${n}">${n}</div><div class="stat-label">${l}</div><span class="go">View ›</span>
       </div>`).join('')}
     </div>
-    ${resetN ? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-left:4px solid var(--clay);background:#FFF4F1">
-      <div><h3>🔑 Password reset requests</h3><p style="color:var(--muted); font-size:13.5px;margin:0;"><b>${resetN}</b> request${resetN === 1 ? ' is' : 's are'} waiting for you.</p></div>
-      <button class="btn small" onclick="navigateTo('team')">Open requests</button></div>` : ''}
-    ${isAdmin() ? `
-    <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-      <div>
-        <h3>Pending approvals</h3>
-        <p style="color:var(--muted); font-size:13.5px;margin:0;">${pendingApprovals.count ?? 0} account(s) waiting for role/region assignment.</p>
-      </div>
-      <button class="btn small" onclick="navigateTo('team')">Go to Team</button>
-    </div>` : ''}
+    ${fhNeedsCard([[mineN, 'Requests assigned to me', 'requests', !isRiderView], [pendingApprovals.count ?? 0, 'Accounts waiting for role/region assignment', 'team', isAdmin()], [resetN, 'Password reset requests', 'team', isSuperAdmin()]])}
     <div class="fh-cols">
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h3 style="margin:0">Quick actions</h3><button type="button" class="btn small outline" id="qa-edit">✎ Customize</button></div>
@@ -2588,6 +2590,7 @@ async function renderDashboard(){
     </div>
   `;
 
+  try { if (typeof fhDashExtras === 'function') fhDashExtras(); } catch (_e) {}   // v90: trend lines and "This week" chart (ui.js)
   { const q = document.getElementById('qa-edit'); if (q) q.onclick = fhEditQuickActions; }
   // intro: cards come in one after another (blur to sharp). Dashboard only.
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) { let k = 0; main.querySelectorAll('.card, .stat-card').forEach(c => { if (c.parentElement && c.parentElement.closest('.card, .stat-card')) return; c.classList.add('fh-rv'); c.style.setProperty('--i', Math.min(k++, 10)); }); }
