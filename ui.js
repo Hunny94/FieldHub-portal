@@ -1,7 +1,9 @@
-/* FieldHub UI layer v1 (portal v89).
+/* FieldHub UI layer v2 (portal v90).
    Look and feel only: phone top bar with a "More" menu (Option A), nothing covering content, Medium animations,
    tidier buttons, a guard against double-tapping Save, and the Fuel Trends "litres per visit" list.
-   It reads no extra data from the database and writes nothing. Logo, favicons and branding are not touched.
+   v2: thin menu line on computers, profile menu (desktop), "Ask FieldHub", glass dashboard with trend lines and a
+   "This week" chart, sign-in busy/shake. Dashboard trends read a few small columns once and keep them 5 minutes on the
+   device. Nothing is written to the database. Logo, favicons and branding are not touched.
    To undo everything: remove the ui.js line from index.html. */
 (function () {
   'use strict';
@@ -105,8 +107,77 @@ html.fh-dark .fh-fa-r{color:#e6e9ff;border-color:#262f62}
 html.fh-dark .fh-fa-r:hover{background:#1b2350}
 html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .v small,html.fh-dark .fh-fa-r .k{color:#9aa4dd}
 
+/* ---------- v2: desktop top bar = Ask FieldHub + bell + profile menu ---------- */
+#fh-more-btn .fh-mb-user{display:none}
+@media (min-width:${PHONE + 1}px){
+  .top-ribbon-actions #ribbon-theme,.top-ribbon-actions #ribbon-reload,.top-ribbon-actions #ribbon-print,.top-ribbon-actions #ribbon-profile-btn,.top-ribbon-actions #logout-btn{display:none!important}
+  .top-ribbon-actions #fh-more-btn{display:inline-flex!important;align-items:center;gap:8px;padding:5px 12px 5px 6px!important}
+  #fh-more-btn .fh-mb-dots{display:none}
+  #fh-more-btn .fh-mb-user{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+  #fh-more-btn .av{width:28px;height:28px;border-radius:50%;background:#DDE3F6;color:#1E2A6E;display:inline-grid;place-items:center;font-size:12px;font-weight:700}
+  .top-ribbon-actions #fh-more-btn[aria-expanded="true"]{background:rgba(255,255,255,.28)!important}
+}
+
+/* ---------- v2: thin menu line on computers ---------- */
+#fh-rail-pin{display:none}
+@media (min-width:901px){
+  body.fh-rail{--fh-sbw:76px}
+  body.fh-rail.fh-rail-open{--fh-sbw:264px}
+  body.fh-rail .sidebar{width:76px!important;transform:none!important;overflow-x:hidden!important;transition:width .3s cubic-bezier(.22,1,.36,1),box-shadow .3s ease!important;padding-left:12px!important;padding-right:12px!important}
+  body.fh-rail .sidebar:hover,body.fh-rail.fh-rail-open .sidebar{width:264px!important}
+  body.fh-rail:not(.fh-rail-open) .sidebar:hover{box-shadow:14px 0 40px rgba(10,15,45,.35)!important}
+  body.fh-rail #fh-sb-pin,body.fh-rail #fh-sb-zone{display:none!important}
+  body.fh-rail #nav-links .nav-link,body.fh-rail #nav-links .nav-group-header,body.fh-rail #fh-rail-pin{white-space:nowrap}
+  body.fh-rail #nav-links .nav-link:hover{transform:none}
+  body.fh-rail .nav-txt,body.fh-rail .nav-ghead>span:not(.nav-ico),body.fh-rail .nav-group-arrow,body.fh-rail .fh-drawer-user,body.fh-rail #fh-rail-pin .lbl,body.fh-rail #nav-links .nav-badge{transition:opacity .2s ease}
+  body.fh-rail:not(.fh-rail-open) .sidebar:not(:hover) :is(.nav-txt,.nav-ghead>span:not(.nav-ico),.nav-group-arrow,.fh-drawer-user,#fh-rail-pin .lbl){opacity:0}
+  body.fh-rail:not(.fh-rail-open) .sidebar:not(:hover) #nav-links .nav-badge{position:absolute;margin:0;left:34px;top:4px;min-width:0;width:9px;height:9px;padding:0;font-size:0;border-radius:50%}
+  body.fh-rail #nav-links .nav-link{position:relative}
+  body.fh-rail #fh-rail-pin{display:flex;align-items:center;gap:14px;width:100%;height:42px;padding:0 13px;margin:0 0 10px;border:0;border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font:600 13px var(--font-body,Inter,sans-serif);cursor:pointer;flex:0 0 auto}
+  body.fh-rail #fh-rail-pin:hover{background:rgba(255,255,255,.2)}
+  body.fh-rail #fh-rail-pin svg{flex:0 0 auto}
+}
+
+/* ---------- v2: glass dashboard (dashboard page only) ---------- */
+body.fh-on-dash .main-area{background:radial-gradient(620px 480px at 10% 6%,rgba(141,160,255,.30),transparent 70%),radial-gradient(560px 460px at 94% 58%,rgba(27,158,138,.16),transparent 70%),var(--paper,#F5F7FA)}
+body.fh-on-dash #main-content .card:not([style*="background"]):not(.fh-hero),body.fh-on-dash #main-content .stat-card{background:rgba(255,255,255,.7)!important;border:1px solid rgba(255,255,255,.95)!important;box-shadow:0 8px 24px rgba(30,42,110,.08)!important}
+@media (min-width:${PHONE + 1}px){body.fh-on-dash #main-content .card:not([style*="background"]):not(.fh-hero),body.fh-on-dash #main-content .stat-card{-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}}
+html.fh-dark body.fh-on-dash .main-area{background:radial-gradient(620px 480px at 10% 6%,rgba(80,100,220,.30),transparent 70%),radial-gradient(560px 460px at 94% 58%,rgba(27,158,138,.18),transparent 70%),#0d1230}
+html.fh-dark body.fh-on-dash #main-content .card:not([style*="background"]):not(.fh-hero),html.fh-dark body.fh-on-dash #main-content .stat-card{background:rgba(23,30,70,.72)!important;border-color:rgba(141,160,255,.18)!important;box-shadow:0 8px 24px rgba(0,0,0,.3)!important}
+.fh-spark{margin-top:6px}
+.fh-spark svg{display:block;width:100%;height:30px;overflow:visible}
+.fh-spark .fh-chg{display:block;font-size:11.5px;font-weight:700;margin-top:2px;color:#6b7194}
+.fh-spark .fh-chg.up-bad{color:#c0532f}.fh-spark .fh-chg.down-good,.fh-spark .fh-chg.up-good{color:#2e7d4f}
+html.fh-dark .fh-spark .fh-chg{color:#9aa4dd}html.fh-dark .fh-spark .fh-chg.up-bad{color:#ff9b8f}html.fh-dark .fh-spark .fh-chg.down-good,html.fh-dark .fh-spark .fh-chg.up-good{color:#7fe0a8}
+.fh-reveal{animation:fhReveal 1.2s cubic-bezier(.3,.7,.3,1) .25s both}
+@keyframes fhReveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.fh-fadein{animation:fhFade .8s ease .9s both}@keyframes fhFade{from{opacity:0}}
+.fh-row{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;align-items:stretch}
+.fh-row>.card{margin:0!important;min-width:0}
+.fh-row>.fh-week{flex:2 1 420px}.fh-row>.fh-needs{flex:1 1 280px}
+.fh-week .hd{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.fh-week .lg{display:flex;gap:14px;font-size:12.5px;color:#5B6B85;align-items:center}
+.fh-week .lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.fh-week svg{display:block;width:100%;height:170px;margin-top:8px}
+.fh-week .xs{display:flex;justify-content:space-between;font-size:11.5px;color:#8b92ad;padding:0 2px}
+html.fh-dark .fh-week .lg,html.fh-dark .fh-week .xs{color:#9aa4dd}
+.fh-needs .fh-need{display:flex;align-items:center;gap:12px;min-height:50px;border-top:1px solid rgba(30,42,110,.08);cursor:pointer;color:inherit;text-decoration:none;border-radius:8px;padding:0 4px}
+.fh-needs .fh-need:hover{background:rgba(30,42,110,.05)}
+.fh-needs .nb{width:34px;height:34px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;font-weight:700;background:#E8F3EC;color:#2e7d4f}
+.fh-needs .tx{flex:1;font-size:14px}.fh-needs .ar{color:#8b92ad}
+html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark .fh-needs .fh-need:hover{background:rgba(141,160,255,.08)}
+
+/* ---------- v2: sign-in states ---------- */
+#login-form .btn-primary.fh-busy{opacity:.9}
+.fh-shake{animation:fhShake .45s ease}
+@keyframes fhShake{0%,100%{transform:none}20%{transform:translateX(-9px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(3px)}}
+#fh-bio-login{display:flex!important;align-items:center;justify-content:center;gap:10px;height:50px;background:#fff!important;color:#1E2A6E!important;border:2px solid #1E2A6E!important;border-radius:12px!important;font-weight:600}
+#fh-bio-login svg{flex:0 0 auto;animation:fhBio 2.2s ease-in-out infinite}
+@keyframes fhBio{50%{transform:scale(1.12)}}
+
 @media (prefers-reduced-motion:reduce){
-  #fh-more-menu,#notif-dropdown,.toast,.toast .ti,#notif-bell-btn.fh-ring,.fh-busy::after{animation:none!important}
+  #fh-more-menu,#notif-dropdown,.toast,.toast .ti,#notif-bell-btn.fh-ring,.fh-busy::after,.fh-reveal,.fh-fadein,.fh-shake,#fh-bio-login svg{animation:none!important}
+  body.fh-rail .sidebar{transition:none!important}
   .stat-card:hover{transform:none!important}
 }
 @media print{#fh-more-btn,#fh-more-menu{display:none!important}}`;
@@ -120,7 +191,7 @@ html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .
   // ---------------------------------------------------------------- More menu (phone)
   // Each entry only "presses" the original button, so every action works exactly as before.
   const ITEMS = [
-    ['fh-bot-btn', '💬', () => 'Help'],
+    ['fh-bot-btn', '💬', () => 'Ask FieldHub'],
     ['ribbon-theme', () => (isDark() ? '☀' : '🌙'), () => (isDark() ? 'Light mode' : 'Dark mode')],
     ['ribbon-reload', '⟳', () => 'Refresh'],
     ['ribbon-print', '🖨', () => 'Print / save as PDF'],
@@ -138,10 +209,15 @@ html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .
       b = document.createElement('button');
       b.id = 'fh-more-btn'; b.type = 'button'; b.className = 'ribbon-link';
       b.setAttribute('aria-label', 'More options'); b.setAttribute('aria-haspopup', 'menu'); b.setAttribute('aria-expanded', 'false');
-      b.title = 'More options'; b.textContent = '⋮';
+      b.title = 'More options'; b.innerHTML = '<span class="fh-mb-dots" aria-hidden="true">⋮</span><span class="fh-mb-user"><span class="av"></span><span class="nm"></span> ▾</span>';
       b.onclick = (e) => { e.stopPropagation(); toggleMenu(); };
     }
     if (actions.lastElementChild !== b) actions.appendChild(b);
+    try {
+      const full = (state.profile && (state.profile.full_name || state.profile.email)) || '';
+      const nm = b.querySelector('.nm'), av = b.querySelector('.av');
+      if (nm && nm.textContent !== full.split(' ')[0]) { nm.textContent = full.split(' ')[0]; av.textContent = full.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase(); }
+    } catch (_e) {}
   }
   function closeMenu() {
     const m = document.getElementById('fh-more-menu'); if (m) m.remove();
@@ -151,7 +227,7 @@ html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .
     if (document.getElementById('fh-more-menu')) { closeMenu(); return; }
     const b = document.getElementById('fh-more-btn'); if (!b) return;
     const nd = document.getElementById('notif-dropdown'); if (nd) nd.remove();
-    const items = ITEMS.filter(([id]) => document.getElementById(id));
+    const items = ITEMS.filter(([id]) => { const el = document.getElementById(id); return el && getComputedStyle(el).display === 'none'; });
     if (!items.length) return;
     const m = document.createElement('div');
     m.id = 'fh-more-menu'; m.setAttribute('role', 'menu');
@@ -216,13 +292,145 @@ html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .
   function pass() {
     ensureMoreBtn();
     watchBell();
+    applyRail();
+    loginPass();
+    document.body.classList.toggle('fh-on-dash', !!document.getElementById('fh-live-dt') && !!document.querySelector('#main-content .grid-4.fh-stagger'));
     BUSY.forEach((b) => { if (!document.body.contains(b)) clearBusy(b); });
   }
   function start() {
     addStyle(); pass();
     new MutationObserver(() => { clearTimeout(tm); tm = setTimeout(pass, 120); }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+
+  // ---------------------------------------------------------------- v2: thin menu line (computers only)
+  // The menu sits in one thin line of icons. Pointing at it slides the names out; the top button keeps them open.
+  // The choice is remembered on this device only.
+  const railOpen = () => { try { return localStorage.getItem('fh_rail') === 'open'; } catch (_e) { return false; } };
+  const RAIL_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h16"/></svg>';
+  function applyRail() {
+    const desk = window.innerWidth > 900, b = document.body;
+    if (!b) return;
+    b.classList.toggle('fh-rail', desk);
+    b.classList.toggle('fh-rail-open', desk && railOpen());
+    if (desk) b.classList.remove('fh-sb-auto', 'fh-sb-peek');
+    const side = document.querySelector('.sidebar');
+    if (!side) return;
+    let p = document.getElementById('fh-rail-pin');
+    if (!p) {
+      p = document.createElement('button'); p.type = 'button'; p.id = 'fh-rail-pin';
+      p.innerHTML = RAIL_ICON + '<span class="lbl"></span>';
+      p.onclick = (e) => { e.stopPropagation(); try { localStorage.setItem('fh_rail', railOpen() ? 'line' : 'open'); } catch (_e) {} applyRail(); };
+      side.insertBefore(p, side.firstChild);
+    }
+    const lbl = railOpen() ? 'Keep menu small' : 'Show menu names';
+    const l = p.querySelector('.lbl'); if (l.textContent !== lbl) { l.textContent = lbl; p.title = lbl; p.setAttribute('aria-label', lbl); }
+    // names as tooltips while the line is small
+    document.querySelectorAll('#nav-links .nav-link, #nav-links .nav-group-header').forEach((a) => {
+      if (a.title) return; const t = (a.querySelector('.nav-txt') || a.querySelector('.nav-ghead') || a).textContent.trim(); if (t) a.title = t;
+    });
+  }
+  document.addEventListener('click', (e) => {   // the ☰ in the top bar opens / closes the names on a computer
+    if (window.innerWidth > 900 && e.target.closest && e.target.closest('#fh-menu-btn')) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      try { localStorage.setItem('fh_rail', railOpen() ? 'line' : 'open'); } catch (_e) {} applyRail();
+    }
+  }, true);
+  window.addEventListener('resize', () => { applyRail(); });
+
+  // ---------------------------------------------------------------- v2: sign-in page states
+  let loginT = null, lastMsg = '';
+  document.addEventListener('submit', (e) => {
+    if (!e.target || e.target.id !== 'login-form') return;
+    const b = e.target.querySelector('button[type="submit"]'); if (!b) return;
+    b.classList.add('fh-busy'); clearTimeout(loginT); loginT = setTimeout(() => b.classList.remove('fh-busy'), 9000);
+  }, true);
+  const BIO_ICON = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 11v3a8 8 0 0 1-1.2 4.2"/><path d="M8.5 7.5A5 5 0 0 1 17 11v2a12 12 0 0 1-.6 3.8"/><path d="M7 10.5V12a10 10 0 0 1-1 4.4"/><path d="M5.2 6.6A8 8 0 0 1 20 11v1"/><path d="M15 14.5a15 15 0 0 1-1.6 5.4"/></svg>';
+  function loginPass() {
+    const m = document.getElementById('auth-message'), f = document.getElementById('login-form');
+    if (m && f) {
+      const shown = m.style.display !== 'none' && m.textContent.trim();
+      const txt = shown ? m.textContent.trim() : '';
+      if (txt && txt !== lastMsg) {
+        const b = f.querySelector('button[type="submit"]'); if (b) b.classList.remove('fh-busy');
+        if (!RM && f.style.display !== 'none') { f.classList.remove('fh-shake'); void f.offsetWidth; f.classList.add('fh-shake'); }
+      }
+      lastMsg = txt;
+    }
+    const scr = document.getElementById('auth-screen');
+    if (scr && scr.style.display === 'none' && f) { const b = f.querySelector('button[type="submit"]'); if (b) b.classList.remove('fh-busy'); }
+    const fb = document.getElementById('fh-bio-login');
+    if (fb && !fb.dataset.fh) { fb.dataset.fh = '1'; fb.innerHTML = BIO_ICON + '<span>Sign in with fingerprint</span>'; }
+  }
+
+  // ---------------------------------------------------------------- v2: dashboard trend lines and "This week" chart
+  // Called by the dashboard (app.js). Reads only dates (created / resolved) for the last 14 days, once every 5 minutes.
+  function daySeries(rows, field, start) {
+    const a = new Array(14).fill(0);
+    (rows || []).forEach((r) => { const v = typeof field === 'function' ? field(r) : r[field]; if (!v) return; const i = Math.floor((new Date(v) - start) / 864e5); if (i >= 0 && i < 14) a[i]++; });
+    return a;
+  }
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  function sparkSvg(vals, color) {
+    const max = Math.max(1, ...vals), pts = vals.map((v, i) => Math.round(i * 100 / (vals.length - 1)) + ',' + (28 - Math.round(v / max * 24))).join(' ');
+    return `<svg class="fh-reveal" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
+  }
+  window.fhDashExtras = async function () {
+    try {
+      const main = document.getElementById('main-content'); if (!main) return;
+      const grid = main.querySelector('.grid-4.fh-stagger'); if (!grid) return;
+      const uid = state.user && state.user.id; if (!uid) return;
+      const rider = state.profile && state.profile.role === 'rider';
+      const key = 'fh_dash_' + uid; let D = null;
+      try { const c = JSON.parse(sessionStorage.getItem(key) || 'null'); if (c && Date.now() - c.at < 300000) D = c; } catch (_e) {}
+      if (!D) {
+        const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - 13);
+        const iso = start.toISOString();
+        const [rq, rc, tk, ci] = await Promise.all([
+          sb.from('requests').select('created_at').is('deleted_at', null).gte('created_at', iso).limit(5000),
+          rider ? Promise.resolve({ data: [] }) : sb.from('requests').select('resolved_at, closed_at').is('deleted_at', null).or(`resolved_at.gte.${iso},closed_at.gte.${iso}`).limit(5000),
+          sb.from('tasks').select('created_at').eq('assigned_to', uid).gte('created_at', iso).limit(5000),
+          sb.from('circulars').select('created_at').is('deleted_at', null).gte('created_at', iso).limit(5000)
+        ]);
+        if (rq.error) return;   // offline or no access: the dashboard simply stays as it is
+        D = { at: Date.now(), start: start.getTime(), req: daySeries(rq.data, 'created_at', start), done: daySeries(rc.data, (r) => r.resolved_at || r.closed_at, start), task: tk.error ? null : daySeries(tk.data, 'created_at', start), circ: ci.error ? null : daySeries(ci.data, 'created_at', start) };
+        try { sessionStorage.setItem(key, JSON.stringify(D)); } catch (_e) {}
+      }
+      if (!document.body.contains(grid) || grid.dataset.fhTrend) return;
+      grid.dataset.fhTrend = '1';
+      const MAP = { requests: [D.req, 'new', true], tasks: [D.task, 'new', true], circulars: [D.circ, 'posted', false] };
+      grid.querySelectorAll('.stat-card').forEach((c) => {
+        const m = /navigateTo\('([a-z_]+)'\)/.exec(c.getAttribute('onclick') || ''); const def = m && MAP[m[1]];
+        if (!def || !def[0]) return;
+        const s = def[0], last = s.slice(7), prev = s.slice(0, 7), a = sum(last), b = sum(prev);
+        const num = c.querySelector('.stat-number'), col = num ? getComputedStyle(num).color : '#1E2A6E';
+        let chg = 'same', cls = '';
+        if (b === 0 && a > 0) { chg = '▲ new'; cls = def[2] ? 'up-bad' : ''; }
+        else if (b > 0 && a !== b) { const pct = Math.round((a - b) / b * 100); chg = (pct > 0 ? '▲ ' : '▼ ') + Math.abs(pct) + '%'; cls = pct > 0 ? (def[2] ? 'up-bad' : 'up-good') : 'down-good'; }
+        const box = document.createElement('div'); box.className = 'fh-spark';
+        box.title = a + ' ' + def[1] + ' in the last 7 days (' + b + ' the week before)';
+        box.innerHTML = sparkSvg(last, col) + `<span class="fh-chg ${cls}">${a} ${def[1]} this week · ${chg}</span>`;
+        const go = c.querySelector('.go'); if (go) c.insertBefore(box, go); else c.appendChild(box);
+      });
+      if (rider) return;
+      // "This week": requests opened vs closed per day
+      const o = D.req.slice(7), d = D.done.slice(7), max = Math.max(4, ...o, ...d) * 1.15;
+      const X = (i) => Math.round(i * 100), Y = (v) => Math.round(180 - v / max * 160);
+      const line = (a) => a.map((v, i) => (i ? 'L' : 'M') + X(i) + ',' + Y(v)).join(' ');
+      const days = []; for (let i = 7; i < 14; i++) { const dt = new Date(D.start + i * 864e5); days.push(dt.toLocaleDateString('en-GB', { weekday: 'short' })); }
+      const dots = (a, colr, word) => a.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="4" fill="${colr}" vector-effect="non-scaling-stroke"><title>${days[i]}: ${v} ${word}</title></circle>`).join('');
+      const html = `<div class="card fh-week"><div class="hd"><h3 style="margin:0">Requests this week</h3><span class="lg"><span><i style="background:#3B50B8"></i>Opened <b>${sum(o)}</b></span><span><i style="background:#1B9E8A"></i>Closed <b>${sum(d)}</b></span></span></div>
+ <svg class="fh-reveal" viewBox="-8 0 616 190" preserveAspectRatio="none" role="img" aria-label="Requests opened and closed per day, last 7 days">
+          <path d="M0 180H600M0 100H600M0 20H600" stroke="rgba(120,130,170,.22)" fill="none" vector-effect="non-scaling-stroke"/>
+          <path class="fh-fadein" d="${line(o)} L600,180 L0,180 Z" fill="rgba(59,80,184,.13)"/>
+          <path d="${line(o)}" fill="none" stroke="#3B50B8" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+          <path d="${line(d)}" fill="none" stroke="#1B9E8A" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+          ${dots(o, '#3B50B8', 'opened')}${dots(d, '#1B9E8A', 'closed')}
+        </svg><div class="xs">${days.map((x) => `<span>${x}</span>`).join('')}</div></div>`;
+      const row = document.createElement('div'); row.className = 'fh-row'; row.innerHTML = html;
+      grid.insertAdjacentElement('afterend', row);
+      const needs = main.querySelector('.fh-needs'); if (needs) row.appendChild(needs);
+    } catch (e) { console.warn('dashboard extras', e); }
+  };
 
   // ---------------------------------------------------------------- Fuel Trends: litres per visit, latest month
   // Called by Fuel Trends (app.js) with the rows of the current filters. Home Sampling and Home Care are never mixed:
@@ -276,4 +484,6 @@ html.fh-dark .fh-fa-note,html.fh-dark .fh-fa-r .nm small,html.fh-dark .fh-fa-r .
       paint();
     } catch (e) { console.warn('fuel alerts', e); box.innerHTML = ''; }
   };
+  // start last, after every helper above exists
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();
