@@ -13,7 +13,7 @@
       img.onload = () => {
         const V = 260, st = { z: 1, ox: 0, oy: 0 }, base = Math.max(V / img.width, V / img.height);
         const box = document.getElementById('tp-adj'); box.style.display = 'block';
-        box.innerHTML = `<div style="text-align:center"><canvas id="tp-cv" width="${V}" height="${V}" style="width:${V}px;max-width:100%;border-radius:50%;border:3px solid #f0c24b;touch-action:none;cursor:grab;background:#ddd"></canvas></div>
+        box.innerHTML = `<div style="text-align:center"><canvas id="tp-cv" width="${V}" height="${V}" style="width:${V}px;max-width:100%;border-radius:22px;border:3px solid #f0c24b;touch-action:none;cursor:grab;background:#ddd"></canvas></div>
           <div class="hint" style="text-align:center">Drag the picture to move it. Use the slider to zoom.</div>
           <div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span>➖</span><input type="range" id="tp-zoom" min="1" max="3.5" step="0.02" value="1" style="flex:1"><span>➕</span></div>
           <div style="text-align:center"><button type="button" class="btn small outline" id="tp-reset">Reset</button></div>`;
@@ -34,10 +34,10 @@
   }
 
   // v92: compact card (photo left, details right) so the home page stays short; Super Admin gets Edit + Revert
-  const TP_CSS = `.tp-card{width:248px;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:#fff;border:1px solid #e6e9f2;box-shadow:0 2px 8px rgba(20,30,70,.06);text-align:left;box-sizing:border-box}
+  const TP_CSS = `.tp-card{width:290px;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:#fff;border:1px solid #e6e9f2;box-shadow:0 2px 8px rgba(20,30,70,.06);text-align:left;box-sizing:border-box}
 .tp-card.me{background:linear-gradient(160deg,#fff4cf,#ffe39a);border-color:#f0c24b}
-.tp-av{width:58px;height:58px;flex:0 0 auto;border-radius:50%;object-fit:cover;border:3px solid #f0c24b;box-sizing:border-box}
-.tp-ini{background:#2f6a95;color:#fff;font-size:20px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.tp-av{width:92px;height:92px;flex:0 0 auto;border-radius:16px;object-fit:cover;object-position:center top;border:3px solid #f0c24b;box-sizing:border-box;background:#eef1fb}
+.tp-ini{background:#2f6a95;color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .tp-tx{min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.25}
 .tp-tx b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tp-tx .s{font-size:12px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -49,7 +49,7 @@ html.fh-dark .tp-card{background:#171e46;border-color:#2b3470;box-shadow:none}ht
 html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0ff;color:#8da0ff}html.fh-dark .tp-act .r{border-color:#ff9b8f;color:#ff9b8f}
 #tp-wrap{padding:10px 14px 8px!important}#tp-wrap h3{font-size:15px}#tp-wrap>div:nth-child(2),#tp-wrap>div[style*="position:relative"]{margin-top:4px!important}#tp-strip{padding:4px 2px 6px!important}#tp-dots{margin-top:0!important}
 @media (hover:hover) and (min-width:701px){#tp-hint{display:none}}
-@media (max-width:700px){.tp-card{width:226px}}`;
+@media (max-width:700px){.tp-card{width:268px}.tp-av{width:84px;height:84px}}`;
   if (!document.getElementById('tp-css')) { const st = document.createElement('style'); st.id = 'tp-css'; st.textContent = TP_CSS; document.head.appendChild(st); }
   const card = (t, me, sa) => `<div class="tp-card ${me ? 'me' : ''}">
     ${t.photo ? `<img class="tp-av" src="${t.photo}" alt="">` : `<div class="tp-av tp-ini">${esc(initials(t.rider_name))}</div>`}
@@ -135,7 +135,7 @@ html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0f
     if (!isSuperAdmin()) return;
     const { data: t, error } = await sb.from('top_performers').select('*').eq('id', id).maybeSingle();
     if (error || !t) { toast('Could not open this entry' + (error ? ': ' + error.message : '')); return; }
-    const pic = (src) => src ? `<img src="${src}" alt="" style="width:84px;height:84px;border-radius:50%;object-fit:cover;border:3px solid #f0c24b">` : `<div style="width:84px;height:84px;border-radius:50%;background:#2f6a95;color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center;border:3px solid #f0c24b">${esc(initials(t.rider_name))}</div>`;
+    const pic = (src) => src ? `<img src="${src}" alt="" style="width:96px;height:96px;border-radius:16px;object-fit:cover;object-position:center top;border:3px solid #f0c24b">` : `<div style="width:96px;height:96px;border-radius:16px;background:#2f6a95;color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center;border:3px solid #f0c24b">${esc(initials(t.rider_name))}</div>`;
     openModal(`<div style="max-width:480px"><h2>✎ Edit top performer</h2>
       <div style="display:flex;align-items:center;gap:14px;margin:4px 0 12px"><span id="tpe-now">${pic(t.photo)}</span><div class="hint" style="margin:0">Fix any mistake below. The change shows on every home page straight away.</div></div>
       <form id="tpe-form">
@@ -144,10 +144,17 @@ html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0f
         <div class="form-row"><label>Region shown</label><input type="text" id="tpe-reg" value="${esc(t.region_name || '')}" maxlength="60"></div></div>
         <div class="two-col"><div class="form-row"><label>Month he was top performer *</label><input type="month" id="tpe-month" value="${esc(String(t.perf_month || '').slice(0, 7))}" required></div>
         <div class="form-row"><label>Show until *</label><input type="date" id="tpe-exp" value="${esc(t.expires_on || '')}" required></div></div>
-        <div class="form-row"><label>New picture (optional)</label><input type="file" id="tpe-photo" accept="image/*"><div class="hint">Choose a picture, then move and zoom it. It is shrunk automatically (about 15 KB).</div><div id="tp-adj" style="display:none;margin-top:8px"></div></div>
+        <div class="form-row"><label>Picture</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><label class="btn outline" style="margin:0;cursor:pointer">🖼 Choose new picture<input type="file" id="tpe-photo" accept="image/*" style="display:none"></label>${t.photo ? `<button type="button" class="btn outline" id="tpe-adjust">✂ Adjust current picture</button>` : ''}</div>
+          <div class="hint">Move and zoom the picture inside the frame, then Save. It is shrunk automatically (about 15 KB).</div><div id="tp-adj" style="display:none;margin-top:8px"></div></div>
         ${t.photo ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:-4px 0 12px"><input type="checkbox" id="tpe-nopic" style="width:auto"> Remove the picture (show initials instead)</label>` : ''}
         <button class="btn" type="submit" id="tpe-save">Save changes</button></form></div>`);
     let adj = null;
+    const adjBtn = document.getElementById('tpe-adjust');
+    if (adjBtn) adjBtn.onclick = async () => {   // re-frame the picture already saved (no new file needed)
+      try { const bl = await (await fetch(t.photo)).blob(); adj = await adjuster(new File([bl], 'current.jpg', { type: bl.type || 'image/jpeg' }), 240); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; }
+      catch (err) { toast('Could not open the current picture. Please choose a new one.'); }
+    };
     document.getElementById('tpe-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; document.getElementById('tp-adj').style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 240); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; } catch (err) { toast(err.message || 'Could not open the picture'); } };
     document.getElementById('tpe-form').onsubmit = async (ev) => {
       ev.preventDefault();
