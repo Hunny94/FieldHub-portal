@@ -10185,12 +10185,35 @@ const ftReduced = () => window.matchMedia && matchMedia('(prefers-reduced-motion
 function ftLayout(extra, narrow) {
   return Object.assign({
     font: { family: 'Inter,system-ui,sans-serif', size: 11, color: document.documentElement.classList.contains('fh-dark') ? '#c3ccf5' : '#46506e' }, margin: { l: 50, r: 14, t: 26, b: 34 },
-    paper_bgcolor: document.documentElement.classList.contains('fh-dark') ? '#171e46' : '#ffffff', plot_bgcolor: document.documentElement.classList.contains('fh-dark') ? '#171e46' : '#ffffff', hovermode: 'closest', hoverlabel: { font: { size: 12 }, namelength: -1 },
+    paper_bgcolor: document.documentElement.classList.contains('fh-dark') ? '#171e46' : '#ffffff', plot_bgcolor: document.documentElement.classList.contains('fh-dark') ? '#171e46' : '#ffffff', hovermode: 'closest',
+    hoverlabel: { font: { size: 12.5, color: document.documentElement.classList.contains('fh-dark') ? '#e6e9ff' : '#1b2150' }, bgcolor: document.documentElement.classList.contains('fh-dark') ? '#1b2350' : '#ffffff', bordercolor: document.documentElement.classList.contains('fh-dark') ? '#34408a' : '#dfe4f1', namelength: -1 },
     legend: { orientation: 'h', y: -0.2, x: 0, font: { size: 11 } },
-    xaxis: { type: 'category', gridcolor: document.documentElement.classList.contains('fh-dark') ? '#262f62' : '#eef0f7', automargin: true, tickfont: { size: narrow ? 9 : 11 } },
-    yaxis: { gridcolor: document.documentElement.classList.contains('fh-dark') ? '#262f62' : '#eef0f7', zeroline: false, automargin: true, separatethousands: true, tickfont: { size: 10 } },
+    bargap: 0.32, uniformtext: { mode: 'hide', minsize: 9 },   // v91: thinner bars, tiny bar labels hidden instead of shrunk
+    xaxis: { type: 'category', showgrid: false, showline: true, linecolor: document.documentElement.classList.contains('fh-dark') ? '#2b3470' : '#e3e7f2', automargin: true, tickfont: { size: narrow ? 9 : 11 } },
+    yaxis: { gridcolor: document.documentElement.classList.contains('fh-dark') ? '#262f62' : '#eef0f7', griddash: 'dot', zeroline: false, automargin: true, separatethousands: true, tickfont: { size: 10 } },
     dragmode: ftTouch() ? false : 'zoom'
   }, extra || {});
+}
+// v91: one look for every Fuel Trends graph: rounded bars, smooth solid lines with ringed points, light dotted trend lines.
+function ftPolish(traces) {
+  const bg = document.documentElement.classList.contains('fh-dark') ? '#171e46' : '#ffffff';
+  return (traces || []).map((t) => {
+    if (!t || t.type === 'pie') return t;
+    const c = Object.assign({}, t);
+    if (c.type === 'bar') {
+      c.marker = Object.assign({ cornerradius: 9 }, c.marker || {});
+      if (c.marker.line === undefined) c.marker.line = { width: 0 };
+      c.cliponaxis = false;
+      c.textfont = Object.assign({ size: 10 }, c.textfont || {});
+    } else if (!c.type || c.type === 'scatter') {
+      const ln = Object.assign({}, c.line || {}), dashed = !!(ln.dash && ln.dash !== 'solid');
+      if (dashed) { ln.width = Math.min(ln.width || 2, 2); if (c.opacity == null) c.opacity = 0.8; }
+      else { if (ln.shape == null) { ln.shape = 'spline'; ln.smoothing = 0.55; } ln.width = Math.max(ln.width || 2, 2.6); }
+      c.line = ln;
+      if (!dashed && String(c.mode || 'lines+markers').indexOf('markers') >= 0) { const m = Object.assign({}, c.marker || {}); if (typeof m.size !== 'object') m.size = Math.max(m.size || 6, 7); m.line = Object.assign({ width: 2, color: bg }, m.line || {}); c.marker = m; }
+    }
+    return c;
+  });
 }
 // Snapshot: draws a clean copy of the graph (with a title) off-screen, so the graph on the page is never touched.
 function ftShowImage(url, name) {
@@ -10260,6 +10283,7 @@ async function ftBigView(s, tool) {
   document.body.appendChild(o); document.body.classList.add('ft-nosc');
   const d = o.querySelector('.ft-bplot'), w = d.clientWidth || 600, narrow = w < 460, pr = ftPrep(s, narrow, w), lay = pr.lay;
   if (!isPie) lay.dragmode = (tool === 'pan' || (tool !== 'zoom' && ftTouch())) ? 'pan' : 'zoom';
+  if (!s.__pol) { s.traces = ftPolish(s.traces); s.__pol = 1; }
   const tr = isPie ? s.traces.map(t => Object.assign({}, t, { textfont: Object.assign({}, t.textfont, { size: 14 }) })) : s.traces;
   const cfg = { responsive: true, displaylogo: false, displayModeBar: false, scrollZoom: true, doubleClick: 'reset', showAxisDragHandles: true };
   const init = {}, axes = () => ['xaxis', 'yaxis'].filter(a => d._fullLayout && d._fullLayout[a] && !d._fullLayout[a].fixedrange);
@@ -10285,6 +10309,7 @@ async function ftBigView(s, tool) {
 // specs: [{ id, title, sub, traces, layout, csv, h, wide, fit, toggle }]. Bars/lines grow in with a short animation (skipped when the phone asks for reduced motion).
 async function ftRenderCharts(host, specs) {
   await ftEnsurePlotly();
+  specs.forEach((x) => { if (x && !x.__pol) { x.traces = ftPolish(x.traces); x.__pol = 1; } });
   if (window.Plotly) host.querySelectorAll('.ft-plot').forEach(d => { try { Plotly.purge(d); } catch (e) {} });
   host.innerHTML = specs.map((s, i) => `<div class="ft-card ${s.wide ? 'wide' : ''}" style="--acc:${s.accent || '#1E2A6E'}"><div class="ft-ch"><button type="button" class="ft-hb" data-hide="${i}" title="Hide / show this graph">▾</button><h4 title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</h4><small>${escapeHtml(s.sub || '')}</small>${s.toggle ? `<button type="button" class="ft-tg ${s.toggle.on ? 'on' : ''}" data-tg="${i}" title="${escapeHtml(s.toggle.title || '')}">${escapeHtml(s.toggle.label)}</button>` : ''}${s.toggle2 ? `<button type="button" class="ft-tg ${s.toggle2.on ? 'on' : ''}" data-tg2="${i}" title="${escapeHtml(s.toggle2.title || '')}">${escapeHtml(s.toggle2.label)}</button>` : ''}<button type="button" data-png="${i}" title="Download as image">PNG</button><button type="button" data-csv="${i}" title="Download the numbers">CSV</button></div>${s.note ? `<div class="ft-cn" style="color:${s.noteColor || '#6b7390'}">${s.note}</div>` : ''}<div class="ft-plot" style="height:${s.h || 260}px"></div></div>`).join('') || '<div class="fv-note">No data for these filters.</div>';
   host.classList.add('ft-charts');
