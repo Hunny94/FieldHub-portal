@@ -1,4 +1,4 @@
-/* FieldHub UI layer v2 (portal v90).
+/* FieldHub UI layer v3 (portal v91).
    Look and feel only: phone top bar with a "More" menu (Option A), nothing covering content, Medium animations,
    tidier buttons, a guard against double-tapping Save, and the Fuel Trends "litres per visit" list.
    v2: thin menu line on computers, profile menu (desktop), "Ask FieldHub", glass dashboard with trend lines and a
@@ -175,9 +175,83 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
 #fh-bio-login svg{flex:0 0 auto;animation:fhBio 2.2s ease-in-out infinite}
 @keyframes fhBio{50%{transform:scale(1.12)}}
 
+/* ---------- v3: one menu button (the ☰ in the top bar); the extra "Keep menu small" bar is gone ---------- */
+@media (min-width:901px){
+  body.fh-rail #fh-rail-pin{display:none!important}
+  body.fh-rail #fh-menu-btn{transform:none!important}
+  body.fh-rail.fh-rail-open #fh-menu-btn{background:rgba(255,255,255,.3)!important}
+}
+
+/* ---------- v3: live clock in the top bar (every page; on the dashboard the banner clock shows instead) ---------- */
+#fh-topclock{display:flex;align-items:center;gap:10px;margin:0 12px 0 auto;padding:6px 12px;border-radius:12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.16);color:#fff;white-space:nowrap;font-variant-numeric:tabular-nums;line-height:1.15;flex:0 0 auto}
+#fh-topclock .t{font:700 16px var(--font-display,'Space Grotesk',sans-serif);letter-spacing:.3px}
+#fh-topclock .d{font-size:12px;opacity:.82}
+#fh-topclock .p{font-size:12px;opacity:.88;max-width:200px;overflow:hidden;text-overflow:ellipsis;border:0;background:transparent;color:inherit;padding:0;font-family:inherit;cursor:pointer}
+#fh-topclock .p:hover{text-decoration:underline}
+#fh-topclock .sep{width:1px;height:18px;background:rgba(255,255,255,.28)}
+body.fh-on-dash #fh-topclock{display:none}
+@media (max-width:1100px){#fh-topclock .p,#fh-topclock .sep.s2{display:none}}
+@media (max-width:${PHONE}px){
+  #fh-topclock{margin:0 2px 0 auto;padding:2px 4px;gap:0;flex-direction:column;align-items:flex-end;background:transparent;border:0}
+  #fh-topclock .t{font-size:13.5px}#fh-topclock .d{font-size:10px}#fh-topclock .sep{display:none}
+}
+@media (max-width:374px){#fh-topclock{display:none}}
+
+/* ---------- v3: dashboard banner clock with a small analog face ---------- */
+#fh-live-dt .fh-ac{display:none}
+@media (min-width:${PHONE + 1}px){
+  .fh-hero #fh-live-dt{display:flex;align-items:center;gap:16px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:18px;padding:12px 18px}
+  #fh-live-dt .fh-ac{display:block;flex:0 0 auto;width:70px;height:70px}
+  #fh-live-dt .fh-dtx{text-align:right}
+  #fh-live-dt #fh-lt-time{font-family:var(--font-display,'Space Grotesk',sans-serif)!important;font-size:26px!important}
+}
+.fh-ac .hd{stroke:#fff;stroke-width:3.2;stroke-linecap:round}.fh-ac .mn{stroke:#fff;stroke-width:2.2;stroke-linecap:round}.fh-ac .sc{stroke:#5eead4;stroke-width:1.4;stroke-linecap:round}
+.fh-ac .hd,.fh-ac .mn,.fh-ac .sc{transform-origin:35px 35px;transition:transform .35s cubic-bezier(.3,1.6,.5,1)}
+
+/* ---------- v3: Fuel Trends look ---------- */
+.ft-kpi{border-radius:14px!important;padding:10px 13px!important;box-shadow:0 4px 14px rgba(30,42,110,.06)!important;transition:transform .2s ease,box-shadow .2s ease}
+.ft-kpi .n{font-size:20px!important}
+@media (hover:hover){.ft-kpi:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(30,42,110,.12)!important}}
+.ft-card{border-radius:16px!important;padding:10px 12px 6px!important;box-shadow:0 6px 20px rgba(30,42,110,.07)!important}
+.ft-ch h4{font-size:14px}
+.ft-ch button,.ft-tb button{border-radius:999px!important;padding:4px 11px!important}
+.ft-card .modebar{background:transparent!important}
+@media (hover:hover){.ft-card .modebar-container{opacity:0;transition:opacity .2s ease}.ft-card:hover .modebar-container{opacity:1}}
+html.fh-dark .ft-card,html.fh-dark .ft-kpi{box-shadow:0 6px 20px rgba(0,0,0,.3)!important}
+.fh-fa.shut .fh-fa-h{margin-bottom:0}
+.fh-fa-sum{font-size:12.5px;color:#6b7194;margin-right:auto;margin-left:10px}
+.fh-fa-seg .fh-fa-tog{background:#eef1fb;border-color:#cfd6ea;color:#1E2A6E}
+html.fh-dark .fh-fa-sum{color:#9aa4dd}html.fh-dark .fh-fa-seg .fh-fa-tog{background:#232c63;border-color:#34408a;color:#cdd5ff}
+
+/* ---------- v3: Roster page, tidier and smaller ---------- */
+body.fh-on-roster #topbar-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+body.fh-on-roster #topbar-actions .btn{padding:7px 12px;font-size:12.5px;border-radius:9px;line-height:1.2}
+body.fh-on-roster #main-content select,body.fh-on-roster #main-content input[type="text"],body.fh-on-roster #main-content input[type="search"],body.fh-on-roster #main-content input:not([type]){min-height:36px;border:1px solid #DCE3ED;border-radius:10px;padding:0 10px;background-color:#fff;font-size:13px;color:#1E2A6E}
+html.fh-dark body.fh-on-roster #main-content select,html.fh-dark body.fh-on-roster #main-content input[type="text"],html.fh-dark body.fh-on-roster #main-content input[type="search"],html.fh-dark body.fh-on-roster #main-content input:not([type]){background-color:#0d1230;border-color:#2b3470;color:#e6e9ff}
+body.fh-on-roster #main-content table{font-size:13px}
+body.fh-on-roster #main-content td{padding:8px 9px}
+body.fh-on-roster #main-content .btn.small{padding:5px 10px;font-size:12px;border-radius:8px}
+@media (max-width:${PHONE}px){
+  body.fh-on-roster #topbar-actions{justify-content:flex-start;gap:6px}
+  body.fh-on-roster #topbar-actions .btn,body.fh-on-roster .main-content .btn:not(.small){padding:7px 11px!important;font-size:12.5px!important;min-height:36px!important;line-height:1.2}
+  body.fh-on-roster #main-content select{width:calc(50% - 6px)!important;min-width:0!important;max-width:none!important;font-size:13px!important}
+  body.fh-on-roster #main-content input[type="text"],body.fh-on-roster #main-content input[type="search"],body.fh-on-roster #main-content input:not([type]){font-size:14px!important}
+}
+.fh-nw{white-space:nowrap}
+.fh-ra{white-space:nowrap}
+.fh-ra-menu{position:fixed;z-index:5002;min-width:210px;background:#fff;border:1px solid #dfe4f1;border-radius:12px;box-shadow:0 14px 36px rgba(15,23,60,.24);padding:5px;display:none;flex-direction:column;gap:2px}
+.fh-ra-menu.open{display:flex;animation:fhMenuIn .16s ease-out both}
+.fh-ra-menu .btn{display:block;width:100%;text-align:left;background:transparent!important;color:#1b2150!important;border:0!important;border-radius:8px!important;padding:9px 12px!important;font-size:13.5px!important;white-space:nowrap}
+.fh-ra-menu .btn:hover{background:#eef1fb!important}
+.fh-ra-menu .btn.danger{color:#c0392b!important}
+.fh-ra-menu .btn.danger:hover{background:#fdecea!important}
+html.fh-dark .fh-ra-menu{background:#171e46;border-color:#2b3470}
+html.fh-dark .fh-ra-menu .btn{color:#e6e9ff!important}html.fh-dark .fh-ra-menu .btn:hover{background:#232c63!important}html.fh-dark .fh-ra-menu .btn.danger{color:#ff9b8f!important}
+
 @media (prefers-reduced-motion:reduce){
   #fh-more-menu,#notif-dropdown,.toast,.toast .ti,#notif-bell-btn.fh-ring,.fh-busy::after,.fh-reveal,.fh-fadein,.fh-shake,#fh-bio-login svg{animation:none!important}
   body.fh-rail .sidebar{transition:none!important}
+  .fh-ac .hd,.fh-ac .mn,.fh-ac .sc,.ft-kpi{transition:none!important}.fh-ra-menu.open{animation:none!important}
   .stat-card:hover{transform:none!important}
 }
 @media print{#fh-more-btn,#fh-more-menu{display:none!important}}`;
@@ -294,12 +368,15 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
     watchBell();
     applyRail();
     loginPass();
+    rosterPass();
+    ensureTopClock(); ensureBannerClock();
     document.body.classList.toggle('fh-on-dash', !!document.getElementById('fh-live-dt') && !!document.querySelector('#main-content .grid-4.fh-stagger'));
     BUSY.forEach((b) => { if (!document.body.contains(b)) clearBusy(b); });
   }
   function start() {
     addStyle(); pass();
-    new MutationObserver(() => { clearTimeout(tm); tm = setTimeout(pass, 120); }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    const clockOnly = (r) => { const t = r.target && (r.target.nodeType === 1 ? r.target : r.target.parentElement); return !!(t && t.closest && t.closest('#fh-topclock, #fh-live-dt, #fh-lt-time')); };
+    new MutationObserver((recs) => { if (recs.every(clockOnly)) return; clearTimeout(tm); tm = setTimeout(pass, 120); }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
   // ---------------------------------------------------------------- v2: thin menu line (computers only)
@@ -323,6 +400,7 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
       side.insertBefore(p, side.firstChild);
     }
     const lbl = railOpen() ? 'Keep menu small' : 'Show menu names';
+    const mb = document.getElementById('fh-menu-btn'); if (mb && desk && mb.title !== lbl) { mb.title = lbl; mb.setAttribute('aria-label', lbl); mb.setAttribute('aria-expanded', String(railOpen())); }
     const l = p.querySelector('.lbl'); if (l.textContent !== lbl) { l.textContent = lbl; p.title = lbl; p.setAttribute('aria-label', lbl); }
     // names as tooltips while the line is small
     document.querySelectorAll('#nav-links .nav-link, #nav-links .nav-group-header').forEach((a) => {
@@ -432,6 +510,99 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
     } catch (e) { console.warn('dashboard extras', e); }
   };
 
+  // ---------------------------------------------------------------- v3: live clock (top bar on every page, analog face in the dashboard banner)
+  // Uses the device clock and the place name the portal already found (GPS, kept 1 hour). Nothing is stored online.
+  const tzCity = (() => { try { const z = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; return z.split('/').pop().replace(/_/g, ' '); } catch (_e) { return ''; } })();
+  function placeName() {
+    try { if (typeof _fhPlace !== 'undefined' && _fhPlace) return _fhPlace; } catch (_e) {}
+    try { const c = JSON.parse(sessionStorage.getItem('fh_place') || 'null'); if (c && c.n) return c.n; } catch (_e) {}
+    return '';
+  }
+  function ensureTopClock() {
+    const rib = document.querySelector('.top-ribbon'), act = document.querySelector('.top-ribbon-actions');
+    if (!rib || !act) return null;
+    let c = document.getElementById('fh-topclock');
+    if (!c) {
+      c = document.createElement('div'); c.id = 'fh-topclock'; c.setAttribute('role', 'timer'); c.setAttribute('aria-label', 'Current date, time and place');
+      c.innerHTML = '<span class="t"></span><span class="sep"></span><span class="d"></span><span class="sep s2"></span><button type="button" class="p" title="Your current place (tap to find it)"></button>';
+      c.querySelector('.p').onclick = () => {
+        const p = c.querySelector('.p'); if (placeName()) return;
+        try { if (typeof fhFindPlace === 'function') { p.textContent = '📍 Finding…'; fhFindPlace(p, tzCity); } } catch (_e) {}
+      };
+    }
+    if (c.nextElementSibling !== act) rib.insertBefore(c, act);
+    return c;
+  }
+  const AC = '<svg class="fh-ac" viewBox="0 0 70 70" aria-hidden="true"><circle cx="35" cy="35" r="32" fill="rgba(255,255,255,.08)" stroke="rgba(255,255,255,.45)" stroke-width="1.5"/>' +
+    Array.from({ length: 12 }, (_, i) => { const a = i * Math.PI / 6, r1 = i % 3 ? 27 : 24; return `<line x1="${(35 + r1 * Math.sin(a)).toFixed(1)}" y1="${(35 - r1 * Math.cos(a)).toFixed(1)}" x2="${(35 + 29 * Math.sin(a)).toFixed(1)}" y2="${(35 - 29 * Math.cos(a)).toFixed(1)}" stroke="rgba(255,255,255,${i % 3 ? '.45' : '.9'})" stroke-width="${i % 3 ? 1.2 : 2}" stroke-linecap="round"/>`; }).join('') +
+    '<line class="hd" x1="35" y1="35" x2="35" y2="19"/><line class="mn" x1="35" y1="35" x2="35" y2="10"/><line class="sc" x1="35" y1="39" x2="35" y2="8"/><circle cx="35" cy="35" r="2.6" fill="#5eead4"/></svg>';
+  function ensureBannerClock() {
+    const dt = document.getElementById('fh-live-dt'); if (!dt || dt.querySelector('.fh-ac')) return;
+    const wrap = document.createElement('div'); wrap.className = 'fh-dtx';
+    while (dt.firstChild) wrap.appendChild(dt.firstChild);
+    dt.insertAdjacentHTML('afterbegin', AC); dt.appendChild(wrap);
+  }
+  const setTxt = (el, v) => { if (el && el.textContent !== v) el.textContent = v; };
+  function clockTick() {
+    const n = new Date(), phone = window.innerWidth <= PHONE;
+    const c = ensureTopClock();
+    if (c && getComputedStyle(c).display !== 'none') {
+      setTxt(c.querySelector('.t'), n.toLocaleTimeString('en-GB', phone ? { hour: 'numeric', minute: '2-digit', hour12: true } : { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }));
+      setTxt(c.querySelector('.d'), n.toLocaleDateString('en-GB', phone ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }));
+      const p = c.querySelector('.p'), pn = placeName();
+      if (pn) setTxt(p, '📍 ' + pn);
+      else if (!/Finding/.test(p.textContent)) setTxt(p, '📍 Show my location');
+    }
+    ensureBannerClock();
+    const ac = document.querySelector('#fh-live-dt .fh-ac');
+    if (ac && ac.getBoundingClientRect().width) {
+      const s = n.getSeconds(), m = n.getMinutes() + s / 60, h = (n.getHours() % 12) + m / 60, base = (n.getHours() >= 12 ? 1 : 0);   // turn forward only (no back-spin), except once at midnight
+      ac.querySelector('.sc').style.transform = 'rotate(' + ((n.getHours() * 60 + n.getMinutes()) * 360 + s * 6) + 'deg)';
+      ac.querySelector('.mn').style.transform = 'rotate(' + (n.getHours() * 360 + m * 6) + 'deg)';
+      ac.querySelector('.hd').style.transform = 'rotate(' + (base * 360 + h * 30) + 'deg)';
+    }
+  }
+  setInterval(() => { if (!document.hidden) clockTick(); }, 1000);
+
+  // ---------------------------------------------------------------- v3: Roster rows: Edit stays, the rest goes under "More ▾" (same buttons, same actions)
+  function closeRa() { document.querySelectorAll('.fh-ra-menu.open').forEach((m) => { m.classList.remove('open'); const b = m.previousElementSibling; if (b) b.setAttribute('aria-expanded', 'false'); }); }
+  document.addEventListener('click', (e) => { if (!(e.target.closest && e.target.closest('.fh-ra-btn'))) closeRa(); });
+  window.addEventListener('scroll', closeRa, true);
+  window.addEventListener('resize', closeRa);
+  function rosterPass() {
+    let on = false; try { on = state.view === 'roster'; } catch (_e) {}
+    document.body.classList.toggle('fh-on-roster', on);
+    if (!on) return;
+    document.querySelectorAll('#main-content td').forEach((td) => {
+      if (td.dataset.fhRa || !td.querySelector('[data-edit-roster]')) return;
+      td.dataset.fhRa = '1';
+      const extra = [...td.querySelectorAll('[data-remove-roster],[data-reinstate-roster],[data-top-roster],[data-delete-roster]')];
+      if (!extra.length) return;
+      td.classList.add('fh-ra');
+      const more = document.createElement('button'); more.type = 'button'; more.className = 'btn small outline fh-ra-btn'; more.textContent = 'More ▾';
+      more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+      const menu = document.createElement('div'); menu.className = 'fh-ra-menu'; menu.setAttribute('role', 'menu');
+      extra.forEach((b) => { b.setAttribute('role', 'menuitem'); menu.appendChild(b); });
+      td.appendChild(more); td.appendChild(menu);
+      more.onclick = (e) => {
+        e.stopPropagation();
+        const was = menu.classList.contains('open'); closeRa(); if (was) return;
+        menu.classList.add('open'); more.setAttribute('aria-expanded', 'true');
+        const r = more.getBoundingClientRect(), mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.max(8, Math.min(window.innerWidth - mw - 8, r.right - mw)) + 'px';
+        menu.style.top = (r.bottom + 6 + mh > window.innerHeight ? Math.max(8, r.top - mh - 6) : r.bottom + 6) + 'px';
+      };
+      menu.addEventListener('click', () => setTimeout(closeRa, 0));
+    });
+    // the Shift column stays on one line
+    document.querySelectorAll('#main-content table').forEach((t) => {
+      if (t.dataset.fhNw || !t.querySelector('[data-edit-roster], td')) return;
+      const ths = [...t.querySelectorAll('thead th')], i = ths.findIndex((h) => /^\s*shift\s*$/i.test(h.textContent.replace(/[↑↓▲▼⇅]/g, '')));
+      if (i < 0) return; t.dataset.fhNw = '1';
+      t.querySelectorAll('tbody tr').forEach((tr) => { const c = tr.children[i]; if (c) c.classList.add('fh-nw'); });
+    });
+  }
+
   // ---------------------------------------------------------------- Fuel Trends: litres per visit, latest month
   // Called by Fuel Trends (app.js) with the rows of the current filters. Home Sampling and Home Care are never mixed:
   // each person is counted per category, and the limit is that category's "Max L/visit".
@@ -455,6 +626,7 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
       const high = fair.slice().sort((a, b) => b.lpv - a.lpv).slice(0, 10);
       const anyLim = list.some((o) => o.lim);
       const S = window.__fhFa = window.__fhFa || { tab: null, all: false };
+      const isOpen = () => { try { return localStorage.getItem('fh_fa_open') === '1'; } catch (_e) { return false; } };
       if (!S.tab) S.tab = over.length ? 'over' : 'low';
       const esc = (s) => escapeHtml(s == null ? '' : String(s));
       const row = (o, i, mode) => {
@@ -471,11 +643,13 @@ html.fh-dark .fh-needs .fh-need{border-color:rgba(141,160,255,.15)}html.fh-dark 
           const L = S.tab === 'low' ? low : high;
           body = L.length ? L.map((o, i) => row(o, i, S.tab)).join('') : '<div class="fh-fa-note">Not enough visits this month to rank (each person needs at least 5).</div>';
         }
-        box.innerHTML = `<div class="fh-fa"><div class="fh-fa-h"><b>Litres per visit · ${esc(ftMonthLabel(m))}</b><div class="fh-fa-seg" role="tablist">
+        const open = isOpen();
+        box.innerHTML = `<div class="fh-fa ${open ? '' : 'shut'}"><div class="fh-fa-h"><b>Litres per visit · ${esc(ftMonthLabel(m))}</b>${open ? '' : `<span class="fh-fa-sum">${over.length} over the limit · ${list.length} people</span>`}<div class="fh-fa-seg" role="tablist">
           <button type="button" data-fa="over" class="${S.tab === 'over' ? 'on' : ''}">Over the limit${over.length ? `<span class="n">${over.length}</span>` : ''}</button>
           <button type="button" data-fa="low" class="${S.tab === 'low' ? 'on' : ''}">Lowest 10</button>
-          <button type="button" data-fa="high" class="${S.tab === 'high' ? 'on' : ''}">Highest 10</button></div></div><div class="fh-fa-l">${body}</div></div>`;
-        box.querySelectorAll('[data-fa]').forEach((x) => { x.onclick = () => { S.tab = x.dataset.fa; S.all = false; paint(); }; });
+          <button type="button" data-fa="high" class="${S.tab === 'high' ? 'on' : ''}">Highest 10</button><button type="button" class="fh-fa-tog" data-fa-tog aria-expanded="${open}">${open ? 'Hide list ▴' : 'Show list ▾'}</button></div></div>${open ? `<div class="fh-fa-l">${body}</div>` : ''}</div>`;
+        box.querySelectorAll('[data-fa]').forEach((x) => { x.onclick = () => { S.tab = x.dataset.fa; S.all = false; try { localStorage.setItem('fh_fa_open', '1'); } catch (_e) {} paint(); }; });
+        const tog = box.querySelector('[data-fa-tog]'); if (tog) tog.onclick = () => { try { localStorage.setItem('fh_fa_open', isOpen() ? '0' : '1'); } catch (_e) {} paint(); };
         const more = box.querySelector('[data-all]'); if (more) more.onclick = () => { S.all = !S.all; paint(); };
         box.querySelectorAll('[data-rk]').forEach((x) => {
           x.onclick = () => { try { const mine = rows.filter((r) => r.rk === x.dataset.rk); ftEmpPopup(mine, ms, m, x.querySelector('.nm').firstChild.textContent); } catch (err) { console.warn(err); } };
