@@ -33,12 +33,28 @@
     });
   }
 
-  const card = (t, me, sa) => `<div style="width:150px;text-align:center;padding:12px 10px;border-radius:14px;background:${me ? 'linear-gradient(160deg,#fff4cf,#ffe39a)' : '#fff'};border:1px solid ${me ? '#f0c24b' : '#e6e9f2'};box-shadow:0 2px 8px rgba(20,30,70,.06)">
-    ${t.photo ? `<img src="${t.photo}" alt="" style="width:84px;height:84px;border-radius:50%;object-fit:cover;border:3px solid #f0c24b">` : `<div style="width:84px;height:84px;border-radius:50%;margin:0 auto;background:#2f6a95;color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center;border:3px solid #f0c24b">${esc(initials(t.rider_name))}</div>`}
-    <div style="font-weight:700;margin-top:8px;line-height:1.2">${esc(t.rider_name)}</div>
-    <div class="mono" style="font-size:12px;opacity:.8">${esc(t.employee_id)}</div>
-    <div style="font-size:12px">${esc(t.region_name || '')}</div>
-    <div style="font-size:11px;margin-top:4px;color:#8a5a00;font-weight:600">⭐ ${esc(monthLabel(t.perf_month))}</div>${sa ? `<button type="button" data-revert="${t.id}" style="margin-top:6px;font-size:11px;padding:2px 8px;border-radius:8px;border:1px solid #c0392b;background:transparent;color:#c0392b;cursor:pointer">↩ Revert</button>` : ''}</div>`;
+  // v92: compact card (photo left, details right) so the home page stays short; Super Admin gets Edit + Revert
+  const TP_CSS = `.tp-card{width:248px;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:#fff;border:1px solid #e6e9f2;box-shadow:0 2px 8px rgba(20,30,70,.06);text-align:left;box-sizing:border-box}
+.tp-card.me{background:linear-gradient(160deg,#fff4cf,#ffe39a);border-color:#f0c24b}
+.tp-av{width:58px;height:58px;flex:0 0 auto;border-radius:50%;object-fit:cover;border:3px solid #f0c24b;box-sizing:border-box}
+.tp-ini{background:#2f6a95;color:#fff;font-size:20px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.tp-tx{min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.25}
+.tp-tx b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tp-tx .s{font-size:12px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tp-tx .m{font-size:11.5px;color:#8a5a00;font-weight:600}
+.tp-act{display:flex;gap:6px;margin-top:4px}
+.tp-act button{font-size:11px;padding:2px 8px;border-radius:8px;background:transparent;cursor:pointer;line-height:1.5}
+.tp-act .e{border:1px solid #1E2A6E;color:#1E2A6E}.tp-act .r{border:1px solid #c0392b;color:#c0392b}
+html.fh-dark .tp-card{background:#171e46;border-color:#2b3470;box-shadow:none}html.fh-dark .tp-card.me{background:linear-gradient(160deg,#3a3210,#5a4a12);border-color:#b8942f}
+html.fh-dark .tp-tx .m{color:#f0c24b}html.fh-dark .tp-act .e{border-color:#8da0ff;color:#8da0ff}html.fh-dark .tp-act .r{border-color:#ff9b8f;color:#ff9b8f}
+#tp-wrap{padding:10px 14px 8px!important}#tp-wrap h3{font-size:15px}#tp-wrap>div:nth-child(2),#tp-wrap>div[style*="position:relative"]{margin-top:4px!important}#tp-strip{padding:4px 2px 6px!important}#tp-dots{margin-top:0!important}
+@media (hover:hover) and (min-width:701px){#tp-hint{display:none}}
+@media (max-width:700px){.tp-card{width:226px}}`;
+  if (!document.getElementById('tp-css')) { const st = document.createElement('style'); st.id = 'tp-css'; st.textContent = TP_CSS; document.head.appendChild(st); }
+  const card = (t, me, sa) => `<div class="tp-card ${me ? 'me' : ''}">
+    ${t.photo ? `<img class="tp-av" src="${t.photo}" alt="">` : `<div class="tp-av tp-ini">${esc(initials(t.rider_name))}</div>`}
+    <div class="tp-tx"><b title="${esc(t.rider_name)}">${esc(t.rider_name)}</b><span class="s">${esc(t.employee_id || '')}${t.region_name ? ' · ' + esc(t.region_name) : ''}</span><span class="m">⭐ ${esc(monthLabel(t.perf_month))}</span>
+    ${sa ? `<span class="tp-act"><button type="button" class="e" data-edit-tp="${t.id}">✎ Edit</button><button type="button" class="r" data-revert="${t.id}">↩ Revert</button></span>` : ''}</div></div>`;
 
   // home-page block (everyone sees the current top performers; the person himself gets a congratulation line)
   window.fhTopHomeHtml = async function () {
@@ -73,6 +89,7 @@
     // a small nudge on the first view so people notice the strip moves
     if (items.length > 1 && !st.dataset.nudged) { st.dataset.nudged = '1'; setTimeout(() => { st.scrollTo({ left: 40, behavior: 'smooth' }); setTimeout(() => st.scrollTo({ left: 0, behavior: 'smooth' }), 500); }, 900); }
     st.addEventListener('click', async (e) => {
+      const ed = e.target.closest('[data-edit-tp]'); if (ed) { window.fhTopEdit(ed.dataset.editTp); return; }
       const b = e.target.closest('[data-revert]'); if (!b) return;
       if (!confirm('Revert this top performer? The entry and its picture are removed from every home page.')) return;
       const r = await sb.from('top_performers').delete().eq('id', b.dataset.revert);
@@ -88,12 +105,13 @@
     const { data: ex } = await sb.from('top_performers').select('*').eq('rider_id', entry.rider_id).order('perf_month', { ascending: false });
     openModal(`<div style="max-width:480px"><h2>⭐ Top performer</h2>
       <p><b>${esc(p.full_name)}</b> <span class="mono">${esc(p.employee_id)}</span> · ${esc(entry.regions && entry.regions.name)}</p>
-      ${ex && ex.length ? `<div class="hint">Already added (Remove = revert):</div>${ex.map((t) => `<div style="display:flex;gap:8px;align-items:center;margin:4px 0"><span style="flex:1">${esc(monthLabel(t.perf_month))} · till ${esc(t.expires_on)}</span><button class="btn small danger" type="button" data-del="${t.id}">Remove</button></div>`).join('')}<hr>` : ''}
+      ${ex && ex.length ? `<div class="hint">Already added (Remove = revert):</div>${ex.map((t) => `<div style="display:flex;gap:8px;align-items:center;margin:4px 0"><span style="flex:1">${esc(monthLabel(t.perf_month))} · till ${esc(t.expires_on)}</span><button class="btn small outline" type="button" data-tpedit="${t.id}">✎ Edit</button><button class="btn small danger" type="button" data-del="${t.id}">Remove</button></div>`).join('')}<hr>` : ''}
       <form id="tp-form">
         <div class="form-row"><label>Month he was top performer *</label><input type="month" id="tp-month" value="${mon}" required></div>
         <div class="form-row"><label>Show on home page until *</label><input type="date" id="tp-exp" value="${exp}" required><div class="hint">The entry and its picture are deleted automatically after this date.</div></div>
         <div class="form-row"><label>Picture (optional)</label><input type="file" id="tp-photo" accept="image/*"><div class="hint">You can move and zoom it before saving. It is shrunk automatically (small file), so it takes almost no storage.</div><div id="tp-adj" style="display:none;margin-top:8px"></div></div>
         <button class="btn" type="submit" id="tp-save">Save</button></form></div>`);
+    document.querySelectorAll('[data-tpedit]').forEach((b) => { b.onclick = () => window.fhTopEdit(b.dataset.tpedit); });
     document.querySelectorAll('[data-del]').forEach((b) => { b.onclick = async () => { if (!confirm('Remove this top-performer entry?')) return; const r = await sb.from('top_performers').delete().eq('id', b.dataset.del); toast(r.error ? 'Could not remove: ' + r.error.message : 'Removed'); closeModal(); }; });
     let adj = null;
     document.getElementById('tp-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; const box = document.getElementById('tp-adj'); box.style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 240); } catch (err) { toast(err.message || 'Could not open the picture'); } };
@@ -110,6 +128,40 @@
         if (r.error) throw new Error(/relation .*top_performers|schema cache/i.test(r.error.message) ? 'Please run migration_61.sql first' : r.error.message);
         toast('Saved. Shows on the home page until ' + e); closeModal();
       } catch (err) { toast(err.message || 'Could not save'); btn.disabled = false; }
+    };
+  };
+  // v92 Super Admin: edit a top performer (name, employee ID, region, month, show-until date, picture: replace, adjust or remove)
+  window.fhTopEdit = async function (id) {
+    if (!isSuperAdmin()) return;
+    const { data: t, error } = await sb.from('top_performers').select('*').eq('id', id).maybeSingle();
+    if (error || !t) { toast('Could not open this entry' + (error ? ': ' + error.message : '')); return; }
+    const pic = (src) => src ? `<img src="${src}" alt="" style="width:84px;height:84px;border-radius:50%;object-fit:cover;border:3px solid #f0c24b">` : `<div style="width:84px;height:84px;border-radius:50%;background:#2f6a95;color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center;border:3px solid #f0c24b">${esc(initials(t.rider_name))}</div>`;
+    openModal(`<div style="max-width:480px"><h2>✎ Edit top performer</h2>
+      <div style="display:flex;align-items:center;gap:14px;margin:4px 0 12px"><span id="tpe-now">${pic(t.photo)}</span><div class="hint" style="margin:0">Fix any mistake below. The change shows on every home page straight away.</div></div>
+      <form id="tpe-form">
+        <div class="form-row"><label>Name shown *</label><input type="text" id="tpe-name" value="${esc(t.rider_name || '')}" required maxlength="80"></div>
+        <div class="two-col"><div class="form-row"><label>Employee ID</label><input type="text" id="tpe-emp" value="${esc(t.employee_id || '')}" maxlength="20"></div>
+        <div class="form-row"><label>Region shown</label><input type="text" id="tpe-reg" value="${esc(t.region_name || '')}" maxlength="60"></div></div>
+        <div class="two-col"><div class="form-row"><label>Month he was top performer *</label><input type="month" id="tpe-month" value="${esc(String(t.perf_month || '').slice(0, 7))}" required></div>
+        <div class="form-row"><label>Show until *</label><input type="date" id="tpe-exp" value="${esc(t.expires_on || '')}" required></div></div>
+        <div class="form-row"><label>New picture (optional)</label><input type="file" id="tpe-photo" accept="image/*"><div class="hint">Choose a picture, then move and zoom it. It is shrunk automatically (about 15 KB).</div><div id="tp-adj" style="display:none;margin-top:8px"></div></div>
+        ${t.photo ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:-4px 0 12px"><input type="checkbox" id="tpe-nopic" style="width:auto"> Remove the picture (show initials instead)</label>` : ''}
+        <button class="btn" type="submit" id="tpe-save">Save changes</button></form></div>`);
+    let adj = null;
+    document.getElementById('tpe-photo').onchange = async (ev) => { const f = ev.target.files[0]; adj = null; document.getElementById('tp-adj').style.display = 'none'; if (!f) return; try { adj = await adjuster(f, 240); const nb = document.getElementById('tpe-nopic'); if (nb) nb.checked = false; } catch (err) { toast(err.message || 'Could not open the picture'); } };
+    document.getElementById('tpe-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const name = document.getElementById('tpe-name').value.trim(), m = document.getElementById('tpe-month').value, e = document.getElementById('tpe-exp').value;
+      if (!name || !m || !e) { toast('Please fill the name, month and show-until date'); return; }
+      if (e < new Date().toISOString().slice(0, 10)) { toast('The show-until date is already past. Use Revert to remove an entry.'); return; }
+      const row = { rider_name: name, employee_id: document.getElementById('tpe-emp').value.trim() || null, region_name: document.getElementById('tpe-reg').value.trim(), perf_month: m + '-01', expires_on: e };
+      const nb = document.getElementById('tpe-nopic');
+      if (adj) row.photo = adj.render(); else if (nb && nb.checked) row.photo = null;
+      const btn = document.getElementById('tpe-save'); btn.disabled = true;
+      const r = await sb.from('top_performers').update(row).eq('id', id);
+      if (r.error) { btn.disabled = false; toast(/duplicate|unique/i.test(r.error.message) ? 'This person is already a top performer for that month. Choose another month.' : 'Could not save: ' + r.error.message); return; }
+      toast('Top performer updated'); closeModal();
+      try { if (state.view === 'dashboard') navigateTo('dashboard'); } catch (_e) {}
     };
   };
   // Super Admin: tidy expired rows when the home page opens (the daily database job does the same)
