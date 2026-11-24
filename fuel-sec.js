@@ -1,5 +1,7 @@
 // =====================================================================================
-// fuel-sec.js — 2-step sign-in (authenticator app) for the Fuel pages   (v95, needs migration_67)
+// fuel-sec.js — 2-step sign-in (authenticator app) for the Fuel pages   (v2: needs migration_67 + migration_69)
+// v2: FieldHub checks the codes itself (migration_69), because Supabase's own authenticator set-up needs an
+// e-mail on the account and FieldHub signs in by phone (it failed with "Error generating QR Code").
 // - Fuel Trends (and later Fuel Reimbursement) ask for the 6-digit code once per sign-in.
 // - My Profile gets a "2-step sign-in" card: set up / remove; Super Admin also gets the
 //   on/off switch and "Reset someone's 2-step".
@@ -42,27 +44,32 @@
     document.head.appendChild(st);
   }
 
-  // is the Fuel 2-step rule switched on? (null = migration_67 not run yet → do nothing)
-  async function required() {
+  // status from the database: { required, has, unlocked }; null = migrations not run yet
+  async function status() {
     try {
-      const { data, error } = await sb.from('fh_fuel_security').select('required').eq('id', 1).maybeSingle();
-      if (error || !data) return null;
-      S.required = !!data.required; return S.required;
+      const { data, error } = await sb.rpc('fh_totp_status');
+      if (error) {
+        if (/fh_totp_status|function|schema cache/i.test(error.message || '')) {   // migration_69 not run: fall back to the switch table only
+          const { data: f, error: e2 } = await sb.from('fh_fuel_security').select('required').eq('id', 1).maybeSingle();
+          if (e2 || !f) return null;
+          return { required: !!f.required, has: false, unlocked: false, needs69: true };
+        }
+        return null;
+      }
+      return data || null;
     } catch (_e) { return null; }
   }
-  async function aal() {
-    try { const { data } = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return data || {}; } catch (_e) { return {}; }
-  }
-  async function verifiedFactor() {
-    const { data, error } = await sb.auth.mfa.listFactors();
-    if (error) throw error;
-    return (data && data.totp || []).find(f => f.status === 'verified') || null;
-  }
-  async function verify(factorId, code) {
-    const { error } = await sb.auth.mfa.challengeAndVerify({ factorId, code });
-    if (error) throw error;
-  }
+  async function required() { const st = await status(); return st ? !!st.required : null; }
+  async function call(fn, args) { const { data, error } = await sb.rpc(fn, args || {}); if (error) throw error; return data; }
   const clean = (v) => String(v || '').replace(/\D/g, '').slice(0, 6);
+  const QR_LIB = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js';
+  function qrLib() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    return new Promise((res) => { const sc = document.createElement('script'); sc.src = QR_LIB; sc.onload = () => res(window.qrcode || null); sc.onerror = () => res(null); document.head.appendChild(sc); setTimeout(() => res(window.qrcode || null), 8000); });
+  }
+  async function qrImg(text) {
+    try { const q = await qrLib(); if (!q) return ''; const qr = q(0, 'M'); qr.addData(text); qr.make(); return qr.createDataURL(5, 2); } catch (_e) { return ''; }
+  }
 
   // ---------------------------------------------------------------- code entry / first set-up screen
   function codeBox(host, title, text, onCode, extraHtml) {
@@ -76,8 +83,9 @@
       e.preventDefault();
       const code = clean(inp.value); if (code.length !== 6) { say('Type the 6-digit code from your authenticator app'); return; }
       btn.disabled = true; btn.textContent = 'Checking…';
-      try { await onCode(code); }
-      catch (err) { say(/invalid|expired|code/i.test(errMsg(err)) ? 'That code is not right or has expired. Try the newest code.' : 'Could not check the code: ' + errMsg(err)); inp.value = ''; inp.focus(); btn.disabled = false; btn.textContent = 'Continue'; }
+      const fail = (m) => { say(m); inp.value = ''; inp.focus(); btn.disabled = false; btn.textContent = 'Continue'; };
+      try { const ok = await onCode(code); if (ok === false) fail('That code is not right or has expired. Type the newest code from the app (check the phone\'s time is automatic).'); }
+      catch (err) { fail(errMsg(err)); }
     };
     setTimeout(() => { try { inp.focus(); } catch (_e) {} }, 50);
   }
@@ -85,28 +93,25 @@
   async function enrollInto(host, done) {
     host.innerHTML = '<div class="f2-wrap"><p>Preparing…</p></div>';
     try {
-      // remove half-finished set-ups left from an earlier try (they block a new one)
-      const { data: ls } = await sb.auth.mfa.listFactors();
-      for (const f of ((ls && ls.all) || [])) if (f.status !== 'verified') { try { await sb.auth.mfa.unenroll({ factorId: f.id }); } catch (_e) {} }
-      const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'FieldHub ' + new Date().toISOString().slice(0, 16) });
-      if (error) throw error;
-      const qr = data.totp.qr_code, key = data.totp.secret, uri = data.totp.uri;
+      const d = await call('fh_totp_begin');
+      const key = d.secret, uri = d.uri, qr = await qrImg(uri);
+      const keyShow = key.replace(/(.{4})/g, '$1 ').trim();
       const extra = `<ol class="f2-steps">
           <li>Open <b>Google Authenticator</b> on your phone and tap <b>+</b>.</li>
-          <li>Choose <b>Scan a QR code</b> and scan this picture.<br><span style="color:#7a809c">Using this same phone? Choose <b>Enter a setup key</b> instead, and paste the key below.</span></li>
+          <li>Choose <b>Scan a QR code</b> and scan this picture.<br><span style="color:#7a809c">Using this same phone? Choose <b>Enter a setup key</b>: name <b>FieldHub</b>, paste the key below, type <b>Time based</b>.</span></li>
           <li>Type the 6-digit code the app shows.</li></ol>
-        <div class="f2-qr"><img alt="QR code for the authenticator app" src="${esc(qr)}"></div>
-        <div class="f2-key" id="f2-key">${esc(key)}</div>
+        ${qr ? `<div class="f2-qr"><img alt="QR code for the authenticator app" src="${esc(qr)}"></div>` : '<p class="hint">(The QR picture could not load — use the setup key.)</p>'}
+        <div class="f2-key" id="f2-key">${esc(keyShow)}</div>
         <div><button class="f2-btn ghost" id="f2-copy" type="button">Copy key</button> <a class="f2-btn ghost" style="display:inline-block;text-decoration:none" href="${esc(uri)}">Open in app</a></div>`;
-      codeBox(host, 'Set up 2-step sign-in', 'Fuel pages are protected. Set this up once; after that you only type a code once per sign-in.', async (code) => {
-        await verify(data.id, code);
-        try { await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'set up 2-step sign-in', entity_type: 'Account', entity_label: (state.profile && state.profile.full_name) || '' }); } catch (_e) {}
-        say('2-step sign-in is on ✓'); done();
+      codeBox(host, 'Set up 2-step sign-in', 'Fuel pages are protected. Set this up once; after that you type a code once per sign-in.', async (code) => {
+        const ok = await call('fh_totp_confirm', { p_code: code });
+        if (ok === false) return false;
+        say('2-step sign-in is on ✓'); done(); return true;
       }, extra);
       const cp = host.querySelector('#f2-copy');
       if (cp) cp.onclick = async () => { try { await navigator.clipboard.writeText(key); say('Key copied'); } catch (_e) { say('Press and hold the key to copy it'); } };
     } catch (err) {
-      host.innerHTML = `<div class="f2-wrap"><div class="f2-ic">⚠️</div><h3>Could not start the set-up</h3><p>${esc(errMsg(err))}</p><p>If this keeps happening, the Super Admin should check Supabase → Authentication → Multi-Factor → "TOTP" is enabled.</p><button class="f2-btn" type="button" id="f2-retry">Try again</button></div>`;
+      host.innerHTML = `<div class="f2-wrap"><div class="f2-ic">⚠️</div><h3>Could not start the set-up</h3><p>${esc(errMsg(err))}</p><button class="f2-btn" type="button" id="f2-retry">Try again</button></div>`;
       host.querySelector('#f2-retry').onclick = () => enrollInto(host, done);
     }
   }
@@ -114,18 +119,15 @@
   // Gate: returns true when the page may open. Otherwise draws the code / set-up screen into host and
   // calls onPass() after success.
   async function gate(host, onPass) {
-    const req = await required();
-    if (req !== true) return true;                       // switch off, or migration_67 not run yet
-    const lv = await aal();
-    if (lv.currentLevel === 'aal2') return true;
+    const st = await status();
+    if (!st || !st.required || st.unlocked) return true;   // switch off, migrations not run, or code already typed in this sign-in
     css();
-    let f = null;
-    try { f = await verifiedFactor(); } catch (_e) {}
-    if (f) codeBox(host, 'Enter your 2-step code', 'Open your authenticator app and type the 6-digit code for <b>FieldHub</b>.', async (code) => { await verify(f.id, code); onPass(); });
+    if (st.needs69) { host.innerHTML = '<div class="f2-wrap"><div class="f2-ic">⚠️</div><h3>One more step for the Super Admin</h3><p>Please run <b>migration_69.sql</b> in Supabase → SQL Editor, then reload. (Until then, the emergency line in migration_67 turns the code off.)</p></div>'; return false; }
+    if (st.has) codeBox(host, 'Enter your 2-step code', 'Open your authenticator app and type the 6-digit code for <b>FieldHub</b>.', async (code) => { const ok = await call('fh_totp_unlock', { p_code: code }); if (ok === false) return false; onPass(); return true; });
     else enrollInto(host, onPass);
     return false;
   }
-  window.fhFuel2fa = { gate, required, aal };
+  window.fhFuel2fa = { gate, required, status };
 
   // ---------------------------------------------------------------- wrap the Fuel Trends page
   function wrapFuel() {
@@ -143,10 +145,10 @@
   async function profileCard() {
     const main = document.getElementById('main-content');
     if (!main || document.getElementById('f2-card')) return;
-    const req = await required();
-    if (req === null) return;                            // migration_67 not run yet
+    const st = await status();
+    if (!st) return;                                     // migration_67 not run yet
+    const req = !!st.required, f = !!st.has;
     css();
-    let f = null; try { f = await verifiedFactor(); } catch (_e) {}
     const sup = typeof isSuperAdmin === 'function' && isSuperAdmin();
     const card = document.createElement('div'); card.className = 'card'; card.id = 'f2-card';
     card.innerHTML = `<h3>🔐 2-step sign-in</h3>
@@ -162,24 +164,20 @@
     const host = card.querySelector('#f2-host');
     const reload = () => { card.remove(); profileCard(); };
     const needCode = async (then) => {                 // removing / switching needs this sign-in to have the code
-      const lv = await aal(); if (lv.currentLevel === 'aal2') return then();
-      const fx = await verifiedFactor();
-      if (!fx) return then();
-      codeBox(host, 'Confirm with your code', 'Type the 6-digit code from your authenticator app to continue.', async (code) => { await verify(fx.id, code); host.innerHTML = ''; await then(); });
+      const s2 = await status();
+      if (!s2 || s2.unlocked || !s2.has) return then();
+      codeBox(host, 'Confirm with your code', 'Type the 6-digit code from your authenticator app to continue.', async (code) => { const ok = await call('fh_totp_unlock', { p_code: code }); if (ok === false) return false; host.innerHTML = ''; await then(); return true; });
     };
     const b = (id) => card.querySelector('#' + id);
     if (b('f2-setup')) b('f2-setup').onclick = () => enrollInto(host, reload);
     if (b('f2-rm')) b('f2-rm').onclick = () => needCode(async () => {
       if (!confirm('Remove 2-step sign-in?\n\nYou will have to set it up again before you can open the Fuel pages.')) return;
-      const { error } = await sb.auth.mfa.unenroll({ factorId: f.id });
+      const { error } = await sb.rpc('fh_totp_remove');
       if (error) { say('Could not remove: ' + errMsg(error)); return; }
-      try { await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'removed own 2-step sign-in', entity_type: 'Account', entity_label: (state.profile && state.profile.full_name) || '' }); } catch (_e) {}
       say('2-step sign-in removed'); reload();
     });
     if (b('f2-new')) b('f2-new').onclick = () => needCode(async () => {
       if (!confirm('Move 2-step sign-in to a new phone?\n\nThe old phone stops working. You will scan a new QR code now.')) return;
-      const { error } = await sb.auth.mfa.unenroll({ factorId: f.id });
-      if (error) { say('Could not continue: ' + errMsg(error)); return; }
       enrollInto(host, reload);
     });
     if (b('f2-sw')) b('f2-sw').onclick = () => needCode(async () => {
