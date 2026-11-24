@@ -2201,7 +2201,7 @@ function ftNavViews(){
 function ftCanView(view){ return isSuperAdmin() || (view === 'ft_trend' ? (hasPermission('ft_trend') || hasPermission('ft_upload')) : hasPermission('ft_upload')); }
 function getAllowedViews(){
   const viewerOnly = !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only');
-  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : []), ...(state.hasPos && !(NAV_BY_ROLE[state.profile.role] || []).includes('my_pos') ? ['my_pos'] : [])];
+  const base = viewerOnly ? [...ftNavViews()] : [...(NAV_BY_ROLE[state.profile.role] || ['dashboard']), ...fvNavViews(), ...ftNavViews(), ...(typeof frNavViews === 'function' ? frNavViews() : []), ...(isSuperAdmin() ? ['pos_dash','pos_stock','pos_repairs'] : []), ...(state.hasPos && !(NAV_BY_ROLE[state.profile.role] || []).includes('my_pos') ? ['my_pos'] : [])];
   const extra = [];
   if (!viewerOnly && state.profile.role !== 'rider' && base.includes('roster')) { extra.push('roster_ai'); if (state.profile.role !== 'coordinator' || isAdmin()) extra.push('resigned'); if (isAdmin() || state.profile.role === 'regional_poc') extra.push('roster_log'); }
   // any page can be switched on for one person (Settings > Access Control)
@@ -2223,6 +2223,7 @@ const NAV_LABEL = {
   fv_report:'Visit Report', fv_riders:'Rider Summary', fv_issues:'Issues Summary', fv_visits:'Visit Summary',
   fv_add:'Add Visit', fv_teams:'Teams & Riders', fv_checklist:'Checklist Form', fv_targets:'Targets & KPI',
   ft_trend:'Trends', ft_data:'Uploaded Data', ft_upload:'Upload Fuel File',
+  fr_people:'Fuel People', fr_settings:'Fuel Settings',
   pos_dash:'POS Coverage', pos_stock:'POS Machines', pos_repairs:'POS Repairs', my_pos:'My POS', roster_ai:'Roster AI Plan', resigned:'Resigned Staff & Tools', roster_log:'Roster Change Log'
 };
 // Groups the sidebar into collapsible sections. 'dashboard' always stands alone at top.
@@ -2234,6 +2235,7 @@ const NAV_GROUPS = [
   { id: 'g_fieldvisits',label: 'Field Visits',  items: ['fv_add','fv_report','fv_riders','fv_issues','fv_visits','fv_teams','fv_checklist','fv_targets'] },
   { id: 'g_inventory',  label: 'Inventory',     items: ['expiries','tools','my_pos'] },
   { id: 'g_fuel',       label: 'Fuel Trends',   items: ['ft_trend','ft_data','ft_upload'] },
+  { id: 'g_freimb',     label: 'Fuel Reimbursement', items: ['fr_people','fr_settings'] },
   { id: 'g_pos',        label: 'POS Management', items: ['pos_dash','pos_stock','pos_repairs'] },
   { id: 'g_admin',      label: 'Admin',         items: ['regions','settings','reports','activitylog'] }
 ];
@@ -2298,6 +2300,7 @@ const NAV_ICON_DEFAULT = {
   fv_add:'svg:plus', fv_report:'svg:chart', fv_riders:'svg:user', fv_issues:'svg:alert', fv_visits:'svg:list', fv_teams:'svg:users',
   fv_checklist:'svg:clipboard', fv_targets:'svg:target',
   ft_trend:'svg:chart', ft_data:'svg:list', ft_upload:'svg:plus', g_fuel:'svg:fuel',
+  fr_people:'svg:users', fr_settings:'svg:gear', g_freimb:'svg:fuel',
   pos_dash:'svg:chart', pos_stock:'svg:list', pos_repairs:'svg:wrench', g_pos:'svg:card', my_pos:'svg:card',
   g_knowledge:'svg:book', g_people:'svg:users', g_operations:'svg:briefcase', g_fieldvisits:'svg:clipboard', g_inventory:'svg:box', g_admin:'svg:lock'
 };
@@ -2428,6 +2431,7 @@ async function navigateTo(view){
     else if (view==='hierarchy') await renderHierarchy();
     else if (view.startsWith('fv_')) await renderFieldVisits(view);
     else if (view.startsWith('ft_')) await renderFuelTrends(view);
+    else if (view.startsWith('fr_')) { if (typeof renderFuelReimb === 'function') await renderFuelReimb(view); else main.innerHTML = '<div class="empty-state">Fuel Reimbursement is loading. Please refresh the page.</div>'; }
     else if (view === 'my_pos') { if (typeof renderMyPos === 'function') await renderMyPos(); }
     else if (view.startsWith('pos_')) { if (typeof renderPos === 'function') await renderPos(view); else main.innerHTML = '<div class="empty-state">POS Management is loading. Please refresh the page.</div>'; }
     else if (view==='roster_ai') { if (typeof renderRosterAI === 'function') await renderRosterAI(); }
