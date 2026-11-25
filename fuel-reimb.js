@@ -74,7 +74,7 @@
   window.frNavViews = function () {
     if (typeof state === 'undefined' || !state.profile) return [];
     const v = [];
-    if (state.profile.role === 'super_admin') v.push('fr_daily', 'fr_monthly', 'fr_people', 'fr_settings');
+    if (state.profile.role === 'super_admin') v.push('fr_daily', 'fr_monthly', 'fr_people', 'fr_bikes', 'fr_settings');
     else if (window.__frAcc) { v.push('fr_daily', 'fr_people'); if (window.__frAcc.can_enter) v.push('fr_monthly'); }
     if (window.__frMe) v.unshift('fr_my');
     return v;
@@ -109,11 +109,58 @@
     if (typeof window.renderNav !== 'function') { setTimeout(hookNav, 300); return; }
     if (window.renderNav.__fr) return;
     origRenderNav = window.renderNav;
-    const wrapped = function () { const r = origRenderNav.apply(this, arguments); checkAccess(false); return r; };
+    const wrapped = function () { const r = origRenderNav.apply(this, arguments); checkAccess(false); pendingBadge(); bikeGate(); return r; };
     wrapped.__fr = true; window.renderNav = wrapped;
     checkAccess(false);
   })();
-  setInterval(() => checkAccess(false), 3000);   // cheap: it only asks the database until the first answer, then once a minute while nothing is found
+  setInterval(() => { checkAccess(false); bikeGate(); }, 3000);
+  setInterval(() => pendingBadge(true), 120000);
+  // Super Admin: how many people (requested by Area Leads etc.) wait for approval — shown as a number on "Fuel People"
+  const PB = { at: 0 };
+  async function pendingBadge(force) {
+    if (typeof state === 'undefined' || !state.profile || state.profile.role !== 'super_admin' || typeof FH_BADGES === 'undefined') return;
+    if (!force && Date.now() - PB.at < 60000) { if (typeof fhApplyNavBadges === 'function') fhApplyNavBadges(); return; }
+    PB.at = Date.now();
+    try {
+      const { data, error } = await sb.rpc('fr_pending_count');
+      if (error) return;
+      const before = FH_BADGES.fr_people || 0; FH_BADGES.fr_people = data || 0;
+      if (typeof fhApplyNavBadges === 'function') fhApplyNavBadges();
+      if (data && data !== before && !PB.told) { PB.told = true; say(`⛽ ${data} person(s) waiting for your approval in Fuel People`); }
+    } catch (_e) {}
+  }
+  window.frPendingBadge = () => pendingBadge(true);
+
+  // ---------------------------------------------------------------- bike number: every rider must add it (once), can change it in My Profile
+  const BG = { uid: null, done: false, busy: false };
+  async function bikeGate() {
+    if (typeof state === 'undefined' || !state.user || !state.profile || state.profile.role !== 'rider' || BG.busy) return;
+    if (BG.uid !== state.user.id) { BG.uid = state.user.id; BG.done = false; }
+    if (BG.done || document.getElementById('fr-bike-gate') || document.getElementById('fh-email-gate')) return;
+    if (window.fhOffline && fhOffline.isOffline && fhOffline.isOffline()) return;
+    BG.busy = true;
+    try {
+      const { data, error } = await sb.from('profiles').select('bike_number').eq('id', state.user.id).maybeSingle();
+      if (error) { if (/bike_number/i.test(error.message || '')) BG.done = true; return; }   // migration_71 not run yet
+      if (data && data.bike_number) { BG.done = true; return; }
+      css();
+      const o = document.createElement('div'); o.id = 'fr-bike-gate'; o.className = 'modal-overlay'; o.style.zIndex = 99998;
+      o.innerHTML = `<div class="modal"><h2>🏍 Add your bike number</h2>
+        <p class="hint">Every rider must add the number plate of the bike he uses for work. It is needed for fuel reimbursement. You can change it later in <b>My Profile</b>.</p>
+        <form id="fr-bike-f"><div class="form-row"><label>Bike number (as on the number plate)</label><input id="fr-bike-n" required maxlength="15" placeholder="e.g. LEA-1234" style="text-transform:uppercase" autocomplete="off"></div>
+        <div class="form-row"><label>Type it again</label><input id="fr-bike-n2" required maxlength="15" style="text-transform:uppercase" autocomplete="off"></div>
+        <button class="btn-primary" type="submit" id="fr-bike-s" style="width:100%">Save bike number</button></form></div>`;
+      document.body.appendChild(o);
+      o.querySelector('#fr-bike-f').onsubmit = async (e) => {
+        e.preventDefault();
+        const a = o.querySelector('#fr-bike-n').value.trim().toUpperCase(), b = o.querySelector('#fr-bike-n2').value.trim().toUpperCase();
+        if (a.replace(/\s+/g, ' ') !== b.replace(/\s+/g, ' ')) { say('The two bike numbers do not match'); return; }
+        const { data: v, error: e2 } = await sb.rpc('fh_set_bike_number', { p_number: a });
+        if (e2) { say(errText(e2)); return; }
+        BG.done = true; o.remove(); say('Bike number saved: ' + v);
+      };
+    } catch (_e) {} finally { BG.busy = false; }
+  }   // cheap: it only asks the database until the first answer, then once a minute while nothing is found
   window.frRecheck = () => checkAccess(true);
 
   // ---------------------------------------------------------------- page entry
@@ -129,6 +176,7 @@
     if (view === 'fr_my') return pageMy(main);
     if (view === 'fr_daily') return pageDaily(main);
     if (view === 'fr_monthly') return pageMonthly(main);
+    if (view === 'fr_bikes') return pageBikes(main);
   };
 
   // =====================================================================================
@@ -295,12 +343,19 @@
   async function drive(action, extra) {
     const url = FR.d && FR.d.settings && FR.d.settings.drive_url;
     if (!url) throw new Error('No Google Drive link saved yet');
-    const { data } = await sb.auth.getSession();
-    const token = data && data.session && data.session.access_token;
-    if (!token) throw new Error('Please sign in again');
-    const r = await fetch(url, { method: 'POST', body: JSON.stringify(Object.assign({ action, token }, extra || {})) });   // plain text body: no extra browser check needed
-    const j = await r.json().catch(() => null);
-    if (!j) throw new Error('The link did not answer like the FieldHub script. Check that you copied the "Web app" URL.');
+    const send = async (fresh) => {
+      let s0 = (await sb.auth.getSession()).data.session;
+      // a sign-in token lasts about an hour; give the script a fresh one when it is old (or when it was refused once)
+      if (fresh || !s0 || (s0.expires_at && s0.expires_at * 1000 - Date.now() < 5 * 60000)) { const r0 = await sb.auth.refreshSession(); if (r0.data && r0.data.session) s0 = r0.data.session; }
+      const token = s0 && s0.access_token;
+      if (!token) throw new Error('Please sign in again');
+      const r = await fetch(url, { method: 'POST', body: JSON.stringify(Object.assign({ action, token }, extra || {})) });   // plain text body: no extra browser check needed
+      const j = await r.json().catch(() => null);
+      if (!j) throw new Error('The link did not answer like the FieldHub script. Check that you copied the "Web app" URL.');
+      return j;
+    };
+    let j = await send(false);
+    if (!j.ok && /sign-in|signed in/i.test(j.error || '')) j = await send(true);
     if (!j.ok) throw new Error(j.error || 'The Drive script refused the request');
     return j;
   }
@@ -349,10 +404,12 @@
     const rows = all.filter(p => (!f.region || p.region_id === f.region) && (!f.group || p.group_id === f.group) && (!f.status || p.status === f.status)
       && (!f.q || (p.full_name + ' ' + (p.employee_id || '')).toLowerCase().includes(f.q.toLowerCase())));
     const pend = all.filter(p => p.status === 'pending');
+    const reqBy = {};
+    if (S && pend.length) { const ids = [...new Set(pend.map(p => p.requested_by).filter(Boolean))]; if (ids.length) { const { data: rq } = await sb.from('profiles').select('id,full_name').in('id', ids); (rq || []).forEach(x => { reqBy[x.id] = x.full_name; }); } }
     const ST = { active: ['g', 'Active'], pending: ['o', 'Waiting approval'], rejected: ['r', 'Rejected'], inactive: ['x', 'Inactive'] };
     main.innerHTML = `<p class="fv-sub">${S ? 'Everyone who claims fuel. Riders come from the roster; others are added or requested here.' : 'People in your regions. New people you request appear after the Super Admin approves them.'}</p>
-      ${S && pend.length ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⏳ Waiting for your approval (${pend.length})</h4><div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Employee ID</th><th>Region / City</th><th>Group</th><th>Note</th><th></th></tr></thead><tbody>
-        ${pend.map(p => `<tr><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, p.region_id))}${p.city_id ? ' / ' + h(nm(FR.d.cities, p.city_id)) : ''}</td><td>${h(nm(FR.d.groups, p.group_id))}</td><td>${h(p.note || '')}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn" data-ap="${h(p.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-rj="${h(p.id)}" type="button" style="color:#c0392b">Reject</button></td></tr>`).join('')}
+      ${S && pend.length ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⏳ Waiting for your approval (${pend.length})</h4><p class="fr-hint">Requested by Area Leads / Regional Leads / Admin Officers. After you approve, the person appears in the lists and their fuel is processed like everyone else's.</p><div class="fr-wrap"><table class="fv-table"><thead><tr><th>Requested by</th><th>Name</th><th>Employee ID</th><th>Region / City</th><th>Group</th><th>Note</th><th></th></tr></thead><tbody>
+        ${pend.map(p => `<tr><td>${h(reqBy[p.requested_by] || '—')}<div class="fr-hint" style="margin:0">${p.requested_at ? h(new Date(p.requested_at).toLocaleDateString('en-GB')) : ''}</div></td><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, p.region_id))}${p.city_id ? ' / ' + h(nm(FR.d.cities, p.city_id)) : ''}</td><td>${h(nm(FR.d.groups, p.group_id))}</td><td>${h(p.note || '')}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn" data-ap="${h(p.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-rj="${h(p.id)}" type="button" style="color:#c0392b">Reject</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
       <div class="fr-tb">
         <select id="f-r"><option value="">All regions</option>${opts(myRegions, f.region)}</select>
@@ -391,8 +448,8 @@
     };
     const add = main.querySelector('#pp-add'); if (add) add.onclick = () => personModal(null, myRegions, redraw);
     main.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => personModal(all.find(p => p.id === b.dataset.ed), myRegions, redraw));
-    main.querySelectorAll('[data-ap]').forEach(b => b.onclick = async () => { if ((await rpc('fr_decide_person', { p_id: b.dataset.ap, p_approve: true, p_note: null }, 'Approved')).ok) redraw(); });
-    main.querySelectorAll('[data-rj]').forEach(b => b.onclick = async () => { const n = prompt('Reason for rejecting (the requester will see it):', ''); if (n === null) return; if ((await rpc('fr_decide_person', { p_id: b.dataset.rj, p_approve: false, p_note: n }, 'Rejected')).ok) redraw(); });
+    main.querySelectorAll('[data-ap]').forEach(b => b.onclick = async () => { if ((await rpc('fr_decide_person', { p_id: b.dataset.ap, p_approve: true, p_note: null }, 'Approved')).ok) { redraw(); if (window.frPendingBadge) frPendingBadge(); } });
+    main.querySelectorAll('[data-rj]').forEach(b => b.onclick = async () => { const n = prompt('Reason for rejecting (the requester will see it):', ''); if (n === null) return; if ((await rpc('fr_decide_person', { p_id: b.dataset.rj, p_approve: false, p_note: n }, 'Rejected')).ok) { redraw(); if (window.frPendingBadge) frPendingBadge(); } });
     const sy = main.querySelector('#pp-sync');
     if (sy) sy.onclick = () => {
       openModal(`<h2>Reload riders from roster</h2><p class="hint">Every rider on the roster who is missing from the fuel list is added, with the roster's region and city. Riders already on the list follow roster region changes. Nobody is removed.</p>
@@ -407,12 +464,13 @@
     };
   }
   function personModal(p, regions, done) {
-    const S = sup(), isNew = !p;
-    p = p || { full_name: '', employee_id: '', region_id: regions.length === 1 ? regions[0].id : '', city_id: '', group_id: '', vehicle_type_id: (FR.d.vehicles[0] || {}).id, note: '', status: 'active' };
+    const S = sup(), isNew = !p || !p.id;
+    p = (p && p.id) ? p : Object.assign({ full_name: '', employee_id: '', region_id: regions.length === 1 ? regions[0].id : '', city_id: '', group_id: '', vehicle_type_id: (FR.d.vehicles[0] || {}).id, note: '', status: 'active' }, p || {});
     const cities = (rid) => FR.d.cities.filter(c => c.region_id === rid);
     openModal(`<h2>${isNew ? (S ? 'Add person' : 'Request new person') : 'Edit person'}</h2>
       ${!S ? '<p class="hint">The Super Admin approves new people before they appear.</p>' : ''}
       ${p.profile_id ? '<p class="hint">This person has a FieldHub login (from the roster).</p>' : ''}
+      ${!isNew ? '<p class="hint">Changes to region, city, group or vehicle count <b>from today onward</b>; earlier days keep the old values.</p>' : ''}
       <div class="two-col"><div class="fr-f" style="margin:8px 0"><label>Name *</label><input id="m-n" value="${h(p.full_name)}"></div>
       <div class="fr-f" style="margin:8px 0"><label>Employee ID</label><input id="m-e" value="${h(p.employee_id || '')}"></div></div>
       <div class="two-col"><div class="fr-f" style="margin:8px 0"><label>Region *</label><select id="m-r">${opts(regions, p.region_id, 'Choose…')}</select></div>
@@ -807,39 +865,198 @@
     let people = await fvFetchAll(() => sb.from('fr_people').select('*').eq('status', 'active').is('profile_id', null).order('full_name').order('id'));
     if (!S) people = people.filter(p => (A.regions || []).includes(p.region_id) && (!(A.groups || []).length || A.groups.includes(p.group_id)));
     const { data: mo, error } = await sb.from('fr_monthly').select('*').eq('cycle_start', FR.mc);
-    if (error) { main.innerHTML = `<div class="fr-card fr-empty">${notReady(error) ? 'Please run <b>migration_70.sql</b> first.' : h(em(error))}</div>`; return; }
-    const by = {}; (mo || []).forEach(m => { by[m.person_id] = m; });
-    main.innerHTML = `<p class="fv-sub">For people without a FieldHub login (e.g. couriers). Type their Opening and Closing meter reading for the whole cycle, or paste from Excel.</p>
+    if (error) { main.innerHTML = `<div class="fr-card fr-empty">${notReady(error) ? 'Please run <b>migration_70.sql</b> and <b>migration_71.sql</b> first.' : h(em(error))}</div>`; return; }
+    const pById = {}; people.forEach(p => { pById[p.id] = p; });
+    const byEmp = {}; people.forEach(p => { if (p.employee_id) byEmp[p.employee_id.trim().toLowerCase()] = p; });
+    const entries = (mo || []).filter(m => pById[m.person_id]);
+    const done = new Set(entries.map(m => m.person_id));
+    const todo = people.filter(p => !done.has(p.id));
+    const totKm = entries.reduce((t, m) => t + (m.closing - m.opening), 0);
+    main.innerHTML = `<p class="fv-sub">For people without a FieldHub login (couriers, maintenance, etc.). One Opening and one Closing reading per person for the whole cycle. Covered KM is worked out automatically.</p>
       <div class="fr-tb"><select id="m-cy"><option value="${cur}"${FR.mc === cur ? ' selected' : ''}>${h(cycLabel(cur))}</option><option value="${prev}"${FR.mc === prev ? ' selected' : ''}>${h(cycLabel(prev))}</option></select>
-        <span style="flex:1"></span><button class="fv-btn ghost" id="m-paste" type="button">Paste from Excel</button><button class="fv-btn" id="m-save" type="button">Save changes</button></div>
-      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Employee ID</th><th>Region</th><th>Group</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th class="fr-n">KM</th></tr></thead><tbody>
-      ${people.map(p => { const m = by[p.id] || {}; return `<tr><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, p.region_id))}</td><td>${h(nm(FR.d.groups, p.group_id))}</td><td class="fr-n"><input type="number" data-o="${h(p.id)}" value="${h(m.opening == null ? '' : m.opening)}" style="width:110px;padding:6px;border:1px solid #d6daec;border-radius:8px;text-align:right"></td><td class="fr-n"><input type="number" data-c="${h(p.id)}" value="${h(m.closing == null ? '' : m.closing)}" style="width:110px;padding:6px;border:1px solid #d6daec;border-radius:8px;text-align:right"></td><td class="fr-n">${m.opening != null ? num(m.closing - m.opening) : '–'}</td></tr>`; }).join('') || '<tr><td colspan="7" class="fr-empty">Nobody without a login in your regions/groups.</td></tr>'}
-      </tbody></table></div>`;
-    main.querySelector('#m-cy').onchange = (e) => { FR.mc = e.target.value; pageMonthly(main); };
-    const send = async (rows) => {
-      const r = await rpc('fr_save_monthly', { p_cycle: FR.mc, p_rows: rows });
-      if (!r.ok) return;
-      const w = (r.data || {}).warnings || [];
-      say(`${(r.data || {}).saved || 0} saved${w.length ? ', ' + w.length + ' skipped' : ''}`);
-      if (w.length) alert('Skipped:\n' + w.map(x => 'Row ' + x.row + ': ' + x.msg).join('\n'));
-      pageMonthly(main);
-    };
-    main.querySelector('#m-save').onclick = () => {
-      const rows = people.map(p => { const o = main.querySelector(`[data-o="${p.id}"]`).value.trim(), c = main.querySelector(`[data-c="${p.id}"]`).value.trim(), m = by[p.id] || {};
-        if ((o === '' && c === '') || (String(+o) === String(m.opening == null ? '' : +m.opening) && String(+c) === String(m.closing == null ? '' : +m.closing))) return null;
-        return { person_id: p.id, employee_id: p.employee_id || p.full_name, opening: o, closing: c }; }).filter(Boolean);
-      if (!rows.length) { say('Nothing changed'); return; }
-      send(rows);
+        <span style="flex:1"></span>
+        <button class="fv-btn ghost" id="m-tpl" type="button">Template</button>
+        <button class="fv-btn" id="m-up" type="button">⬆ Upload Excel / CSV</button>
+        <button class="fv-btn ghost" id="m-paste" type="button">Bulk add (paste)</button>
+        <button class="fv-btn ghost" id="m-one" type="button">+ Add one entry</button>
+        <button class="fv-btn ghost" id="m-csv" type="button">Download (CSV)</button></div>
+      <div class="fr-grid" style="margin-bottom:12px">
+        <div class="fr-card" style="margin:0"><div class="fr-hint">Entered</div><div style="font-size:24px;font-weight:700;color:#1E2A6E">${entries.length} / ${people.length}</div></div>
+        <div class="fr-card" style="margin:0"><div class="fr-hint">Covered KM (total)</div><div style="font-size:24px;font-weight:700;color:#1E2A6E">${num(totKm)}</div></div>
+        <div class="fr-card" style="margin:0"><div class="fr-hint">Not entered yet</div><div style="font-size:24px;font-weight:700;color:${todo.length ? '#c0392b' : '#2e7d4f'}">${todo.length}</div></div>
+      </div>
+      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Employee ID</th><th>Region</th><th>Group</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th class="fr-n">Covered KM</th><th></th></tr></thead><tbody>
+      ${entries.map(m => { const p = pById[m.person_id]; return `<tr><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, m.region_id || p.region_id))}</td><td>${h(nm(FR.d.groups, m.group_id || p.group_id))}</td><td class="fr-n">${num(m.opening)}</td><td class="fr-n">${num(m.closing)}</td><td class="fr-n"><b>${num(m.closing - m.opening)}</b></td><td style="text-align:right;white-space:nowrap"><button class="fv-btn ghost" data-ed="${h(m.person_id)}" type="button">Edit</button> <button class="fv-btn ghost" data-del="${h(m.id)}" type="button" style="color:#c0392b">Delete</button></td></tr>`; }).join('') || '<tr><td colspan="8" class="fr-empty">Nothing entered for this cycle yet.</td></tr>'}
+      </tbody></table></div>
+      ${todo.length ? `<details style="margin-top:10px"><summary class="fr-hint" style="cursor:pointer">Show the ${todo.length} not entered yet</summary><p class="fr-hint">${todo.map(p => h(p.full_name + (p.employee_id ? ' (' + p.employee_id + ')' : ''))).join(' · ')}</p></details>` : ''}`;
+    const redraw = () => pageMonthly(main);
+    main.querySelector('#m-cy').onchange = (e) => { FR.mc = e.target.value; redraw(); };
+    main.querySelector('#m-csv').onclick = () => downloadCSV('fuel-monthly-' + FR.mc + '.csv', toCSV(entries.map(m => { const p = pById[m.person_id]; return { Name: p.full_name, 'Employee ID': p.employee_id || '', Region: nm(FR.d.regions, m.region_id || p.region_id), Group: nm(FR.d.groups, m.group_id || p.group_id), Opening: m.opening, Closing: m.closing, 'Covered KM': m.closing - m.opening }; })));
+    main.querySelector('#m-tpl').onclick = () => downloadCSV('fuel-monthly-template.csv', toCSV((todo.length ? todo : people).map(p => ({ Name: p.full_name, 'Employee ID': p.employee_id || '', Region: nm(FR.d.regions, p.region_id), Group: nm(FR.d.groups, p.group_id), Opening: '', Closing: '' }))));
+    main.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { const why = prompt('Delete this entry? Type the reason:', ''); if (!why) return; if ((await rpc('fr_monthly_delete', { p_id: b.dataset.del, p_reason: why }, 'Deleted')).ok) redraw(); });
+    main.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => oneEntryModal(people, entries, b.dataset.ed, redraw));
+    main.querySelector('#m-one').onclick = () => oneEntryModal(people, entries, '', redraw);
+    main.querySelector('#m-up').onclick = () => {
+      openModal(`<h2>Upload monthly readings</h2><p class="hint">Excel (.xlsx) or CSV. These columns are <b>required</b>: <b>Name, Employee ID, Region, Group, Opening, Closing</b>. Covered KM is worked out automatically. Use "Template" to get the list of people with the right names. The file itself is not stored.</p>
+        <div class="form-row"><input type="file" id="u-f" accept=".xlsx,.xls,.csv"></div>`);
+      document.getElementById('u-f').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { const rows = await readSheet(f); closeModal(); importPreview(rows.map(r => ({ name: pick(r, ['name', 'team member name', 'team member']), employee_id: pick(r, ['employee id', 'employee_id', 'emp id', 'id']), region: pick(r, ['region', 'region name']), group: pick(r, ['group', 'category']), opening: pick(r, ['opening', 'opening reading']), closing: pick(r, ['closing', 'closing reading']) })), people, byEmp, redraw); } catch (err) { say('Could not read the file: ' + em(err)); } };
     };
     main.querySelector('#m-paste').onclick = () => {
-      openModal(`<h2>Paste from Excel</h2><p class="hint">Copy three columns from Excel — <b>Employee ID, Opening, Closing</b> — and paste them below (one person per line). The cycle is ${h(cycLabel(FR.mc))}.</p>
-        <textarea id="m-t" rows="10" style="width:100%;font-family:monospace" placeholder="C101	12000	13450"></textarea><button class="btn-primary" id="m-go" type="button" style="margin-top:8px">Save</button>`);
-      document.getElementById('m-go').onclick = () => {
-        const rows = document.getElementById('m-t').value.split(/\r?\n/).map(l => l.split(/\t|,|;/).map(x => x.trim())).filter(a => a[0] && !/employee/i.test(a[0])).map(a => ({ employee_id: a[0], opening: (a[1] || '').replace(/,/g, ''), closing: (a[2] || '').replace(/,/g, '') }));
-        if (!rows.length) { say('Nothing to save'); return; }
-        closeModal(); send(rows);
+      openModal(`<h2>Bulk add (paste from Excel)</h2><p class="hint">Copy six columns from Excel in this order — <b>Name, Employee ID, Region, Group, Opening, Closing</b> — and paste below (one person per line). Cycle: ${h(cycLabel(FR.mc))}.</p>
+        <textarea id="p-t" rows="10" style="width:100%;font-family:monospace" placeholder="Ali Raza	C101	Karachi	Sample Transport	12000	13450"></textarea><button class="btn-primary" id="p-go" type="button" style="margin-top:8px">Check</button>`);
+      document.getElementById('p-go').onclick = () => {
+        const rows = document.getElementById('p-t').value.split(/\r?\n/).map(l => l.split('\t').map(x => x.trim())).filter(a => a.join('') && !/employee/i.test(a[1] || '')).map(a => ({ name: a[0] || '', employee_id: a[1] || '', region: a[2] || '', group: a[3] || '', opening: a[4] || '', closing: a[5] || '' }));
+        if (!rows.length) { say('Nothing pasted'); return; }
+        closeModal(); importPreview(rows, people, byEmp, redraw);
       };
     };
   }
+
+  // check every row against the mapping (Employee ID → Region / Group) before saving
+  function importPreview(rows, people, byEmp, done) {
+    const S = sup();
+    const clean = (v) => String(v || '').replace(/,/g, '').trim();
+    const chk = rows.map((r, i) => {
+      const out = Object.assign({ n: i + 1, errs: [], warns: [], fix: null }, r);
+      ['name', 'employee_id', 'region', 'group', 'opening', 'closing'].forEach(k => { if (!String(r[k] || '').trim()) out.errs.push((k === 'employee_id' ? 'Employee ID' : k[0].toUpperCase() + k.slice(1)) + ' is missing'); });
+      const p = byEmp[String(r.employee_id || '').trim().toLowerCase()];
+      out.p = p;
+      if (r.employee_id && !p) { out.errs.push('Employee ID not mapped (not on the fuel list, or has a login)'); out.fix = 'add'; }
+      if (p) {
+        const rn = nm(FR.d.regions, p.region_id), gn = nm(FR.d.groups, p.group_id);
+        if (r.region && r.region.trim().toLowerCase() !== rn.trim().toLowerCase()) { out.errs.push(`Region: file "${r.region}", mapping "${rn || '—'}"`); out.fix = 'map'; }
+        if (r.group && r.group.trim().toLowerCase() !== gn.trim().toLowerCase()) { out.errs.push(`Group: file "${r.group}", mapping "${gn || '—'}"`); out.fix = 'map'; }
+        if (r.name && r.name.replace(/\s+/g, ' ').trim().toLowerCase() !== p.full_name.replace(/\s+/g, ' ').trim().toLowerCase()) out.warns.push(`Name differs from the list ("${p.full_name}")`);
+      }
+      const o = +clean(r.opening), c = +clean(r.closing);
+      if (r.opening && isNaN(o)) out.errs.push('Opening is not a number');
+      if (r.closing && isNaN(c)) out.errs.push('Closing is not a number');
+      if (!isNaN(o) && !isNaN(c) && r.opening && r.closing && c <= o) out.errs.push('Closing must be more than Opening');
+      out.km = (!isNaN(o) && !isNaN(c) && c > o) ? c - o : null;
+      return out;
+    });
+    const ok = chk.filter(r => !r.errs.length), bad = chk.filter(r => r.errs.length);
+    openModal(`<h2>Check before saving</h2>
+      <p><b style="color:#2e7d4f">${ok.length} ready</b>${bad.length ? ` · <b style="color:#c0392b">${bad.length} with problems</b> (not saved until fixed)` : ''}</p>
+      ${bad.length ? `<div class="fr-wrap" style="max-height:240px;margin-bottom:10px"><table class="fv-table" style="font-size:12px"><thead><tr><th>Row</th><th>Employee ID</th><th>Name</th><th>Problem</th><th></th></tr></thead><tbody>
+        ${bad.map(r => `<tr><td>${r.n}</td><td>${h(r.employee_id)}</td><td>${h(r.name)}</td><td style="color:#c0392b">${r.errs.map(h).join('<br>')}</td><td style="white-space:nowrap">${S && r.fix === 'add' && r.employee_id ? `<button class="fv-btn ghost" data-fx="add" data-n="${r.n}" type="button">Add to fuel list</button>` : ''}${S && r.fix === 'map' ? `<button class="fv-btn ghost" data-fx="map" data-n="${r.n}" type="button">Update mapping from today</button>` : ''}</td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+      ${ok.length ? `<div class="fr-wrap" style="max-height:240px"><table class="fv-table" style="font-size:12px"><thead><tr><th>Name</th><th>Employee ID</th><th>Region</th><th>Group</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th class="fr-n">Covered KM</th></tr></thead><tbody>
+        ${ok.map(r => `<tr><td>${h(r.name)}${r.warns.length ? ` <span class="fr-pill o" title="${h(r.warns.join('; '))}">name?</span>` : ''}</td><td>${h(r.employee_id)}</td><td>${h(r.region)}</td><td>${h(r.group)}</td><td class="fr-n">${h(clean(r.opening))}</td><td class="fr-n">${h(clean(r.closing))}</td><td class="fr-n"><b>${num(r.km)}</b></td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn-primary" id="i-save" type="button"${ok.length ? '' : ' disabled'}>Save ${ok.length} ready</button>${bad.length ? '<button class="btn outline" id="i-err" type="button">Download problem rows</button>' : ''}</div>`);
+    const recheck = async () => { await load(true); const all = await fvFetchAll(() => sb.from('fr_people').select('*').eq('status', 'active').is('profile_id', null).order('id')); const m = {}; all.forEach(p => { if (p.employee_id) m[p.employee_id.trim().toLowerCase()] = p; }); importPreview(rows, all, m, done); };
+    document.querySelectorAll('[data-fx]').forEach(b => b.onclick = async () => {
+      const r = chk.find(x => String(x.n) === b.dataset.n);
+      const reg = FR.d.regions.find(x => x.name.trim().toLowerCase() === String(r.region).trim().toLowerCase());
+      const grp = FR.d.groups.find(x => x.name.trim().toLowerCase() === String(r.group).trim().toLowerCase());
+      if (!reg) { say(`Region "${r.region}" does not exist. Add it first (Fuel Settings → Regions → Bulk upload) or correct the file.`); return; }
+      if (!grp) { say(`Group "${r.group}" does not exist. Add it first (Fuel Settings → Groups) or correct the file.`); return; }
+      if (b.dataset.fx === 'add') {
+        if (!confirm(`Add ${r.name} (${r.employee_id}) to the fuel list?\nRegion: ${reg.name}\nGroup: ${grp.name}`)) return;
+        const x = await rpc('fr_save_person', { p: { full_name: r.name, employee_id: r.employee_id, region_id: reg.id, group_id: grp.id, vehicle_type_id: (FR.d.vehicles[0] || {}).id || '', note: 'Added from monthly upload' } }, 'Added to the fuel list');
+        if (x.ok) recheck();
+      } else {
+        const p = r.p;
+        if (!confirm(`Change the mapping of ${p.full_name} (${p.employee_id}) from today?\nRegion: ${nm(FR.d.regions, p.region_id)} → ${reg.name}\nGroup: ${nm(FR.d.groups, p.group_id)} → ${grp.name}\n\nEarlier days keep the old region / group.`)) return;
+        const x = await rpc('fr_save_person', { p: { id: p.id, full_name: p.full_name, employee_id: p.employee_id, region_id: reg.id, city_id: reg.id === p.region_id ? (p.city_id || '') : '', group_id: grp.id, vehicle_type_id: p.vehicle_type_id || '', note: p.note || '', status: p.status, reason: 'Changed from monthly upload' } }, 'Mapping updated from today');
+        if (x.ok) recheck();
+      }
+    });
+    const e = document.getElementById('i-err');
+    if (e) e.onclick = () => downloadCSV('fuel-monthly-problems.csv', toCSV(bad.map(r => ({ Name: r.name, 'Employee ID': r.employee_id, Region: r.region, Group: r.group, Opening: r.opening, Closing: r.closing, Problem: r.errs.join('; ') }))));
+    document.getElementById('i-save').onclick = async () => {
+      const x = await rpc('fr_save_monthly', { p_cycle: FR.mc, p_rows: ok.map(r => ({ person_id: r.p.id, employee_id: r.employee_id, name: r.name, region: r.region, group: r.group, opening: clean(r.opening), closing: clean(r.closing) })) });
+      if (!x.ok) return;
+      const w = (x.data || {}).warnings || [];
+      closeModal(); say(`${(x.data || {}).saved || 0} saved${w.length ? ', ' + w.length + ' refused' : ''}`);
+      if (w.length) alert('Refused:\n' + w.map(z => 'Row ' + z.row + ': ' + z.msg).join('\n'));
+      done();
+    };
+  }
+
+  function oneEntryModal(people, entries, personId, done) {
+    const m0 = entries.find(m => m.person_id === personId) || {};
+    openModal(`<h2>${personId ? 'Edit entry' : 'Add one entry'}</h2><p class="hint">Cycle ${h(cycLabel(FR.mc))}</p>
+      <div class="fr-f" style="margin:8px 0"><label>Person (Employee ID or name) *</label>${personId ? `<input value="${h((people.find(p => p.id === personId) || {}).full_name || '')}" disabled>` : `<input id="o-q" list="o-list" placeholder="Type ID or name…"><datalist id="o-list">${people.map(p => `<option value="${h((p.employee_id || '') + ' — ' + p.full_name)}">`).join('')}</datalist>`}</div>
+      <div id="o-map" class="fr-hint" style="margin:4px 0 8px"></div>
+      <div class="two-col"><div class="fr-f" style="margin:8px 0"><label>Opening *</label><input id="o-o" type="number" value="${h(m0.opening == null ? '' : m0.opening)}"></div>
+      <div class="fr-f" style="margin:8px 0"><label>Closing *</label><input id="o-c" type="number" value="${h(m0.closing == null ? '' : m0.closing)}"></div></div>
+      <p>Covered KM: <b id="o-km">–</b></p>
+      <button class="btn-primary" id="o-s" type="button">Save</button>`);
+    let pid = personId;
+    const showMap = () => { const p = people.find(x => x.id === pid); document.getElementById('o-map').innerHTML = p ? `Region: <b>${h(nm(FR.d.regions, p.region_id))}</b> · Group: <b>${h(nm(FR.d.groups, p.group_id))}</b>${p.city_id ? ' · City: <b>' + h(nm(FR.d.cities, p.city_id)) + '</b>' : ''}` : ''; };
+    const km = () => { const o = +document.getElementById('o-o').value, c = +document.getElementById('o-c').value; document.getElementById('o-km').textContent = (document.getElementById('o-o').value && document.getElementById('o-c').value) ? (c > o ? num(c - o) : 'Closing must be more than Opening') : '–'; };
+    const q = document.getElementById('o-q');
+    if (q) q.oninput = () => { const emp = q.value.split(' — ')[0].trim().toLowerCase(); const p = people.find(x => (x.employee_id || '').trim().toLowerCase() === emp); pid = p ? p.id : ''; showMap(); };
+    showMap(); km();
+    document.getElementById('o-o').oninput = km; document.getElementById('o-c').oninput = km;
+    document.getElementById('o-s').onclick = async () => {
+      if (!pid) { say('Choose the person from the list'); return; }
+      const o = document.getElementById('o-o').value.trim(), c = document.getElementById('o-c').value.trim();
+      if (!o || !c) { say('Opening and Closing are both needed'); return; }
+      if (+c <= +o) { say('Closing must be more than Opening'); return; }
+      const x = await rpc('fr_save_monthly', { p_cycle: FR.mc, p_rows: [{ person_id: pid, opening: o, closing: c }] });
+      if (!x.ok) return;
+      const w = (x.data || {}).warnings || [];
+      if (w.length) { say(w[0].msg); return; }
+      closeModal(); say('Saved ✓'); done();
+    };
+  }
+
+  // =====================================================================================
+  // SUPER ADMIN: Bike numbers of all riders
+  // =====================================================================================
+  async function pageBikes(main) {
+    main.innerHTML = '<p class="fr-hint">Loading…</p>';
+    const { data, error } = await sb.rpc('fr_bike_list');
+    if (error) { main.innerHTML = `<div class="fr-card fr-empty">${notReady(error) || /bike/i.test(em(error)) ? 'Please run <b>migration_71.sql</b> first.' : h(em(error))}</div>`; return; }
+    const all = data || [], f = FR.bf = FR.bf || { q: '', miss: false };
+    const count = {}; all.forEach(r => { if (r.bike_number) count[r.bike_number] = (count[r.bike_number] || 0) + 1; });
+    const rows = all.filter(r => (!f.miss || !r.bike_number) && (!f.q || (r.full_name + ' ' + (r.employee_id || '') + ' ' + (r.bike_number || '') + ' ' + (r.region || '')).toLowerCase().includes(f.q.toLowerCase())));
+    const missing = all.filter(r => !r.bike_number).length;
+    main.innerHTML = `<p class="fv-sub">Every rider is asked for his bike number when he opens FieldHub, until he adds it. Riders can change it in My Profile; you can edit or delete it here. Every change is logged.</p>
+      <div class="fr-tb"><input id="b-q" placeholder="Search name / ID / bike / region" value="${h(f.q)}" style="min-width:220px"><label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="b-m"${f.miss ? ' checked' : ''}> Missing only</label>
+        <span class="fv-note">${all.length} riders · <b style="color:${missing ? '#c0392b' : '#2e7d4f'}">${missing} without a bike number</b></span><span style="flex:1"></span><button class="fv-btn ghost" id="b-csv" type="button">Download (CSV)</button></div>
+      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Employee ID</th><th>Region</th><th>Bike number</th><th>Last changed</th><th></th></tr></thead><tbody>
+      ${rows.slice(0, 800).map(r => `<tr><td>${h(r.full_name)}</td><td>${h(r.employee_id || '–')}</td><td>${h(r.region || '–')}</td><td>${r.bike_number ? `<b>${h(r.bike_number)}</b>${count[r.bike_number] > 1 ? ' <span class="fr-pill o" title="The same bike number is used by more than one rider">shared</span>' : ''}` : '<span class="fr-pill r">missing</span>'}</td><td>${r.bike_updated_at ? h(new Date(r.bike_updated_at).toLocaleDateString('en-GB')) : '–'}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn ghost" data-ed="${h(r.id)}" type="button">Edit</button>${r.bike_number ? ` <button class="fv-btn ghost" data-del="${h(r.id)}" type="button" style="color:#c0392b">Delete</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="fr-empty">Nobody matches.</td></tr>'}
+      </tbody></table></div>`;
+    const redraw = () => pageBikes(main);
+    let tq; main.querySelector('#b-q').oninput = (e) => { clearTimeout(tq); tq = setTimeout(() => { f.q = e.target.value; redraw(); }, 400); };
+    main.querySelector('#b-m').onchange = (e) => { f.miss = e.target.checked; redraw(); };
+    main.querySelector('#b-csv').onclick = () => downloadCSV('bike-numbers.csv', toCSV(rows.map(r => ({ Name: r.full_name, 'Employee ID': r.employee_id || '', Region: r.region || '', 'Bike number': r.bike_number || '', 'Last changed': r.bike_updated_at ? new Date(r.bike_updated_at).toLocaleDateString('en-GB') : '' }))));
+    main.querySelectorAll('[data-ed]').forEach(b => b.onclick = async () => { const r = all.find(x => x.id === b.dataset.ed); const v = prompt(`Bike number for ${r.full_name}:`, r.bike_number || ''); if (v === null || !v.trim()) return; if ((await rpc('fr_set_bike_number', { p_user: r.id, p_number: v }, 'Saved')).ok) redraw(); });
+    main.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { const r = all.find(x => x.id === b.dataset.del); if (!confirm(`Delete the bike number of ${r.full_name}?\n\nHe will be asked to add it again when he opens FieldHub.`)) return; if ((await rpc('fr_set_bike_number', { p_user: r.id, p_number: '' }, 'Deleted')).ok) redraw(); });
+  }
+
+  // My Profile: bike number card for riders
+  (function hookProfile() {
+    if (typeof window.renderMyProfile !== 'function') { setTimeout(hookProfile, 400); return; }
+    if (window.renderMyProfile.__frb) return;
+    const orig = window.renderMyProfile;
+    const wrapped = async function () {
+      const r = await orig.apply(this, arguments);
+      try {
+        if (state.profile && state.profile.role === 'rider' && !document.getElementById('fr-bike-card')) {
+          const res = await sb.from('profiles').select('bike_number').eq('id', state.user.id).maybeSingle();
+          const data = res.data || {}, error = res.error;
+          if (!error) {
+            const main = document.getElementById('main-content'), card = document.createElement('div');
+            card.className = 'card'; card.id = 'fr-bike-card';
+            card.innerHTML = `<h3>🏍 Bike number</h3><p style="font-size:20px;font-weight:700;margin:6px 0">${data && data.bike_number ? h(data.bike_number) : '<span style="color:#c0392b">Not added yet</span>'}</p><button class="btn outline" id="fr-bike-ch" type="button">${data && data.bike_number ? 'Change bike number' : 'Add bike number'}</button>`;
+            main.appendChild(card);
+            card.querySelector('#fr-bike-ch').onclick = async () => {
+              const v = prompt('Bike number (as on the number plate), e.g. LEA-1234:', (data && data.bike_number) || ''); if (v === null || !v.trim()) return;
+              const { data: nv, error: e2 } = await sb.rpc('fh_set_bike_number', { p_number: v });
+              if (e2) { say(errText(e2)); return; }
+              say('Bike number saved: ' + nv); data.bike_number = nv; card.querySelector('p').textContent = nv; card.querySelector('#fr-bike-ch').textContent = 'Change bike number';
+            };
+          }
+        }
+      } catch (e) { console.warn('bike card', e); }
+      return r;
+    };
+    wrapped.__frb = true; window.renderMyProfile = wrapped;
+  })();
 
 })();
