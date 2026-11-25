@@ -79,23 +79,42 @@
     if (window.__frMe) v.unshift('fr_my');
     return v;
   };
-  (function watchAccess() {
-    let tries = 0;
-    const t = setInterval(async () => {
-      if (++tries > 120) { clearInterval(t); return; }
-      if (typeof state === 'undefined' || !state.user || !state.profile) return;
-      clearInterval(t);
-      try {
-        const [me, ac] = await Promise.all([
-          sb.from('fr_people').select('id,full_name,employee_id,region_id,city_id,group_id,vehicle_type_id,status').eq('profile_id', state.user.id).eq('status', 'active').maybeSingle(),
-          state.profile.role === 'super_admin' ? Promise.resolve({ data: null }) : sb.from('fr_access').select('*').eq('user_id', state.user.id).maybeSingle()]);
-        let changed = false;
-        if (me && me.data) { window.__frMe = me.data; changed = true; }
-        if (ac && ac.data) { window.__frAcc = ac.data; changed = true; }
-        if (changed && typeof renderNav === 'function') renderNav();
-      } catch (_e) {}
-    }, 1000);
+  // Who am I for Fuel? (rider on the fuel list / staff with access). Checked for every signed-in person,
+  // again after a different person signs in, and again every minute while nothing is found
+  // (so a rider added to the list today sees the menu without reinstalling anything).
+  const CHK = { uid: null, at: 0, busy: false, ok: false };
+  async function checkAccess(force) {
+    if (typeof state === 'undefined' || !state.user || !state.profile || CHK.busy) return;
+    const uid = state.user.id;
+    if (CHK.uid !== uid) { window.__frMe = null; window.__frAcc = null; CHK.uid = uid; CHK.at = 0; CHK.ok = false; }
+    const found = window.__frMe || window.__frAcc || state.profile.role === 'super_admin';
+    if (!force && CHK.ok && (found || Date.now() - CHK.at < 60000)) return;
+    CHK.busy = true; CHK.at = Date.now();
+    try {
+      const [me, ac] = await Promise.all([
+        sb.from('fr_people').select('id,full_name,employee_id,region_id,city_id,group_id,vehicle_type_id,status').eq('profile_id', uid).eq('status', 'active').limit(1),
+        state.profile.role === 'super_admin' ? Promise.resolve({ data: [] }) : sb.from('fr_access').select('*').eq('user_id', uid).limit(1)]);
+      if (state.user && state.user.id !== uid) return;
+      const m = (me && me.data && me.data[0]) || null, x = (ac && ac.data && ac.data[0]) || null;
+      if (me && me.error) { console.warn('Fuel list check:', me.error.message); return; }
+      CHK.ok = true;
+      const changed = JSON.stringify(m) !== JSON.stringify(window.__frMe || null) || JSON.stringify(x) !== JSON.stringify(window.__frAcc || null);
+      window.__frMe = m; window.__frAcc = x;
+      if (changed && typeof origRenderNav === 'function') origRenderNav();
+    } catch (e) { console.warn('Fuel access check', e); }
+    finally { CHK.busy = false; }
+  }
+  let origRenderNav = null;
+  (function hookNav() {
+    if (typeof window.renderNav !== 'function') { setTimeout(hookNav, 300); return; }
+    if (window.renderNav.__fr) return;
+    origRenderNav = window.renderNav;
+    const wrapped = function () { const r = origRenderNav.apply(this, arguments); checkAccess(false); return r; };
+    wrapped.__fr = true; window.renderNav = wrapped;
+    checkAccess(false);
   })();
+  setInterval(() => checkAccess(false), 3000);   // cheap: it only asks the database until the first answer, then once a minute while nothing is found
+  window.frRecheck = () => checkAccess(true);
 
   // ---------------------------------------------------------------- page entry
   window.renderFuelReimb = async function (view) {
