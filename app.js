@@ -1149,6 +1149,7 @@ async function init(){
   }
 
   sb.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && !state.user) window.__fhFreshLogin = true;   // a real new sign-in (not a page restored later)
     if (event === 'SIGNED_OUT'){
       // an unexpected sign-out (token could not be renewed) gets one quiet retry before the login page is shown
       if (!window.__fhUserLogout && state.user){
@@ -1266,6 +1267,8 @@ async function afterLogin(user){
   // all reference lists load together instead of one after another
   await Promise.all([loadRegions(), loadDesignations(), loadCategories(), loadReferenceData(true)]);
   try { const pr = await sb.from('pos_machines').select('id', { count: 'exact', head: true }).eq('rider_id', state.user.id); state.hasPos = (pr.count || 0) > 0; } catch (_e) { state.hasPos = false; }
+  // v101: a page restored long after the last activity (laptop slept, browser reopened) is signed out before anything shows
+  if (fhIdleExpiredAtStart()) { try { localStorage.removeItem('fh_last_act_' + state.user.id); } catch (_e) {} toast('You were signed out because the website was not used for a while.'); await doLogout(); return; }
   renderNav();
   renderUserBadge();
   const allowedViews = getAllowedViews();
@@ -1314,26 +1317,55 @@ function fhPageNotFound(view) {
 //  * Every login records "last active" separately for Web and App (visible to the Super Admin in Team).
 // ---------------------------------------------------------
 let sessionTimeoutTimer = null, _fhIdleBound = false, _fhIdleMs = 0, _fhIdleReset = null;
+function fhIdleExpiredAtStart(){
+  try {
+    const st = state.systemSettings || {};
+    if (fhIsNativeApp() || st.web_auto_signout_enabled === false || window.__fhFreshLogin || !state.user) return false;
+    const ms = Math.min(Math.max(parseInt(st.session_timeout_minutes, 10) || 15, 1), 10080) * 60000;
+    const last = +localStorage.getItem('fh_last_act_' + state.user.id) || 0;
+    return !!last && Date.now() - last >= ms;
+  } catch (_e) { return false; }
+}
 function setupSessionTimeout(){
   if (sessionTimeoutTimer){ clearTimeout(sessionTimeoutTimer); sessionTimeoutTimer = null; }
   const st = state.systemSettings || {};
   if (fhIsNativeApp() || st.web_auto_signout_enabled === false){ _fhIdleMs = 0; _fhIdleReset = null; return; }
   const minutes = Math.min(Math.max(parseInt(st.session_timeout_minutes, 10) || 15, 1), 10080);
   _fhIdleMs = minutes * 60 * 1000;
-  const reset = () => { window.__fhLastAct = Date.now(); };
+  // v101: the last activity is also kept on this computer (shared by all tabs), so a page restored after the laptop
+  // slept, or reopened the next day, is signed out too; and a mouse move after a long sleep no longer counts as "active".
+  const KEY = 'fh_last_act_' + (state.user && state.user.id);
+  const stored = () => { try { return +localStorage.getItem(KEY) || 0; } catch (_e) { return 0; } };
+  const save = (t) => { try { localStorage.setItem(KEY, String(t)); } catch (_e) {} };
+  const last = () => Math.max(window.__fhLastAct || 0, stored());
+  let signingOut = false;
+  const idleOut = () => {
+    if (signingOut || !state.user) return; signingOut = true;
+    if (window.__fhIdleIv){ clearInterval(window.__fhIdleIv); window.__fhIdleIv = null; }
+    try { localStorage.removeItem(KEY); } catch (_e) {}
+    toast(`You were signed out after ${minutes} minutes of inactivity.`); doLogout();
+  };
+  const expired = () => _fhIdleMs && state.user && last() && Date.now() - last() >= _fhIdleMs;
+  const reset = () => {
+    if (expired()) { idleOut(); return; }
+    const now = Date.now(); window.__fhLastAct = now;
+    if (now - (window.__fhLastSaved || 0) > 15000) { window.__fhLastSaved = now; save(now); }
+  };
   _fhIdleReset = reset;
   if (window.__fhIdleIv) clearInterval(window.__fhIdleIv);
-  window.__fhIdleIv = setInterval(() => {
-    if (!_fhIdleMs || !state.user) return;
-    if (Date.now() - (window.__fhLastAct || 0) >= _fhIdleMs){ clearInterval(window.__fhIdleIv); window.__fhIdleIv = null; toast(`You were signed out after ${minutes} minutes of inactivity.`); doLogout(); }
-  }, 15000);
+  window.__fhIdleIv = setInterval(() => { if (expired()) idleOut(); }, 15000);
   if (!_fhIdleBound){
     _fhIdleBound = true;
     // capture phase: scrolling inside a page panel does not bubble to the document, so listen on the way down
     ['mousemove','mousedown','pointerdown','pointermove','keydown','click','scroll','wheel','touchstart','touchmove'].forEach(evt => document.addEventListener(evt, () => { if (_fhIdleReset) _fhIdleReset(); }, { passive: true, capture: true }));
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && _fhIdleReset && !(Date.now() - (window.__fhLastAct || 0) >= _fhIdleMs)) _fhIdleReset(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && _fhIdleReset) _fhIdleReset(); });
+    window.addEventListener('pageshow', () => { if (_fhIdleReset) _fhIdleReset(); });
+    window.addEventListener('focus', () => { if (_fhIdleReset) _fhIdleReset(); });
   }
-  reset();
+  // a fresh sign-in starts a new count; a page that was only restored keeps the old one
+  if (window.__fhFreshLogin) { window.__fhFreshLogin = false; save(Date.now()); }
+  if (expired()) { idleOut(); return; }
+  window.__fhLastAct = Date.now(); save(window.__fhLastAct);
 }
 
 let _fhLastTouch = 0, _fhActBound = false;
@@ -1634,7 +1666,7 @@ async function showPendingRemindersBanner(){
 // on login, rather than one combined summary line.
 // ---------------------------------------------------------
 async function loadAndShowNotifications(){
-  const retainCount = state.systemSettings?.notification_retain_count || 5;
+  const retainCount = Math.max(5, state.systemSettings?.notification_retain_count || 5);   // v101: the bell always keeps at least the last 5, read or not
   const sinceKey = `fieldhub_notif_since_${state.user.id}`;
   // localStorage is the reliable source of truth here — the DB column
   // round-trip was silently failing for some users (e.g. if a migration
@@ -1643,41 +1675,44 @@ async function loadAndShowNotifications(){
   const since = localStorage.getItem(sinceKey) || state.profile.notifications_last_seen_at || new Date(Date.now() - 3*24*60*60*1000).toISOString();
 
   const items = [];
-  const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').is('deleted_at', null).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+  const { data: newCirculars } = await sb.from('circulars').select('id, title, created_at, created_by').is('deleted_at', null).order('created_at', {ascending:false}).limit(20);
   (newCirculars||[]).filter(c=>c.created_by!==state.user.id).forEach(c => items.push({ id:'circ-'+c.id, type:'Circular', title:'New circular', body:c.title, created_at:c.created_at, read:false }));
 
   const _ids = await fhMyIds(false);
   const myRequestIds = _ids.requestIds;
   if (myRequestIds.length){
-    const { data: reqUpdates } = await sb.from('request_updates').select('*, profiles(full_name)').in('request_id', myRequestIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
+    const { data: reqUpdates } = await sb.from('request_updates').select('*, profiles(full_name)').in('request_id', myRequestIds).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
     (reqUpdates||[]).forEach(u => items.push({ id:'req-'+u.id, type:'Request update', title:`${u.profiles?.full_name||'Someone'} updated a request`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
   const myTaskIds = _ids.taskIds;
   if (myTaskIds.length){
-    const { data: taskUpdates } = await sb.from('task_updates').select('*, profiles(full_name)').in('task_id', myTaskIds).gt('created_at', since).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
+    const { data: taskUpdates } = await sb.from('task_updates').select('*, profiles(full_name)').in('task_id', myTaskIds).neq('created_by', state.user.id).order('created_at', {ascending:false}).limit(20);
     (taskUpdates||[]).forEach(u => items.push({ id:'task-'+u.id, type:'Task update', title:`${u.profiles?.full_name||'Someone'} updated a task`, body: u.new_status ? `Status → ${u.new_status.replace('_',' ')}: ${u.message}` : u.message, created_at:u.created_at, read:false }));
   }
 
   if (isSuperAdmin()) {
     try { const r = await sb.from('password_reset_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending');
-      if (r.count) items.push({ id:'pwr-'+Date.now(), type:'Password reset', title:'Password reset requests', body:`${r.count} request${r.count === 1 ? ' is' : 's are'} waiting — open Team.`, created_at:new Date().toISOString(), read:false, view:'team' }); } catch (_e) {}
+      if (r.count) items.push({ id:'pwr-pending', type:'Password reset', title:'Password reset requests', body:`${r.count} request${r.count === 1 ? ' is' : 's are'} waiting — open Team.`, created_at:new Date().toISOString(), read:false, view:'team' }); } catch (_e) {}
   }
   try {
-    const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+    const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).order('created_at', {ascending:false}).limit(20);
     if (!exe) (exn||[]).forEach(x => items.push({ id:'exn-'+x.id, type:x.kind === 'circ_remind' ? 'Circular' : (x.kind === 'force_ack' || x.kind === 'pos_issued') ? 'Tool' : 'Expiry', title:x.title || 'Expiry update', body:x.body, created_at:x.created_at, read:false, view:x.kind === 'circ_remind' ? 'circulars' : x.kind === 'pos_issued' ? 'my_pos' : (x.kind === 'force_ack' ? 'tools' : 'expiries') }));
   } catch (_e) {}
   if (state.profile.role !== 'admin' && state.profile.role !== 'super_admin'){
-    const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).gt('created_at', since).order('created_at', {ascending:false}).limit(20);
+    const { data: myWarnings } = await sb.from('disciplinary_actions').select('*, recorder:profiles!recorded_by(full_name)').eq('rider_id', state.user.id).order('created_at', {ascending:false}).limit(20);
     (myWarnings||[]).forEach(w => items.push({ id:'warn-'+w.id, type:'Warning', title:`Warning issued by ${w.recorder?.full_name||'—'}`, body: w.action_type, created_at:w.created_at, read:false }));
   }
 
+  // v101: also keep what arrived live (e.g. "New request assigned to you"), saved on this device
+  fhNotifCache().forEach(c => { if (!items.some(x => x.id === c.id)) items.push(c); });
   items.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
   state.notifications = items.slice(0, retainCount);
   { const rs = fhNotifReadSet(); state.notifications.forEach(n => { if (rs.has(n.id)) n.read = true; }); }
+  fhNotifSave();
 
-  // Each item gets its own toast, instead of one combined line
-  state.notifications.forEach(n => toast(`${n.title}: ${n.body}`));
+  // a toast only for what is new since the last visit and still unread (the bell keeps the rest)
+  state.notifications.filter(n => !n.read && n.created_at && n.created_at > since).forEach(n => toast(`${n.title}: ${n.body}`));
 
   ensureNotificationBell();
   updateNotificationBadge();
@@ -1711,7 +1746,8 @@ function pushNotification(item){
   const retainCount = state.systemSettings?.notification_retain_count || 5;
   item.id = item.id || ('live-' + Date.now() + '-' + Math.random());
   item.read = false;
-  state.notifications = [item, ...state.notifications].slice(0, retainCount);
+  state.notifications = [item, ...state.notifications.filter(x => x.id !== item.id)].slice(0, Math.max(5, retainCount));
+  fhNotifSave();
   updateNotificationBadge();
   toast(`${item.title}: ${item.body || ''}`);
 }
@@ -1728,6 +1764,9 @@ function updateNotificationBadge(){
 // one marks it read (dims it, moves the unread count down) but it stays
 // visible in the list — nothing disappears just from being read.
 // which notifications were marked read (kept on this device, per person)
+// v101: the last notifications are also kept on this device, so the bell still shows them after a reload (read or not)
+function fhNotifCache(){ try { return JSON.parse(localStorage.getItem('fh_notif_cache_' + (state.user && state.user.id)) || '[]'); } catch (_e) { return []; } }
+function fhNotifSave(){ try { localStorage.setItem('fh_notif_cache_' + state.user.id, JSON.stringify((state.notifications || []).slice(0, 10).map(n => ({ id: n.id, type: n.type, title: n.title, body: n.body, created_at: n.created_at, view: n.view })))); } catch (_e) {} }
 function fhNotifReadSet(){ try { return new Set(JSON.parse(localStorage.getItem('fh_notif_read_' + (state.user && state.user.id)) || '[]')); } catch (_e) { return new Set(); } }
 function fhNotifMarkRead(ids){ try { const s = fhNotifReadSet(); ids.forEach(i => s.add(i)); localStorage.setItem('fh_notif_read_' + state.user.id, JSON.stringify([...s].slice(-300))); } catch (_e) {} (state.notifications || []).forEach(n => { if (ids.includes(n.id)) n.read = true; }); }
 
@@ -1896,6 +1935,7 @@ function bindAuthForms(){
   })();
 
   document.getElementById('login-form').onsubmit = async (e) => {
+    window.__fhFreshLogin = true;
     e.preventDefault();
     clearAuthMessage();
     const phone = toE164(document.getElementById('login-phone').value.trim());
