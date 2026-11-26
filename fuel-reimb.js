@@ -278,7 +278,11 @@
     const RL = { required: 'Required', optional: 'Optional', off: 'Not allowed' }, SL = { all: 'Everyone', region: 'Region', city: 'City', person: 'One person' };
     const who = (r) => r.scope === 'all' ? 'Everyone' : nm(lists[r.scope], r.scope_id) || '(removed)';
     const rules = FR.d.rules.slice().sort((a, b) => ['all', 'region', 'city', 'person'].indexOf(a.scope) - ['all', 'region', 'city', 'person'].indexOf(b.scope));
-    body.innerHTML = `<div class="fr-card"><h4>Odometer picture rules</h4><p class="fr-hint">The most specific rule wins: one person → city → region → everyone. Pictures are saved in your Google Drive, never in Supabase.</p>
+    const allRule = (FR.d.rules.find(r => r.scope === 'all') || {}).rule || 'optional';
+    body.innerHTML = `<div class="fr-card"><h4>Pictures for everyone (main switch)</h4>
+      <p class="fr-hint">Turn pictures <b>off</b> to save Google Drive space. Rules for a region, city or person below still win over this switch — remove them if you want "off" for everyone.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${[['off', '⛔ Off — no pictures'], ['optional', 'Optional'], ['required', 'Required']].map(([k, l]) => `<button class="fr-tab${allRule === k ? ' on' : ''}" data-all="${k}" type="button">${l}</button>`).join('')}</div></div>
+      <div class="fr-card"><h4>Odometer picture rules</h4><p class="fr-hint">The most specific rule wins: one person → city → region → everyone. Pictures are saved in your Google Drive, never in Supabase.</p>
       <div class="fr-wrap" style="margin-top:8px"><table class="fv-table"><thead><tr><th>Applies to</th><th>Who</th><th>Picture</th><th></th></tr></thead><tbody>
       ${rules.map(r => `<tr><td>${SL[r.scope]}</td><td>${h(who(r))}</td><td><span class="fr-pill ${r.rule === 'required' ? 'o' : r.rule === 'off' ? 'x' : 'g'}">${RL[r.rule]}</span></td><td style="text-align:right">${r.scope === 'all' ? '' : `<button class="fv-btn ghost" data-rm="${h(r.scope)}|${h(r.scope_id)}" type="button" style="color:#c0392b">Remove</button>`}</td></tr>`).join('')}
       </tbody></table></div></div>
@@ -287,6 +291,7 @@
         <div class="fr-f"><label>Who</label><select id="p-id" disabled><option value="">—</option></select></div>
         <div class="fr-f"><label>Picture</label><select id="p-ru"><option value="optional">Optional</option><option value="required">Required</option><option value="off">Not allowed</option></select></div>
       </div><div style="margin-top:12px"><button class="fv-btn" id="p-save" type="button">Save rule</button></div></div>`;
+    body.querySelectorAll('[data-all]').forEach(b => b.onclick = async () => { if (b.dataset.all === allRule) return; if (b.dataset.all === 'off' && !confirm('Stop pictures for everyone?\n\nRiders will no longer see the picture button (except where a region, city or person rule says otherwise). Pictures already saved stay in Google Drive.')) return; if ((await rpc('fr_set_photo_rule', { p_scope: 'all', p_scope_id: null, p_rule: b.dataset.all }, 'Saved')).ok) again(); });
     const sc = body.querySelector('#p-sc'), idSel = body.querySelector('#p-id');
     sc.onchange = () => { const l = lists[sc.value]; idSel.disabled = !l; idSel.innerHTML = l ? opts(l, '', 'Choose…') : '<option value="">—</option>'; };
     body.querySelector('#p-save').onclick = async () => {
@@ -374,7 +379,11 @@
     };
     body.querySelector('#d-test').onclick = async () => {
       const out = body.querySelector('#d-out'); out.innerHTML = '<span class="fr-pill">Testing…</span>';
-      try { const j = await drive('ping'); out.innerHTML = `<span class="fr-pill g">Connected ✓</span> <span class="fr-hint">Folder: ${h(j.folder)} · signed in as ${h(j.user || '')}</span>`; }
+      try {
+        const j = await drive('ping'); const gb = (x) => (x / 1073741824).toFixed(2) + ' GB';
+        const space = j.limit ? `<div style="margin-top:8px">Google Drive space: <b>${gb(j.used)}</b> of <b>${gb(j.limit)}</b> used (${Math.round(j.used * 100 / j.limit)}%)${j.used / j.limit > 0.9 ? ' <span class="fr-pill r">almost full — turn pictures off or free space</span>' : ''}</div>` : '';
+        out.innerHTML = `<span class="fr-pill g">Connected ✓</span> <span class="fr-hint">Folder: ${h(j.folder)} · signed in as ${h(j.user || '')}</span>${space}`;
+      }
       catch (e) { out.innerHTML = `<span class="fr-pill r">Not connected</span> <span class="fr-hint">${h(em(e))}</span>`; }
     };
   }
@@ -549,7 +558,8 @@
   const fmtDay = (s) => { const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }); };
   const cycLabel = (st) => { const e = cycleEnd(st); const f = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); return f(st) + ' – ' + f(e) + ' ' + e.slice(0, 4); };
   const num = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 1 }));
-  const driveLink = (id) => 'https://drive.google.com/file/d/' + encodeURIComponent(id) + '/view';
+  const driveLink = (id) => id === 'failed' ? '#' : 'https://drive.google.com/file/d/' + encodeURIComponent(id) + '/view';
+  const photoA = (id, label) => !id ? '' : id === 'failed' ? `<span class="fr-pill o" title="The picture could not be saved in Google Drive">${h(label)}: not saved</span>` : `<a href="${driveLink(id)}" target="_blank" rel="noopener">${h(label)}</a>`;
   const errText = (e) => em(e).replace(/^.*?:\s*(?=[A-Z])/, '');
 
   async function readSheet(file) {
@@ -562,14 +572,33 @@
   function pick(row, names) { for (const n of names) { if (row[n] != null && row[n] !== '') return row[n]; } return ''; }
 
   // shrink a camera picture to a small JPEG (about 15–25 KB)
-  function shrinkPhoto(file) {
+  // A meter picture: must be taken just now with the camera (not an old gallery photo), must not be blank or
+  // completely dark, and gets a stamp (name / ID, date and time) burnt in, so it can't be reused for another day.
+  // It cannot prove that the picture shows a meter — the reviewer sees every picture next to the reading.
+  function shrinkPhoto(file, stamp) {
     return new Promise((res, rej) => {
+      if (!/^image\//.test(file.type || 'image/')) { rej(new Error('That file is not a picture')); return; }
+      if (file.lastModified && Date.now() - file.lastModified > 15 * 60000) { rej(new Error('Please take a NEW photo of the meter with the camera now. Old photos from the gallery are not accepted.')); return; }
       const url = URL.createObjectURL(file), img = new Image();
       img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('That file is not a picture')); };
       img.onload = () => {
         URL.revokeObjectURL(url);
+        // blank / dark check on a small copy
+        try {
+          const t = document.createElement('canvas'); t.width = 64; t.height = 64; const tc = t.getContext('2d'); tc.drawImage(img, 0, 0, 64, 64);
+          const d = tc.getImageData(0, 0, 64, 64).data; let sum = 0, sq = 0; const n = d.length / 4;
+          for (let i = 0; i < d.length; i += 4) { const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; sum += y; sq += y * y; }
+          const mean = sum / n, sd = Math.sqrt(Math.max(0, sq / n - mean * mean));
+          if (mean < 22) { rej(new Error('The picture is too dark. Please take it again in better light.')); return; }
+          if (sd < 10) { rej(new Error('The picture looks blank. Please take a clear photo of the meter.')); return; }
+        } catch (_e) {}
         let w = img.width, hh = img.height; const M = 720; if (w > M || hh > M) { const k = M / Math.max(w, hh); w = Math.round(w * k); hh = Math.round(hh * k); }
-        const c = document.createElement('canvas'); c.width = w; c.height = hh; c.getContext('2d').drawImage(img, 0, 0, w, hh);
+        const c = document.createElement('canvas'); c.width = w; c.height = hh; const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, w, hh);
+        if (stamp) {
+          const fs = Math.max(12, Math.round(w / 34)); cx.font = `600 ${fs}px system-ui, sans-serif`;
+          cx.fillStyle = 'rgba(0,0,0,.6)'; cx.fillRect(0, hh - fs * 1.9, w, fs * 1.9);
+          cx.fillStyle = '#fff'; cx.textBaseline = 'middle'; cx.fillText(stamp, Math.round(fs * 0.6), hh - fs * 0.95, w - fs);
+        }
         let q = 0.6, out = c.toDataURL('image/jpeg', q);
         while (out.length > 34000 && q > 0.2) { q -= 0.08; out = c.toDataURL('image/jpeg', q); }
         if (out.length > 34000) { const c2 = document.createElement('canvas'); c2.width = Math.round(w * 0.7); c2.height = Math.round(hh * 0.7); c2.getContext('2d').drawImage(c, 0, 0, c2.width, c2.height); out = c2.toDataURL('image/jpeg', 0.5); }
@@ -752,7 +781,7 @@
     main.querySelectorAll('[data-ph]').forEach(inp => inp.onchange = async () => {
       const f = inp.files[0]; if (!f) return; const k = inp.dataset.ph, st = main.querySelector(`[data-phs="${k}"]`);
       st.textContent = 'Preparing…';
-      try { photos[k] = await shrinkPhoto(f); st.textContent = '✓ picture ready'; } catch (e) { photos[k] = null; st.textContent = ''; say(em(e)); }
+      try { photos[k] = await shrinkPhoto(f, `${me.full_name} · ${me.employee_id || ''} · ${k === 'o' ? 'Opening' : 'Closing'} · ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Karachi' })}`); st.textContent = '✓ picture ready'; } catch (e) { photos[k] = null; st.textContent = ''; say(em(e)); }
     });
     const upload = async (k, day) => {
       if (!photos[k]) return null;
@@ -767,7 +796,7 @@
       btn.disabled = true; const old = btn.textContent; btn.textContent = 'Saving…';
       try {
         let pid = null;
-        if (photoKey && photos[photoKey]) { try { pid = await upload(photoKey, day); } catch (e) { if (rule === 'required') { say('Picture could not be uploaded: ' + em(e)); return; } say('Picture could not be uploaded; saving the reading without it.'); } }
+        if (photoKey && photos[photoKey]) { try { pid = await upload(photoKey, day); } catch (e) { pid = rule === 'required' ? 'failed' : null; say('The picture could not be saved in Google Drive (' + em(e) + '). Your reading is saved without it.'); } }
         const r = await saveReading(me.id, day, kind, +value, pid);
         if (r) { say(r.status === 'check' ? 'Saved and sent for a check' : 'Saved ✓'); pageMy(main); }
       } finally { btn.disabled = false; btn.textContent = old; }
@@ -782,7 +811,7 @@
     openModal(`<h2>${h(fmtDay(day))}</h2>${who ? `<p class="hint">${h(who)}</p>` : ''}
       <div class="two-col"><div class="fr-f" style="margin:8px 0"><label>Opening</label><input id="m-o" type="number" inputmode="decimal" value="${h(r.opening == null ? '' : r.opening)}"></div>
       <div class="fr-f" style="margin:8px 0"><label>Closing</label><input id="m-c" type="number" inputmode="decimal" value="${h(r.closing == null ? '' : r.closing)}"></div></div>
-      ${r.open_photo || r.close_photo ? `<p class="hint">${r.open_photo ? `<a href="${driveLink(r.open_photo)}" target="_blank" rel="noopener">Opening picture</a>` : ''} ${r.close_photo ? ` · <a href="${driveLink(r.close_photo)}" target="_blank" rel="noopener">Closing picture</a>` : ''}</p>` : ''}
+      ${r.open_photo || r.close_photo ? `<p class="hint">${photoA(r.open_photo, 'Opening picture')} ${r.close_photo ? ' · ' + photoA(r.close_photo, 'Closing picture') : ''}</p>` : ''}
       ${r.status === 'check' ? `<p class="hint" style="color:#a0672b">⏳ ${h(r.check_note || '')}</p>` : ''}
       <button class="btn-primary" id="m-s" type="button">Save</button>`);
     document.getElementById('m-s').onclick = async () => {
@@ -824,7 +853,7 @@
     const miss = (p) => shown.filter(d => d < today && !(by[p.id + '|' + d] && by[p.id + '|' + d].closing != null)).length;
     main.innerHTML = `<p class="fv-sub">Daily KM per rider (Closing − Opening). Red = missing, ½ = no Closing, ⚠ = waiting for a check. Click a day to see the readings${S || A.can_enter ? ' or fix them' : ''}.</p>
       ${checks.length && canReview ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⚠ Waiting for a check (${checks.length})</h4><div class="fr-wrap"><table class="fv-table"><thead><tr><th>Rider</th><th>Day</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th>Problem and reason</th><th></th></tr></thead><tbody>
-        ${checks.map(r => { const p = pById[r.person_id] || {}; return `<tr><td>${h(p.full_name || '')}</td><td>${h(fmtDay(r.day))}</td><td class="fr-n">${num(r.opening)}</td><td class="fr-n">${num(r.closing)}</td><td style="max-width:360px">${h(r.check_note || '')}${r.open_photo ? ` <a href="${driveLink(r.open_photo)}" target="_blank" rel="noopener">picture</a>` : ''}${r.close_photo ? ` <a href="${driveLink(r.close_photo)}" target="_blank" rel="noopener">picture</a>` : ''}</td><td style="white-space:nowrap;text-align:right"><button class="fv-btn" data-ok="${h(r.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-no="${h(r.id)}" type="button" style="color:#c0392b">Clear</button></td></tr>`; }).join('')}
+        ${checks.map(r => { const p = pById[r.person_id] || {}; return `<tr><td>${h(p.full_name || '')}</td><td>${h(fmtDay(r.day))}</td><td class="fr-n">${num(r.opening)}</td><td class="fr-n">${num(r.closing)}</td><td style="max-width:360px">${h(r.check_note || '')}${r.open_photo ? ' ' + photoA(r.open_photo, 'picture') : ''}${r.close_photo ? ' ' + photoA(r.close_photo, 'picture') : ''}</td><td style="white-space:nowrap;text-align:right"><button class="fv-btn" data-ok="${h(r.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-no="${h(r.id)}" type="button" style="color:#c0392b">Clear</button></td></tr>`; }).join('')}
         </tbody></table></div></div>` : ''}
       <div class="fr-tb">
         <select id="d-c">${cycles.map(c => `<option value="${c}"${c === f.cycle ? ' selected' : ''}>${h(cycLabel(c))}</option>`).join('')}</select>
@@ -849,7 +878,7 @@
     main.querySelectorAll('[data-cell]').forEach(td => td.onclick = () => {
       const [pid, d] = td.dataset.cell.split('|'), p = pById[pid], r = by[pid + '|' + d] || {};
       if (canEnter(p)) readingModal(pid, d, Object.assign({}, r), redraw, p.full_name + ' · ' + (p.employee_id || ''));
-      else openModal(`<h2>${h(p.full_name)} — ${h(fmtDay(d))}</h2><p>Opening: <b>${num(r.opening) || '–'}</b><br>Closing: <b>${num(r.closing) || '–'}</b>${r.opening != null && r.closing != null ? `<br>KM: <b>${num(r.closing - r.opening)}</b>` : ''}</p>${r.open_photo ? `<p><a href="${driveLink(r.open_photo)}" target="_blank" rel="noopener">Opening picture</a></p>` : ''}${r.close_photo ? `<p><a href="${driveLink(r.close_photo)}" target="_blank" rel="noopener">Closing picture</a></p>` : ''}${r.check_note ? `<p class="hint">${h(r.check_note)}</p>` : ''}`);
+      else openModal(`<h2>${h(p.full_name)} — ${h(fmtDay(d))}</h2><p>Opening: <b>${num(r.opening) || '–'}</b><br>Closing: <b>${num(r.closing) || '–'}</b>${r.opening != null && r.closing != null ? `<br>KM: <b>${num(r.closing - r.opening)}</b>` : ''}</p>${r.open_photo ? `<p>${photoA(r.open_photo, 'Opening picture')}</p>` : ''}${r.close_photo ? `<p>${photoA(r.close_photo, 'Closing picture')}</p>` : ''}${r.check_note ? `<p class="hint">${h(r.check_note)}</p>` : ''}`);
     });
     main.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => { const n = prompt('Note (optional):', ''); if (n === null) return; if ((await rpc('fr_check_decide', { p_id: b.dataset.ok, p_approve: true, p_note: n }, 'Approved')).ok) redraw(); });
     main.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => { const n = prompt('Why is it cleared? The rider will type it again.', ''); if (n === null) return; if ((await rpc('fr_check_decide', { p_id: b.dataset.no, p_approve: false, p_note: n }, 'Cleared')).ok) redraw(); });
