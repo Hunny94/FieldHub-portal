@@ -3251,7 +3251,7 @@ async function renderRequests(){
 
   // an Inventory Coordinator sees the requests that are his (handler), in his own region(s), his own, or not yet assigned to anyone
   const rawRequests = (rawRequests0 || []).filter(r => state.profile.role !== 'inventory_coordinator'
-    || r.assigned_poc_id === state.user.id || r.rider_id === state.user.id || !r.assigned_poc_id || (r.region_id && state.myRegionIds.includes(r.region_id)));
+    || r.assigned_poc_id === state.user.id || r.rider_id === state.user.id || !r.assigned_poc_id);   // v103: requests another person handles (e.g. the Area Incharge of Lahore DHA) are not shown
   const STATUS_WEIGHT = { open:0, in_progress:1, resolved:2, closed:3, cancelled:4 };
   const requests = (rawRequests||[]).slice().sort((a,b) => (STATUS_WEIGHT[a.status]??9) - (STATUS_WEIGHT[b.status]??9) || new Date(b.created_at)-new Date(a.created_at));
 
@@ -3474,23 +3474,38 @@ function fhRevertRequestModal(id){
 }
 function countWords(str){ return (str.trim().match(/\S+/g)||[]).length; }
 
-function openEditRequestModal(r){
+async function openEditRequestModal(r){
+  // v103: the Super Admin can change everything — rider, type, description, handler and status (any status)
+  openModal('<h2>Edit request</h2><div class="mono">Loading…</div>');
+  const [cq, pq] = await Promise.all([sb.from('categories').select('id, name, active').order('name'), sb.from('profiles').select('id, full_name, employee_id, role, status').order('full_name')]);
+  const cats = cq.data || [], people = (pq.data || []).filter(p => p.status === 'active' || p.id === r.rider_id || p.id === r.assigned_poc_id);
+  const riders = people.filter(p => p.role === 'rider' || p.id === r.rider_id), staff = people.filter(p => p.role !== 'rider');
+  const opt = (list, sel, lab) => list.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${escapeHtml(lab(x))}</option>`).join('');
+  const typeKnown = cats.some(c => c.id === r.category_id);
+  const ST = [['open', 'Open'], ['in_progress', 'In progress'], ['resolved', 'Resolved (waiting for the rider)'], ['closed', 'Closed'], ['cancelled', 'Cancelled']];
   openModal(`
     <h2>Edit request</h2>
-    <p class="hint">Use this to correct a mistake in the original request — this does not notify the rider.</p>
+    <p class="hint">Everything can be changed, in any status. A note with what changed and your reason is added to the request's history. The rider is not sent a separate message.</p>
     <form id="request-edit-form">
-      <div class="form-row"><label>Category</label><input type="text" id="er-category" value="${escapeHtml(r.category||'')}" required></div>
+      <div class="two-col"><div class="form-row"><label>Rider</label><select id="er-rider">${opt(riders, r.rider_id, x => x.full_name + (x.employee_id ? ' — ' + x.employee_id : '') + (x.status !== 'active' ? ' (inactive)' : ''))}</select></div>
+      <div class="form-row"><label>Request type</label><select id="er-cat">${typeKnown ? '' : `<option value="">${escapeHtml(r.category || '—')} (as typed)</option>`}${opt(cats, r.category_id, x => x.name + (x.active === false ? ' (inactive)' : ''))}</select></div></div>
       <div class="form-row"><label>Description</label><textarea id="er-description" required>${escapeHtml(r.description||'')}</textarea></div>
+      <div class="two-col"><div class="form-row"><label>Handler</label><select id="er-poc"><option value="">— Unassigned —</option>${opt(staff, r.assigned_poc_id, x => x.full_name + ' — ' + (ROLE_LABEL[x.role] || x.role))}</select></div>
+      <div class="form-row"><label>Status</label><select id="er-status">${ST.map(([v, l]) => `<option value="${v}" ${r.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+      <div class="form-row"><label>Reason for the change *</label><input type="text" id="er-why" required placeholder="e.g. wrong type selected"></div>
       <button class="btn-primary" type="submit">Save changes</button>
     </form>
   `);
   document.getElementById('request-edit-form').onsubmit = async (e) => {
     e.preventDefault();
-    const { error } = await sb.from('requests').update({
-      category: document.getElementById('er-category').value.trim(),
-      description: document.getElementById('er-description').value.trim()
-    }).eq('id', r.id);
-    if (error){ toast('Could not save: ' + error.message); return; }
+    const g = (id) => document.getElementById(id).value;
+    const p = { rider_id: g('er-rider'), description: g('er-description').trim(), assigned_poc_id: g('er-poc'), status: g('er-status'), reason: g('er-why').trim() };
+    if (g('er-cat')) p.category_id = g('er-cat');
+    const { error } = await sb.rpc('fh_request_edit', { p_id: r.id, p });
+    if (error){
+      if (/fh_request_edit|function|schema cache/i.test(error.message)) { toast('Please run migration_73.sql in Supabase first.'); return; }
+      toast('Could not save: ' + error.message.replace(/^.*?:\s*(?=[A-Z])/, '')); return;
+    }
     closeModal(); toast('Updated'); renderRequests();
   };
 }
@@ -7373,6 +7388,28 @@ async function renderToolTypesSettings(body){
 }
 
 // ---------------------------------------------------------
+// v103: an Inventory Coordinator does not see tools of riders whose region is handled by the Area Incharge
+// (routing rules send that region's requests to the Area Incharge, e.g. Lahore DHA), nor tools issued through a request someone else handles.
+async function fhInvToolScope(list){
+  try {
+    const [rr, pr, rq] = await Promise.all([
+      sb.from('request_routing_rules').select('region_id, category_id, target_role'),
+      sb.from('profile_regions').select('profile_id, region_id'),
+      sb.from('requests').select('id, assigned_poc_id').not('assigned_poc_id', 'is', null)]);
+    // a region counts as "Area Incharge's" when its routing rules send requests to the Area Incharge and none to the Inventory Coordinator
+    const toAI = new Set(), toInv = new Set();
+    (rr.data || []).forEach(x => { if (x.target_role === 'team_lead') toAI.add(x.region_id); if (x.target_role === 'inventory_coordinator') toInv.add(x.region_id); });
+    const areaRegions = new Set([...toAI].filter(r => !toInv.has(r)));
+    const handler = new Map((rq.data || []).map(x => [x.id, x.assigned_poc_id]));
+    const regs = new Map(); (pr.data || []).forEach(x => { if (!regs.has(x.profile_id)) regs.set(x.profile_id, []); regs.get(x.profile_id).push(x.region_id); });
+    const riderRegions = (i) => { const l = regs.get(i.rider_id); return (l && l.length) ? l : (i.profiles && i.profiles.region_id ? [i.profiles.region_id] : []); };
+    return list.filter(i => {
+      if (i.request_id && handler.has(i.request_id)) return handler.get(i.request_id) === state.user.id;
+      const rg = riderRegions(i);
+      return !(rg.length && rg.every(x => areaRegions.has(x)));
+    });
+  } catch (_e) { return list; }
+}
 // TOOL ISSUANCE & REISSUANCE (raincoats, uniforms, helmets, etc.)
 // ---------------------------------------------------------
 async function renderTools(){
@@ -7389,10 +7426,11 @@ async function renderTools(){
     if (canBulkUpdate) document.getElementById('bulk-tool-update-btn').onclick = openBulkToolUpdateModal;
     if (isSuperAdmin()){ const fb = document.createElement('button'); fb.className = 'btn outline'; fb.id = 'ti-force-btn'; fb.textContent = 'Force acknowledge'; fb.title = 'Mark issued tools the rider has not acknowledged as acknowledged'; fb.onclick = () => fhForceAckModal(() => renderTools()); document.getElementById('topbar-actions').prepend(fb); }
   }
-  let { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id, status), tool_types(name)').order('next_due_date');
+  let { data: issuances, error: issuancesErr } = await sb.from('tool_issuances').select('*, profiles!rider_id(full_name, employee_id, status, region_id), tool_types(name)').order('next_due_date');
   if (issuancesErr){ main.innerHTML = emptyState('Could not load tool issuances: ' + issuancesErr.message); return; }
   await fhLoadOffRiders();
   issuances = (issuances || []).filter(i => (!i.profiles || i.profiles.status === 'active') && !FH_OFF.ids.has(i.rider_id));   // disabled / removed people are not shown
+  if (state.profile.role === 'inventory_coordinator') issuances = await fhInvToolScope(issuances);
   if (!issuances.length){ main.innerHTML = emptyState('No tools issued yet.'); return; }
 
   const { data: acks } = await sb.from('tool_issuance_acks').select('*');
@@ -7501,7 +7539,7 @@ async function renderTools(){
     const allCb = document.getElementById('ti-all');
     if (allCb) allCb.onchange = () => { shown.forEach(i => allCb.checked ? TI_SEL.add(i.id) : TI_SEL.delete(i.id)); document.querySelectorAll('.ti-sel').forEach(cb => { cb.checked = TI_SEL.has(cb.dataset.id); }); refreshSel(); };
     document.querySelectorAll('[data-edit-issuance]').forEach(btn => {
-      btn.onclick = () => openEditToolIssuanceModal(issuances.find(i=>i.id===btn.dataset.editIssuance));
+      btn.onclick = () => { const it = issuances.find(i=>i.id===btn.dataset.editIssuance); if (it) it.__acked = ackMap.has(it.id); openEditToolIssuanceModal(it); };
     });
     document.querySelectorAll('[data-delete-issuance]').forEach(btn => {
       btn.onclick = async () => {
@@ -7703,7 +7741,39 @@ EMP1003"></textarea></div>
   };
 }
 
-function openEditToolIssuanceModal(issuance){
+async function openEditToolIssuanceModal(issuance){
+  // v103: the Super Admin can change everything — rider, tool, serial, dates and acknowledged yes/no (any status)
+  if (!isSuperAdmin()) return fhEditIssuanceBasic(issuance);
+  openModal('<h2>Edit tool issuance</h2><div class="mono">Loading…</div>');
+  const [tt, rp] = await Promise.all([sb.from('tool_types').select('id, name, active').order('name'), sb.from('profiles').select('id, full_name, employee_id, role, status').eq('role', 'rider').order('full_name')]);
+  const tools = tt.data || [], riders = (rp.data || []).filter(p => p.status === 'active' || p.id === issuance.rider_id);
+  const opt = (list, sel, lab) => list.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${escapeHtml(lab(x))}</option>`).join('');
+  openModal(`
+    <h2>Edit tool issuance</h2>
+    <p class="hint">Everything can be changed. The change is saved in the Activity Log with your reason.</p>
+    <form id="ei-form">
+      <div class="two-col"><div class="form-row"><label>Rider</label><select id="ei-rider" required>${opt(riders, issuance.rider_id, x => x.full_name + (x.employee_id ? ' — ' + x.employee_id : '') + (x.status !== 'active' ? ' (inactive)' : ''))}</select></div>
+      <div class="form-row"><label>Tool</label><select id="ei-tool" required>${opt(tools, issuance.tool_type_id, x => x.name + (x.active === false ? ' (inactive)' : ''))}</select></div></div>
+      <div class="form-row"><label>Serial number (optional)</label><input type="text" id="ei-serial" value="${escapeHtml(issuance.serial_number||'')}" placeholder="e.g. barcode device number"></div>
+      <div class="two-col"><div class="form-row"><label>Issued date</label><input type="date" id="ei-issued" value="${issuance.issued_date}" required></div>
+      <div class="form-row"><label>Next due date (blank = no fixed schedule)</label><input type="date" id="ei-due" value="${issuance.next_due_date||''}"></div></div>
+      <div class="form-row"><label>Rider acknowledgement</label><select id="ei-ack"><option value="true" ${issuance.__acked ? 'selected' : ''}>Acknowledged</option><option value="false" ${issuance.__acked ? '' : 'selected'}>Not acknowledged (waiting for the rider)</option></select></div>
+      <div class="form-row"><label>Reason for the change *</label><input type="text" id="ei-why" required placeholder="e.g. wrong tool selected — should be Uniform"></div>
+      <button class="btn-primary" type="submit">Save changes</button>
+    </form>`);
+  document.getElementById('ei-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const g = (id) => document.getElementById(id).value;
+    const p = { rider_id: g('ei-rider'), tool_type_id: g('ei-tool'), serial_number: g('ei-serial').trim(), issued_date: g('ei-issued'), next_due_date: g('ei-due'), acknowledged: g('ei-ack') === 'true', reason: g('ei-why').trim() };
+    const { error } = await sb.rpc('fh_issuance_edit', { p_id: issuance.id, p });
+    if (error){
+      if (/fh_issuance_edit|function|schema cache/i.test(error.message)) { toast('Please run migration_73.sql in Supabase first. Saving only the dates and serial for now.'); return fhEditIssuanceBasic(issuance); }
+      toast('Could not save: ' + error.message.replace(/^.*?:\s*(?=[A-Z])/, '')); return;
+    }
+    closeModal(); toast('Updated'); renderTools();
+  };
+}
+function fhEditIssuanceBasic(issuance){
   openModal(`
     <h2>Edit tool issuance</h2>
     <p class="mono" style="margin-bottom:12px;">${escapeHtml(issuance.profiles?.full_name||'—')} — ${escapeHtml(issuance.tool_types?.name||'—')}</p>
