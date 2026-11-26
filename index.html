@@ -45,6 +45,7 @@
 .fh-pwrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .fh-pwrow a{font-weight:600;color:#1B7A82;text-decoration:none;font-size:13px;padding:4px 0}
 .fh-pwrow a:hover{text-decoration:underline}
+.fh-forgot{margin:12px 0 2px!important;text-align:center}.fh-forgot a{font-weight:600;color:#1B7A82!important;text-decoration:none}.fh-forgot a:hover{text-decoration:underline}
 @keyframes fhKB{from{transform:scale(1.02)}to{transform:scale(1.14) translate(-12px,6px)}}
 @keyframes fhGlow{to{transform:translate(70px,50px)}}
 @keyframes fhLogo{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
@@ -100,13 +101,14 @@
           <input type="tel" id="login-phone" required placeholder="e.g. 03*********" inputmode="numeric" maxlength="11" autocomplete="username">
           <span class="field-hint">Enter without dashes or spaces</span>
         </label>
-        <label><span class="fh-pwrow"><span>Password</span><a href="#" id="show-forgot">Forgot password?</a></span>
+        <label>Password
           <div class="password-field">
             <input type="password" id="login-password" required autocomplete="current-password">
-            <button type="button" class="password-toggle" data-target="login-password">Show</button>
+            <button type="button" class="password-toggle" data-target="login-password" tabindex="-1">Show</button>
           </div>
         </label>
         <button type="submit" class="btn-primary">Sign In</button>
+        <p class="auth-switch fh-forgot"><a href="#" id="show-forgot">Forgot password?</a></p>
         <p class="auth-switch">New team member? <a href="#" id="show-signup">Create an account</a></p>
         <p class="auth-switch" style="font-size:12px;opacity:.8"><a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a> · <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a></p>
       </form>
@@ -232,15 +234,15 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script src="offline.js?v=1"></script>
-<script src="app.js?v=93"></script>
+<script src="app.js?v=94"></script>
 <script src="pos.js?v=7"></script>
 <script src="roster-ai.js?v=2"></script>
 <script src="top-performers.js?v=5"></script>
 <script src="assistant.js?v=5"></script>
 <script src="biometric.js?v=1"></script>
 <script src="fuel-sec.js?v=2"></script>
-<script src="fuel-reimb.js?v=4"></script>
-<script src="ui.js?v=4"></script>
+<script src="fuel-reimb.js?v=5"></script>
+<script src="ui.js?v=5"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
