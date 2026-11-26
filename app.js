@@ -1608,7 +1608,7 @@ async function fhExpiryPopup(){
   if (!state.user || document.getElementById('exp-pop')) return;
   let rows = [];
   try {
-    const r = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).is('read_at', null).gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString()).order('created_at', { ascending: false }).limit(10);
+    const r = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).is('read_at', null).not('title', 'like', 'Please acknowledge%').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString()).order('created_at', { ascending: false }).limit(10);
     if (r.error) return; rows = r.data || [];
   } catch (_e) { return; }
   if (!rows.length) return;
