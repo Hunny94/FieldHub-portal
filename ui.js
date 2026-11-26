@@ -265,7 +265,18 @@ html.fh-dark .fh-ra-menu .btn{color:#e6e9ff!important}html.fh-dark .fh-ra-menu .
   .fh-ac .hd,.fh-ac .mn,.fh-ac .sc,.ft-kpi{transition:none!important}.fh-ra-menu.open{animation:none!important}
   .stat-card:hover{transform:none!important}
 }
-@media print{#fh-more-btn,#fh-more-menu{display:none!important}}`;
+@media print{#fh-more-btn,#fh-more-menu{display:none!important}}
+  /* v5: phone tables (Settings lists etc.) — the pinned first column wraps its text instead of running over the next column */
+  @media (max-width:700px){
+    #main-content table.fh-stk td:first-child,#main-content table.fh-stk th:first-child{white-space:normal!important;overflow:hidden;overflow-wrap:anywhere;word-break:normal;width:124px;min-width:124px;max-width:124px;padding-right:10px}
+    #main-content table.fh-stk td:first-child *{white-space:normal!important}
+    #main-content table th{overflow:hidden;text-overflow:ellipsis}
+    #main-content table td .badge,#main-content table td .status-pill{white-space:nowrap}
+    #main-content table td{vertical-align:middle}
+    #main-content .fh-tscroll{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+    #main-content table td .btn.small{padding:6px 10px}
+    #main-content .tabs,#main-content .settings-tabs{scroll-padding:12px}
+  }`;
 
   function addStyle() {
     if (document.getElementById('fh-ui-v1')) return;
