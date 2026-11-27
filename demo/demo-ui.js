@@ -12,9 +12,10 @@
 
   const css = document.createElement('style'); css.id = 'fhdemo-css';
   css.textContent = `
-  .fhd-card{margin-top:18px;border:1.5px dashed #b9c1ee;border-radius:14px;padding:12px 12px 10px;background:#f6f7fe}
-  .fhd-card h4{margin:0 0 2px;font:700 14px system-ui,sans-serif;color:#1E2A6E}
-  .fhd-card p{margin:0 0 10px;font:12.5px system-ui,sans-serif;color:#5b6280}
+  .fhd-card{margin:0 0 14px;border:1.5px dashed #e8a37f;border-radius:12px;padding:8px 8px 8px 12px;background:#fff6f0;display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .fhd-card button{flex:0 0 auto;border:0;background:#c2410c;color:#fff;border-radius:10px;padding:10px 12px;font:700 13px system-ui,sans-serif;cursor:pointer}
+  .fhd-card h4{margin:0 0 1px;font:700 13px system-ui,sans-serif;color:#9a3412;letter-spacing:.3px}
+  .fhd-card p{margin:0;font:12px system-ui,sans-serif;color:#5b6280}
   .fhd-roles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
   .fhd-roles button{border:1px solid #d5daf3;background:#fff;border-radius:10px;padding:8px 8px;text-align:left;cursor:pointer;font:600 12.5px system-ui,sans-serif;color:#1E2A6E;line-height:1.25}
   .fhd-roles button small{display:block;font-weight:500;color:#6b7290;font-size:11px}
@@ -22,7 +23,7 @@
   #fhd-pill{position:fixed;left:0;top:58%;z-index:2147480000;background:#c2410c;color:#fff;border:0;border-radius:0 10px 10px 0;padding:10px 5px;font:700 11px system-ui,sans-serif;letter-spacing:1.5px;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;writing-mode:vertical-rl;transform:rotate(180deg);opacity:.9}
   #fhd-pill:hover{opacity:1}
   #fhd-sheet{position:fixed;inset:0;z-index:2147480001;background:rgba(10,14,40,.45);display:flex;align-items:center;justify-content:flex-start}
-  #fhd-sheet .in{background:#fff;color:#1b2150;margin:12px;border-radius:16px;padding:16px;width:min(360px,calc(100vw - 24px));box-shadow:0 18px 50px rgba(0,0,0,.3);font:14px system-ui,sans-serif;max-height:calc(100vh - 24px);overflow:auto}
+  #fhd-sheet .in{background:#fff;color:#1b2150;margin:12px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;border-radius:16px;padding:16px;width:min(360px,calc(100vw - 24px));box-shadow:0 18px 50px rgba(0,0,0,.3);font:14px system-ui,sans-serif;max-height:calc(100vh - 24px);overflow:auto}
   #fhd-sheet h3{margin:0 0 4px;font-size:16px;color:#1E2A6E}
   #fhd-sheet .hint{font-size:12.5px;color:#5b6280;margin:0 0 10px}
   #fhd-sheet .role{display:flex;justify-content:space-between;align-items:center;width:100%;border:1px solid #e1e4f3;background:#fff;border-radius:10px;padding:9px 10px;margin:0 0 6px;cursor:pointer;font:600 13.5px system-ui,sans-serif;color:#1E2A6E;text-align:left}
@@ -53,15 +54,26 @@
     ph.value = phone; pw.value = PW;
     if (f.requestSubmit) f.requestSubmit(); else f.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
   }
+  // a small strip at the top of the sign-in form; the role list opens in its own scrolling window
+  // (the phone app does not scroll the sign-in page, so nothing is placed below the fold)
+  function rolePicker() {
+    if (document.getElementById('fhd-sheet')) return;
+    const o = document.createElement('div'); o.id = 'fhd-sheet';
+    o.innerHTML = `<div class="in"><h3>Demo · sign in as</h3><p class="hint">Sample data only. Every login uses the password <b>${esc(PW)}</b>.</p>
+      ${LOGINS.map((l) => `<button class="role" data-ph="${esc(l.phone)}" type="button"><span>${esc(l.label)}</span><small>${esc(l.name)} · ${esc(l.phone)}</small></button>`).join('')}
+      <div class="row"><button type="button" id="fhd-leave">← Live FieldHub</button><button type="button" id="fhd-close">Close</button></div></div>`;
+    document.body.appendChild(o);
+    o.onclick = (e) => { if (e.target === o) o.remove(); };
+    o.querySelector('#fhd-close').onclick = () => o.remove();
+    o.querySelector('#fhd-leave').onclick = () => { location.href = new URL('../', location.href).href; };
+    o.querySelectorAll('[data-ph]').forEach((b) => b.onclick = () => { o.remove(); signInAs(b.dataset.ph); });
+  }
   function loginCard() {
     const f = document.getElementById('login-form'); if (!f || document.getElementById('fhd-card')) return;
     const box = document.createElement('div'); box.id = 'fhd-card'; box.className = 'fhd-card';
-    box.innerHTML = `<h4>Demo · sign in as</h4><p>Sample data only. Every login uses the password <b>${esc(PW)}</b>.</p>
-      <div class="fhd-roles">${LOGINS.map((l) => `<button type="button" data-ph="${esc(l.phone)}">${esc(l.label)}<small>${esc(l.name)} · ${esc(l.phone)}</small></button>`).join('')}</div>
-      <p style="margin:10px 0 0;text-align:center"><a href="javascript:void 0" id="fhd-leave" style="color:#1B7A82;font-weight:600;text-decoration:none">← Back to the live FieldHub</a></p>`;
-    f.appendChild(box);
-    box.querySelectorAll('[data-ph]').forEach((b) => b.onclick = () => signInAs(b.dataset.ph));
-    box.querySelector('#fhd-leave').onclick = () => { location.href = new URL('../', location.href).href; };
+    box.innerHTML = `<div><h4>DEMO · sample data</h4><p>Password for every role: <b>${esc(PW)}</b></p></div><button type="button" id="fhd-pick">Choose a role ▸</button>`;
+    f.insertBefore(box, f.firstChild);
+    box.querySelector('#fhd-pick').onclick = rolePicker;
   }
   const pending = D.store.get('switchTo', null);
   function tryPending() {
