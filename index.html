@@ -251,5 +251,21 @@
     });
   }
 </script>
+<script>
+/* v104 demo door: tap the logo on the sign-in page 5 times (within 4 seconds) to open the FieldHub DEMO with sample data.
+   The demo is a separate page (demo/) and never reads or changes live data. Remove this block to remove the door. */
+(function () {
+  if (window.FHDEMO) return;
+  var n = 0, t = 0;
+  document.addEventListener('click', function (e) {
+    var box = e.target && e.target.closest && e.target.closest('#auth-screen .auth-logo-box');
+    if (!box) return;
+    var now = Date.now(); if (now - t > 4000) n = 0; t = now;
+    if (++n < 5) return;
+    n = 0;
+    if (confirm('Open the FieldHub DEMO?\n\nIt uses made-up sample data and never touches the live portal.')) location.href = 'demo/';
+  }, true);
+})();
+</script>
 </body>
 </html>
