@@ -16,7 +16,7 @@
    config.js, so the demo always looks exactly like the live portal but never talks to the live
    database. offline.js and the service worker are left out on purpose. */
 (function () {
-  var V = '1';   // bump when the demo files change
+  var V = '2';   // bump when the demo files change
   var fail = function (msg) { var l = document.getElementById('ld'); if (l) l.innerHTML = '<div>The demo could not open.<small>' + msg + ' — please check the internet and refresh.</small></div>'; };
   fetch('../index.html', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }).then(function (html) {
     var doc = new DOMParser().parseFromString(html, 'text/html');
