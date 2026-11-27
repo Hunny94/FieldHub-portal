@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1E2A6E">
+<title>FieldHub DEMO</title>
+<style>html,body{margin:0;height:100%}#ld{position:fixed;inset:0;display:grid;place-items:center;background:#1E2A6E;color:#fff;font:600 15px system-ui,sans-serif;text-align:center;z-index:2147483600}#ld small{display:block;opacity:.7;font-weight:500;margin-top:6px}</style>
+</head>
+<body>
+<div id="ld"><div>Opening the FieldHub demo…<small>Sample data only</small></div></div>
+<script>
+/* FieldHub DEMO loader.
+   It reads the live portal page (../index.html) and opens it with the demo engine in place of
+   config.js, so the demo always looks exactly like the live portal but never talks to the live
+   database. offline.js and the service worker are left out on purpose. */
+(function () {
+  var V = '1';   // bump when the demo files change
+  var fail = function (msg) { var l = document.getElementById('ld'); if (l) l.innerHTML = '<div>The demo could not open.<small>' + msg + ' — please check the internet and refresh.</small></div>'; };
+  fetch('../index.html', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }).then(function (html) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var demo = ['demo/demo-data.js', 'demo/demo-engine.js', 'demo/demo-rpc.js'];
+    var list = [];
+    // the scripts, in page order: config.js -> demo engine; offline.js left out
+    Array.prototype.forEach.call(doc.querySelectorAll('script'), function (s) {
+      var src = s.getAttribute('src') || '';
+      if (/^config\.js/.test(src)) { demo.forEach(function (d) { list.push({ src: d + '?v=' + V }); }); list.push({ code: 'FHDEMO.hookSupabase();FHDEMO.boot();' }); }
+      else if (/^offline\.js/.test(src)) { /* skipped */ }
+      else if (src) list.push({ src: src });
+      else list.push({ code: s.textContent.replace(/navigator\.serviceWorker\.register\([^)]*\)/, 'Promise.resolve()') });
+      s.parentNode.removeChild(s);
+    });
+    list.push({ src: 'demo/demo-ui.js?v=' + V });
+    if (!list.some(function (x) { return x.src && /demo-engine/.test(x.src); })) throw new Error('config.js line not found in the portal page');
+    // page head and body (base first, so every file comes from the portal folder)
+    var base = document.createElement('base'); base.href = '../';
+    document.head.innerHTML = ''; document.head.appendChild(base);
+    Array.prototype.slice.call(doc.head.childNodes).forEach(function (n) {
+      if (n.nodeType === 1 && n.tagName === 'LINK' && /manifest/i.test(n.getAttribute('rel') || '')) return;
+      document.head.appendChild(document.adoptNode(n));
+    });
+    document.title = 'DEMO · ' + (doc.title || 'FieldHub');
+    var ld = document.getElementById('ld');
+    document.body.innerHTML = '';
+    Array.prototype.forEach.call(doc.body.attributes, function (a) { document.body.setAttribute(a.name, a.value); });
+    Array.prototype.slice.call(doc.body.childNodes).forEach(function (n) { document.body.appendChild(document.adoptNode(n)); });
+    if (ld) document.body.appendChild(ld);
+    // run the scripts one after another, like a normal page load
+    var i = 0;
+    var next = function () {
+      if (i >= list.length) {
+        document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
+        window.dispatchEvent(new Event('load'));
+        setTimeout(function () { var l = document.getElementById('ld'); if (l) l.remove(); }, 150);
+        return;
+      }
+      var it = list[i++], el = document.createElement('script');
+      if (it.src) { el.src = it.src; el.async = false; el.onload = next; el.onerror = function () { fail('Could not load ' + it.src.split('?')[0]); }; document.body.appendChild(el); }
+      else { el.textContent = it.code; document.body.appendChild(el); next(); }
+    };
+    next();
+  }).catch(function (e) { fail(String(e && e.message || e)); });
+})();
+</script>
+</body>
+</html>
