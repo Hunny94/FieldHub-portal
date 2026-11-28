@@ -1,4 +1,6 @@
-// FieldHub — immersive 3D look for the WHOLE portal (option C, "lite": no 3D engine, about 12 KB).
+// FieldHub — immersive 3D look for the WHOLE portal (option C, "lite": no 3D engine, about 15 KB).
+// While it is on, every page uses the night colours of option C: deep navy space, a gold 3D floor, dark glass cards with gold edges.
+// Turning it Off gives back each person's own light or dark choice.
 // LOOK ONLY. It reads nothing from the database and changes nothing: no data, no buttons, no layout sizes.
 //   - every page: a moving 3D floor, light and particles drawn BEHIND the content
 //   - every page: cards rise into place in 3D when the page opens, with deeper shadows
@@ -6,7 +8,7 @@
 //   - every pop-up window opens with a short 3D swing
 // The sign-in page is not touched (it stays plain and light).
 //
-// Each person can switch it with the "3D" button at the top: Auto / On / Off (saved on that device only).
+// Each person can switch it with the "3D" button at the top, or on My Profile: Auto / On / Off (saved on that device only).
 //   Auto = on, except on weak phones, battery/data saver, or when the phone asks for less motion.
 // TO REMOVE IT FOR EVERYONE: delete this file (ui3d.js) on GitHub. The portal works exactly as before without it.
 (function () {
@@ -41,6 +43,9 @@
     body.fh3d-on #main-content{position:relative;z-index:1}
     ${DEEP}{box-shadow:0 1px 2px rgba(30,42,110,.06),0 12px 30px rgba(30,42,110,.12)}
     ${DEEPD}{box-shadow:0 0 0 1px rgba(224,178,59,.14),0 16px 40px rgba(0,0,0,.42)}
+    body.fh3d-on .main-area{background:radial-gradient(120% 80% at 50% 0%, #1d2766, #0a0f2e 72%) fixed!important}
+    html.fh-dark body.fh3d-on #main-content .card,html.fh-dark body.fh3d-on #main-content .stat-card,html.fh-dark body.fh3d-on #main-content .fv-card2,html.fh-dark body.fh3d-on #main-content .fv-panel,html.fh-dark body.fh3d-on #main-content .ft-card,html.fh-dark body.fh3d-on #main-content .fr-card,html.fh-dark body.fh3d-on #main-content .fh-rowcard,html.fh-dark body.fh3d-on #main-content .rq-bar,html.fh-dark body.fh3d-on #main-content .fh-qf{background:linear-gradient(160deg, rgba(34,44,104,.86), rgba(16,21,58,.9))!important;border-color:rgba(224,178,59,.24)!important}
+    html.fh-dark body.fh3d-on .modal{background:linear-gradient(160deg, #222c68, #121844)!important;box-shadow:0 0 0 1px rgba(224,178,59,.25),0 30px 80px rgba(0,0,0,.6)!important}
     #fh3d-btn{font-weight:700;letter-spacing:.3px;min-width:44px}
     #fh3d-btn[data-m="off"]{opacity:.6}
     @media print{#fh3d-wrap{display:none!important}}
@@ -72,10 +77,10 @@
     const t = (now - t0) / 1000, dark = isDark(), sc = area ? area.scrollTop : 0;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
     const glow = (x, y, rad, col) => { const g = ctx.createRadialGradient(x, y, 0, x, y, rad); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2); };
-    glow(W * (0.78 + 0.05 * Math.sin(t * 0.21)), H * (0.18 + 0.04 * Math.cos(t * 0.17)), Math.max(W, H) * 0.45, dark ? 'rgba(224,178,59,.16)' : 'rgba(30,42,110,.07)');
+    glow(W * (0.78 + 0.05 * Math.sin(t * 0.21)), H * (0.18 + 0.04 * Math.cos(t * 0.17)), Math.max(W, H) * 0.45, dark ? 'rgba(224,178,59,.22)' : 'rgba(30,42,110,.07)');
     glow(W * (0.15 + 0.04 * Math.cos(t * 0.19)), H * (0.75 + 0.05 * Math.sin(t * 0.23)), Math.max(W, H) * 0.5, dark ? 'rgba(80,110,230,.18)' : 'rgba(224,178,59,.08)');
     // the 3D floor: lines run to a vanishing point and slide toward you; scrolling tips the horizon a little
-    const hz = H * 0.52 - Math.min(sc * 0.15, H * 0.2), vx = W / 2 + Math.sin(t * 0.15) * W * 0.04, line = dark ? '224,178,59' : '30,42,110', a0 = dark ? 0.32 : 0.13;
+    const hz = H * 0.52 - Math.min(sc * 0.15, H * 0.2), vx = W / 2 + Math.sin(t * 0.15) * W * 0.04, line = dark ? '224,178,59' : '30,42,110', a0 = dark ? 0.42 : 0.13;
     ctx.lineWidth = 1;
     for (let i = -14; i <= 14; i++) {
       const xb = vx + i * W * 0.11, a = a0 * (1 - Math.abs(i) / 16);
@@ -116,8 +121,8 @@
       seen.add(el);
       if (i >= 14 || !el.animate) continue;
       const b = el.getBoundingClientRect(); if (b.top > window.innerHeight) continue;   // only what is on screen
-      try { el.animate([{ transform: 'perspective(1100px) rotateX(14deg) translateY(22px)', opacity: 0.001 }, { transform: 'perspective(1100px) rotateX(0deg) translateY(0)', opacity: 1 }],
-        { duration: 560, delay: i * 50, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' }); } catch (_e) {}
+      try { el.animate([{ transform: 'perspective(1200px) translateZ(-180px) rotateX(16deg) translateY(34px)', opacity: 0.001 }, { transform: 'perspective(1200px) translateZ(0) rotateX(0deg) translateY(0)', opacity: 1 }],
+        { duration: 700, delay: i * 60, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' }); } catch (_e) {}
       i++;
     }
   }
@@ -161,11 +166,35 @@
     try { el.animate([{ transform: 'perspective(700px) scale(1)' }, { transform: 'perspective(700px) translateZ(-24px) scale(.98)' }, { transform: 'perspective(700px) scale(1)' }], { duration: 260, easing: 'ease-out' }); } catch (_e) {}
   }
 
+  // ---------------------------------------------------------------- night colours while the 3D look is on
+  // The portal asks fhTheme() which colours to use; while 3D is on the answer is "dark". The person's own choice is kept and comes back when 3D is turned off.
+  const night = () => enabled() && document.body.classList.contains('fh-app');
+  function hookTheme() {
+    if (typeof window.fhTheme === 'function' && !window.fhTheme.__fh3d) {
+      const o = window.fhTheme; const w = function () { return night() ? 'dark' : o.apply(this, arguments); }; w.__fh3d = true; window.fhTheme = w;
+    }
+    if (typeof window.fhToggleTheme === 'function' && !window.fhToggleTheme.__fh3d) {
+      const o = window.fhToggleTheme;
+      const w = function () { if (night()) { try { toast('The 3D look uses night colours. Turn 3D Off (top 3D button or My Profile) to use light mode.'); } catch (_e) {} return; } return o.apply(this, arguments); };
+      w.__fh3d = true; window.fhToggleTheme = w;
+    }
+  }
+  hookTheme();
+  let themed = null;
+  function applyTheme() {
+    const want = night();
+    if (themed === want) return; themed = want;
+    try { if (typeof window.fhApplyTheme === 'function') window.fhApplyTheme(); } catch (_e) {}
+    // charts paint their own colours, so a page with charts is drawn again
+    try { if (document.querySelector('#main-content .js-plotly-plot') && typeof state !== 'undefined' && state.view && typeof navigateTo === 'function') navigateTo(state.view); } catch (_e) {}
+  }
+
   // ---------------------------------------------------------------- switching on and off
   let active = false;
   function enter() {
     if (!enabled() || !inApp()) { leave(); return; }
     if (!build()) return;
+    applyTheme();
     document.body.classList.add('fh3d-on');
     if (!active) {
       active = true; t0 = performance.now() - 8000;
@@ -182,6 +211,7 @@
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     document.body.classList.remove('fh3d-on');
     untilt();
+    applyTheme();
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && active && !raf) raf = requestAnimationFrame(loop); });
   window.addEventListener('resize', () => { if (active) size(); });
@@ -190,7 +220,7 @@
   document.addEventListener('pointerdown', onDown, { passive: true });
   document.addEventListener('mouseleave', untilt);
   // signs in and out, and the 3D button, are noticed here
-  setInterval(() => { try { if (inApp() && enabled()) { if (!active) enter(); } else if (active) leave(); } catch (_e) {} }, 1200);
+  setInterval(() => { try { hookTheme(); if (inApp() && enabled()) { if (!active) enter(); } else if (active) leave(); else applyTheme(); } catch (_e) {} }, 1200);
 
   // ---------------------------------------------------------------- the 3D button at the top (Auto / On / Off)
   const LABEL = { auto: '3D Auto', on: '3D On', off: '3D Off' };
@@ -203,10 +233,27 @@
       const next = { auto: 'on', on: 'off', off: 'auto' }[mode()];
       try { localStorage.setItem(KEY, next); } catch (_e) {}
       paint(); leave(); if (next !== 'off') enter();
+      document.querySelectorAll('#fh3d-prof input').forEach((x) => { x.checked = x.value === next; });
       const msg = next === 'auto' ? '3D look: Auto (off on weak phones)' : next === 'on' ? '3D look: On' : '3D look: Off';
       try { toast(msg); } catch (_e) {}
     };
     paint(); ref.parentNode.insertBefore(b, ref);
   }
   setInterval(button, 2000); button();
+
+  // ---------------------------------------------------------------- the same switch on the My Profile page ("Display" card)
+  function profileCard() {
+    if (curView() !== 'myprofile' || document.getElementById('fh3d-prof')) return;
+    const main = document.getElementById('main-content'); if (!main || !main.firstElementChild) return;
+    const c = document.createElement('div'); c.className = 'card'; c.id = 'fh3d-prof';
+    const opt = (v, t, d) => '<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer"><input type="radio" name="fh3d-m" value="' + v + '" style="width:auto;margin-top:3px"><span><b>' + t + '</b><br><small style="opacity:.75">' + d + '</small></span></label>';
+    c.innerHTML = '<h3 style="margin-top:0">Display: 3D look</h3><p style="margin:0 0 6px;opacity:.8">Night colours, a moving 3D floor and 3D cards on every page. Saved on this device only.</p>' +
+      opt('auto', 'Auto (recommended)', 'On, but off by itself on weak phones, data saver or "reduce motion"') + opt('on', 'On', 'Always on') + opt('off', 'Off', 'Your normal light or dark look, no 3D');
+    main.insertBefore(c, main.firstElementChild);
+    c.querySelectorAll('input').forEach((i) => {
+      i.checked = i.value === mode();
+      i.onchange = () => { try { localStorage.setItem(KEY, i.value); } catch (_e) {} const b = document.getElementById('fh3d-btn'); if (b) { b.dataset.m = i.value; b.title = LABEL[i.value] + ' — tap to change'; } leave(); if (i.value !== 'off') enter(); try { toast('3D look: ' + LABEL[i.value].slice(3)); } catch (_e) {} };
+    });
+  }
+  setInterval(profileCard, 800);
 })();
