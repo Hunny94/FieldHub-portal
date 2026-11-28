@@ -9509,9 +9509,14 @@ async function fvPageAdd(body) {
   if (!allowed.length) { body.innerHTML = emptyState('There are no active riders in your region(s) to visit.'); return; }
   // last inspection date of every rider (most recent visit by anyone)
   const lastMap = new Map(); let lastErr = false;
+  const monthMap = new Map();   // v115: rider -> this month's visits (newest first)
+  const monthKey = fvToday().slice(0, 7);
   try {
     const rows = await fvFetchAll(() => sb.from('fv_visits').select('rider_id, visit_date, visit_type, score, submitted_by_name').order('visit_date', { ascending: false }).order('created_at', { ascending: false }));
-    rows.forEach(v => { if (!lastMap.has(v.rider_id)) lastMap.set(v.rider_id, v); });
+    rows.forEach(v => {
+      if (!lastMap.has(v.rider_id)) lastMap.set(v.rider_id, v);
+      if (String(v.visit_date || '').slice(0, 7) === monthKey) { if (!monthMap.has(v.rider_id)) monthMap.set(v.rider_id, []); monthMap.get(v.rider_id).push(v); }
+    });
   } catch (e) { lastErr = true; console.warn(e); }
   const fvAgo = (iso) => { const d = Math.round((new Date(fvToday() + 'T00:00:00') - new Date(iso + 'T00:00:00')) / 86400000); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'; };
   const lastShort = (id) => { const l = lastMap.get(id); return l ? 'last ' + fvShortDate(l.visit_date) : (lastErr ? '' : 'never visited'); };
@@ -9548,7 +9553,8 @@ async function fvPageAdd(body) {
   });
 
   body.innerHTML = `
-    <div class="fv-panel"><h3>1 · Who was visited?</h3>
+    <div class="fv-plan" id="fv-a-plan"></div>
+    <div class="fv-panel" id="fv-a-p1"><h3>1 · Who was visited?</h3>
       <div class="fv-filters">
         <select id="fv-a-region"><option value="">All my Teams / Regions</option>${regions.map(r => fvOpt(r.id, r.name, '')).join('')}</select>
         <input id="fv-a-search" type="search" placeholder="Search rider name or ID…" style="min-width:210px;">
@@ -9594,6 +9600,67 @@ async function fvPageAdd(body) {
   body.querySelector('#fv-a-search').oninput = fillRiders;
   sel.onchange = () => { riderId = sel.value; showInfo(); };
   fillRiders();
+  // ---- v115: plan the round — riders in my teams, inspected this month or not; tap a card to see who
+  if (!document.getElementById('fv-plan-css')) {
+    const st = document.createElement('style'); st.id = 'fv-plan-css';
+    st.textContent = `.fv-plan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px}
+      .fv-plan button{all:unset;box-sizing:border-box;cursor:pointer;background:#fff;border:1px solid #e3e7f2;border-left:5px solid var(--c);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+      .fv-plan button:hover{box-shadow:0 6px 18px rgba(30,42,110,.12)} .fv-plan button:focus-visible{outline:3px solid #8fa4ff}
+      .fv-plan b{font-size:28px;line-height:1.1;color:var(--c)} .fv-plan span{font-size:13px;font-weight:600;color:#1c2b6e} .fv-plan small{font-size:11.5px;color:#6a7397}
+      html.fh-dark .fv-plan button{background:#171e46;border-color:#273066;border-left-color:var(--c)} html.fh-dark .fv-plan [data-plan=all]{--c:#8fa4ff!important} html.fh-dark .fv-plan span{color:#e8ecff} html.fh-dark .fv-plan small{color:#9aa6d6}
+      @media(max-width:560px){.fv-plan{gap:8px}.fv-plan button{padding:10px}.fv-plan b{font-size:22px}.fv-plan span{font-size:12px}.fv-plan small{display:none}}
+      .fv-plist{max-height:60vh;overflow:auto;margin-top:10px} .fv-plist table{width:100%;border-collapse:collapse;font-size:13px}
+      .fv-plist th{position:sticky;top:0;background:#f3f5fb;text-align:left;padding:8px;font-size:12px} html.fh-dark .fv-plist th{background:#1b2350}
+      .fv-plist td{padding:8px;border-top:1px solid #e3e7f2;vertical-align:top} html.fh-dark .fv-plist td{border-color:#273066}
+      .fv-pchip{display:inline-block;margin:0 4px 4px 0;padding:2px 8px;border-radius:999px;background:#e6f4ec;color:#1e6b43;font-size:12px;white-space:nowrap}
+      .fv-pnever{color:#b45309;font-weight:600} .fv-pold{color:#c0392b;font-weight:600}
+      .fv-plist .fv-go{white-space:nowrap;padding:6px 10px;font-size:12.5px} .fv-plist .fv-go-m{display:none;margin-top:6px}
+      @media(max-width:700px){.fv-plist .fv-hide-m,.fv-plist .fv-col-go{display:none}.fv-plist .fv-go-m{display:inline-block}}`;
+    document.head.appendChild(st);
+  }
+  const planBox = body.querySelector('#fv-a-plan');
+  const daysSince = (iso) => Math.round((new Date(fvToday() + 'T00:00:00') - new Date(iso + 'T00:00:00')) / 86400000);
+  const monthName = new Date(fvToday() + 'T00:00:00').toLocaleDateString('en-GB', { month: 'long' });
+  const inScope = () => { const rg = body.querySelector('#fv-a-region').value; return allowed.filter(r => !rg || r.region_id === rg); };
+  // who to see first: never inspected, then the longest since the last visit
+  const prio = (a, b) => { const la = lastMap.get(a.id), lb = lastMap.get(b.id); if (!la && !lb) return a.name.localeCompare(b.name); if (!la) return -1; if (!lb) return 1; return la.visit_date < lb.visit_date ? -1 : la.visit_date > lb.visit_date ? 1 : a.name.localeCompare(b.name); };
+  const fillPlan = () => {
+    const list = inScope(), done = list.filter(r => monthMap.has(r.id)).length;
+    const card = (k, n, label, note, c) => `<button type="button" data-plan="${k}" style="--c:${c}" aria-label="${label}: ${n}. Tap to see the riders."><b>${n}</b><span>${label}</span><small>${note}</small></button>`;
+    planBox.innerHTML = lastErr
+      ? '<div class="fv-note" style="grid-column:1/-1">Could not load the visit history, so this month\'s counts are not shown.</div>'
+      : card('all', list.length, 'Total riders', 'In ' + (body.querySelector('#fv-a-region').value ? 'this team' : 'my teams'), '#1E2A6E') +
+        card('done', done, 'Inspected in ' + monthName, 'At least one visit this month', '#1E8A5A') +
+        card('todo', list.length - done, 'Not inspected yet', 'Tap to see who to visit first', '#C0392B');
+    planBox.querySelectorAll('[data-plan]').forEach(b => b.onclick = () => openPlan(b.dataset.plan));
+  };
+  const openPlan = (kind) => {
+    const all = inScope(), list = (kind === 'done' ? all.filter(r => monthMap.has(r.id)) : kind === 'todo' ? all.filter(r => !monthMap.has(r.id)) : all.slice()).sort(prio);
+    const title = kind === 'done' ? 'Inspected in ' + monthName : kind === 'todo' ? 'Not inspected yet in ' + monthName : 'All riders';
+    const row = (r) => {
+      const l = lastMap.get(r.id), mv = monthMap.get(r.id) || [], d = l ? daysSince(l.visit_date) : null;
+      const last = l ? `<span class="${d > 30 ? 'fv-pold' : ''}">${fvFmtDate(l.visit_date)}</span><br><small class="fv-note">${d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'}</small>` : '<span class="fv-pnever">Never inspected</span>';
+      const dates = mv.length ? mv.map(v => `<span class="fv-pchip" title="${escapeHtml((v.visit_type === 'Online' ? 'Online' : 'On-site') + (v.submitted_by_name ? ' · ' + v.submitted_by_name : ''))}">${fvShortDate(v.visit_date)}${v.visit_type === 'Online' ? ' · online' : ''}</span>`).join('') : '<span class="fv-note">—</span>';
+      return `<tr data-name="${escapeHtml((r.name + ' ' + r.emp + ' ' + r.region_name).toLowerCase())}"><td><strong>${escapeHtml(r.name)}</strong><br><small class="fv-note">${escapeHtml(r.emp)}</small><br><button type="button" class="fv-btn ghost fv-go fv-go-m" data-go="${r.id}">Visit ▸</button></td>
+        <td class="fv-hide-m">${escapeHtml(r.region_name)}${r.sub_region_name ? '<br><small class="fv-note">' + escapeHtml(r.sub_region_name) + '</small>' : ''}</td>
+        <td>${last}</td><td>${dates}${mv.length > 1 ? `<br><small class="fv-note">${mv.length} visits this month</small>` : ''}</td>
+        <td class="fv-col-go"><button type="button" class="fv-btn ghost fv-go" data-go="${r.id}">Visit ▸</button></td></tr>`;
+    };
+    openModal(`<h2 style="margin:0 0 4px">${title} <span class="fv-note">(${list.length})</span></h2>
+      <p class="fv-note" style="margin:0">${kind === 'done' ? 'Oldest visit first.' : 'Never inspected first, then the longest since the last visit — visit these first.'} Tap <b>Visit ▸</b> to pick the rider.</p>
+      <input type="search" id="fv-p-q" placeholder="Search name, ID or team…" style="margin-top:10px;width:100%">
+      <div class="fv-plist"><table><thead><tr><th>Rider</th><th class="fv-hide-m">Team</th><th>Last inspected</th><th>This month</th><th class="fv-col-go"></th></tr></thead>
+      <tbody>${list.map(row).join('') || '<tr><td colspan="5" class="fv-note">Nobody here.</td></tr>'}</tbody></table></div>`);
+    const m = document.getElementById('active-modal'); if (!m) return;
+    const md = m.querySelector('.modal'); if (md) { md.style.maxWidth = '880px'; md.style.width = '96vw'; }
+    m.querySelector('#fv-p-q').oninput = (e) => { const q = e.target.value.trim().toLowerCase(); m.querySelectorAll('tbody tr[data-name]').forEach(tr => { tr.style.display = !q || tr.dataset.name.includes(q) ? '' : 'none'; }); };
+    m.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
+      riderId = b.dataset.go; body.querySelector('#fv-a-search').value = ''; fillRiders(); sel.value = riderId; showInfo();
+      closeModal(); const p1 = body.querySelector('#fv-a-p1'); if (p1 && p1.scrollIntoView) p1.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+  body.querySelector('#fv-a-region').addEventListener('change', fillPlan);
+  fillPlan();
   // ---- centre + location
   const cSel = body.querySelector('#fv-a-center'), gBox = body.querySelector('#fv-a-geo');
   let centerId = '';
