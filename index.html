@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- v116 security: the browser may only load code from these places and only send data to them -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' data: blob: https://erdsdvitfvpwlhwiflco.supabase.co wss://erdsdvitfvpwlhwiflco.supabase.co https://script.google.com https://script.googleusercontent.com https://nominatim.openstreetmap.org https://cdn.jsdelivr.net https://cdn.sheetjs.com; worker-src 'self' blob:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+<script>/* v116 frame guard: FieldHub never runs inside another website's page (stops "clickjacking") */
+if (window.top !== window.self) { document.documentElement.style.display = 'none'; try { window.top.location.replace(window.self.location.href); } catch (e) {} }</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FieldHub — Field Operations Portal</title>
 <link rel="manifest" href="manifest.json">
@@ -234,13 +238,13 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script src="offline.js?v=1"></script>
-<script src="app.js?v=99"></script>
+<script src="app.js?v=100"></script>
 <script src="pos.js?v=7"></script>
 <script src="roster-ai.js?v=2"></script>
 <script src="top-performers.js?v=5"></script>
 <script src="assistant.js?v=5"></script>
 <script src="biometric.js?v=1"></script>
-<script src="fuel-sec.js?v=2"></script>
+<script src="fuel-sec.js?v=3"></script>
 <script src="fuel-reimb.js?v=7"></script>
 <script src="acks.js?v=1"></script>
 <script src="ui.js?v=6"></script>
