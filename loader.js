@@ -1,5 +1,5 @@
-// FieldHub — loading screen: the page blurs and the delivery rider (the rider picture) rides round a circle,
-// nose first like the plane in the reference video, with a trail of dots behind him.
+// FieldHub — loading screen: the page blurs; the delivery rider (the rider picture) stays in the middle with his wheels turning,
+// and a ring of dots runs round him.
 // LOOK ONLY: it reads and changes no data.
 //   - page changes: shows only if a page takes longer than a moment; covers only the page area (menu and top bar stay usable);
 //     always leaves by itself after 8 seconds
@@ -10,38 +10,47 @@
   'use strict';
   if (window.__fhLoader) return; window.__fhLoader = true;
 
-  const RIDER = 'data:image/png;base64,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';   // the rider picture (one colour; the colour is set by CSS)
+  const RIDER = 'data:image/png;base64,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';   // the rider picture without its wheels (one colour, set by CSS)
+  // a wheel that turns: tyre, hub and four spokes
+  const WHEEL = '<svg viewBox="-21 -21 42 42" aria-hidden="true"><circle r="17" fill="none" stroke="currentColor" stroke-width="7"/><path d="M0-13.5V13.5M-13.5 0H13.5M-9.5-9.5L9.5 9.5M9.5-9.5L-9.5 9.5" stroke="currentColor" stroke-width="2.6"/><circle r="4.2" fill="currentColor"/></svg>';
 
-  // one rider-on-a-circle drawing, any size
+  // the rider stays in the middle with his wheels turning; a ring of dots runs round him
   function art(S) {
-    const C = S / 2, R = Math.round(S * 0.27), w = Math.round(S * 0.37), h = Math.round(w * 116 / 150);
+    const C = S / 2, R = S * 0.44, w = Math.round(S * 0.5), h = Math.round(w * 116 / 150), wd = w * 0.195;
     let dots = '';
-    for (let k = 0; k < 9; k++) {
-      const a = (-30 - k * 17) * Math.PI / 180, r = Math.max(1.4, S * (0.026 - k * 0.0024)), x = C + R * Math.sin(a), y = C - R * Math.cos(a);
-      dots += '<i class="fhl-dot" style="left:' + (x - r).toFixed(1) + 'px;top:' + (y - r).toFixed(1) + 'px;width:' + (2 * r).toFixed(1) + 'px;height:' + (2 * r).toFixed(1) + 'px;opacity:' + (1 - k * 0.09).toFixed(2) + '"></i>';
+    const N = 16;
+    for (let k = 0; k < N; k++) {
+      const a = -(k / N) * 2 * Math.PI,   // biggest dot leads, the rest trail behind as the ring turns
+       r = Math.max(1.3, S * (0.03 - k * 0.0016)), x = C + R * Math.sin(a), y = C - R * Math.cos(a);
+      dots += '<i class="fhl-dot" style="left:' + (x - r).toFixed(1) + 'px;top:' + (y - r).toFixed(1) + 'px;width:' + (2 * r).toFixed(1) + 'px;height:' + (2 * r).toFixed(1) + 'px;opacity:' + Math.max(0.12, 1 - k * 0.06).toFixed(2) + '"></i>';
     }
-    return '<div class="fhl-art" style="width:' + S + 'px;height:' + S + 'px"><div class="fhl-orbit">' +
-      '<i class="fhl-rider" style="left:' + (C - w / 2).toFixed(1) + 'px;top:' + (C - R - h + Math.round(h * 0.06)).toFixed(1) + 'px;width:' + w + 'px;height:' + h + 'px"></i>' + dots + '</div></div>';
+    const wheel = (cx) => '<i class="fhl-wheel" style="left:' + (cx * w - wd / 2).toFixed(1) + 'px;top:' + (0.824 * h - wd / 2).toFixed(1) + 'px;width:' + wd.toFixed(1) + 'px;height:' + wd.toFixed(1) + 'px">' + WHEEL + '</i>';
+    return '<div class="fhl-art" style="width:' + S + 'px;height:' + S + 'px"><div class="fhl-ring">' + dots + '</div>' +
+      '<div class="fhl-bike" style="left:' + (C - w / 2).toFixed(1) + 'px;top:' + (C - h / 2).toFixed(1) + 'px;width:' + w + 'px;height:' + h + 'px"><i class="fhl-rider"></i>' + wheel(0.25) + wheel(0.7548) + '</div></div>';
   }
 
   const css = document.createElement('style'); css.id = 'fhl-css';
   css.textContent = `
-    .fhl-art{position:relative;--fhl-c:#1E2A6E;flex:0 0 auto}
-    .fhl-orbit{position:absolute;inset:0;animation:fhlSpin 1.6s linear infinite}
-    .fhl-rider{position:absolute;display:block;background:var(--fhl-c);-webkit-mask:url(${RIDER}) center/contain no-repeat;mask:url(${RIDER}) center/contain no-repeat}
+    .fhl-art{position:relative;--fhl-c:#1E2A6E;flex:0 0 auto;color:var(--fhl-c)}
+    .fhl-ring{position:absolute;inset:0;animation:fhlSpin 1.3s linear infinite}
     .fhl-dot{position:absolute;border-radius:50%;background:var(--fhl-c)}
+    .fhl-bike{position:absolute;animation:fhlBob .5s ease-in-out infinite alternate}
+    .fhl-rider{position:absolute;inset:0;display:block;background:var(--fhl-c);-webkit-mask:url(${RIDER}) center/100% 100% no-repeat;mask:url(${RIDER}) center/100% 100% no-repeat}
+    .fhl-wheel{position:absolute;display:block;animation:fhlSpin .45s linear infinite}
+    .fhl-wheel svg{display:block;width:100%;height:100%}
     @keyframes fhlSpin{to{transform:rotate(360deg)}}
+    @keyframes fhlBob{from{transform:translateY(0)}to{transform:translateY(-2px)}}
     #fh-load{position:fixed;z-index:9000;display:none;flex-direction:column;align-items:center;justify-content:center;
       background:rgba(243,245,251,.7);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);opacity:0;transition:opacity .2s ease}
     #fh-load.show{opacity:1}
-    #fh-load b{font-size:17px;color:#151C3F;margin-top:-26px;font-weight:700}
+    #fh-load b{font-size:17px;color:#151C3F;margin-top:8px;font-weight:700}
     html.fh-dark #fh-load:not(.fhl-login){background:rgba(13,18,48,.7)}
     html.fh-dark #fh-load:not(.fhl-login) .fhl-art{--fhl-c:#E0B23B}
     html.fh-dark #fh-load:not(.fhl-login) b{color:#eef1ff}
     #boot-loading .fhl-art{--fhl-c:#ffffff}
     .spinner.fhl-done{border:0!important;width:auto!important;height:auto!important;animation:none!important;display:flex;justify-content:center;background:none!important}
     html.fh-dark .spinner.fhl-done .fhl-art{--fhl-c:#E0B23B}
-    @media (prefers-reduced-motion:reduce){.fhl-orbit{animation-duration:4s}}
+    @media (prefers-reduced-motion:reduce){.fhl-ring,.fhl-wheel{animation-duration:3s}.fhl-bike{animation:none}}
   `;
   document.head.appendChild(css);
 
