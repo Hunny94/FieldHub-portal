@@ -1707,6 +1707,9 @@ async function loadAndShowNotifications(){
   if (isSuperAdmin()) {
     try { const r = await sb.from('password_reset_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending');
       if (r.count) items.push({ id:'pwr-pending', type:'Password reset', title:'Password reset requests', body:`${r.count} request${r.count === 1 ? ' is' : 's are'} waiting — open Team.`, created_at:new Date().toISOString(), read:false, view:'team' }); } catch (_e) {}
+    // v117: someone asked for their account to be deleted -> the Super Admin decides (Settings → Health, Backup & Privacy)
+    try { const d = await sb.from('account_deletion_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending');
+      if (d.count) items.push({ id:'del-pending', type:'Account deletion', title:'Account deletion requests', body:`${d.count} request${d.count === 1 ? ' is' : 's are'} waiting for your decision (disable the login, or reject) — open Settings → Health, Backup & Privacy.`, created_at:new Date().toISOString(), read:false, view:'settings', tab:'health' }); } catch (_e) {}
   }
   try {
     const { data: exn, error: exe } = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).order('created_at', {ascending:false}).limit(20);
@@ -1834,7 +1837,7 @@ function renderNotificationDropdown(bell){
     e.stopPropagation();
     if (t.id === 'notif-readall') { fhNotifMarkRead(state.notifications.map(n => n.id)); updateNotificationBadge(); renderNotificationDropdown(bell); return; }
     if (t.dataset.notifRead) { fhNotifMarkRead([t.dataset.notifRead]); updateNotificationBadge(); const open = keepOpen(); renderNotificationDropdown(bell); return; }
-    if (t.dataset.notifGo) { const n = state.notifications.find(x => x.id === t.dataset.notifGo); if (n) { fhNotifMarkRead([n.id]); updateNotificationBadge(); if (n.view) { dropdown.remove(); try { navigateTo(n.view); } catch (_e) {} } } return; }
+    if (t.dataset.notifGo) { const n = state.notifications.find(x => x.id === t.dataset.notifGo); if (n) { fhNotifMarkRead([n.id]); updateNotificationBadge(); if (n.view) { dropdown.remove(); try { if (n.tab) settingsTab = n.tab; navigateTo(n.view); } catch (_e) {} } } return; }
     if (t.dataset.notifTag) { const id = t.dataset.notifTag, full = dropdown.querySelector('[data-notif-full="' + id + '"]'), ar = dropdown.querySelector('[data-notif-arrow="' + id + '"]'), show = full.style.display === 'none'; full.style.display = show ? 'block' : 'none'; ar.textContent = show ? '▴' : '▾'; }
   };
 
@@ -4415,6 +4418,7 @@ async function renderTeam(){
 }
 
 function regionNamesFor(p){
+  if (p.role === 'super_admin') return 'All regions (whole portal)';   // v117: the Super Admin manages every region
   if (p.role !== 'rider' && p._regionIds && p._regionIds.length){
     return p._regionIds.map(id => state.regions.find(r=>r.id===id)?.name).filter(Boolean).join(', ') || '—';
   }
@@ -4540,10 +4544,11 @@ async function openApproveModal(profileId){
       <div class="form-row" id="ap-designation-row" style="display:none;"><label>Designation (title shown to everyone)</label><select id="ap-designation"></select></div>
       <div class="form-row" id="ap-region-wrap">
         <label>Region(s)</label>
-        <div id="ap-region-single" style="${isMultiRegionRole?'display:none;':''}">
+        <div id="ap-region-all" class="hint" style="${p.role==='super_admin'?'':'display:none;'}padding:8px 10px;border:1px solid var(--line);border-radius:8px">All regions — the Super Admin sees and manages the whole portal.</div>
+        <div id="ap-region-single" style="${isMultiRegionRole||p.role==='super_admin'?'display:none;':''}">
           <select id="ap-region">${singleRegionOptions}</select>
         </div>
-        <div id="ap-region-multi" style="${isMultiRegionRole?'':'display:none;'}">
+        <div id="ap-region-multi" style="${isMultiRegionRole&&p.role!=='super_admin'?'':'display:none;'}">
           <button type="button" class="btn small outline" id="ap-select-all-regions" style="margin-bottom:8px;">Select All Regions</button>
           <div style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px;">${regionChecks}</div>
         </div>
@@ -4576,8 +4581,10 @@ async function openApproveModal(profileId){
 
   document.getElementById('ap-role').onchange = (e) => {
     const multi = ['regional_poc','team_lead','coordinator','inventory_coordinator'].includes(e.target.value);
-    document.getElementById('ap-region-single').style.display = multi ? 'none' : 'block';
-    document.getElementById('ap-region-multi').style.display = multi ? 'block' : 'none';
+    const all = e.target.value === 'super_admin';
+    document.getElementById('ap-region-all').style.display = all ? 'block' : 'none';
+    document.getElementById('ap-region-single').style.display = multi || all ? 'none' : 'block';
+    document.getElementById('ap-region-multi').style.display = multi && !all ? 'block' : 'none';
   };
   document.getElementById('ap-select-all-regions').onclick = () => {
     document.querySelectorAll('.ap-region-check').forEach(cb => cb.checked = true);
@@ -4595,6 +4602,7 @@ async function openApproveModal(profileId){
     const regionIdToSave = isMulti ? (checked[0] || null) : (document.getElementById('ap-region').value || null);
 
     const payload = { role, status, region_id: regionIdToSave };
+    if (role === 'super_admin') delete payload.region_id;   // v117: the Super Admin covers all regions; the stored value is left as it is
     // Only touch designation_id once the designations feature exists (migration_25 run).
     if (state.designations.length) payload.designation_id = document.getElementById('ap-designation').value || null;
     if (canEditCredentials){
@@ -4624,7 +4632,7 @@ async function openApproveModal(profileId){
       if (!checked.length){
         toast('⚠️ No region was checked — this person won\'t be able to see or post anything region-specific until you select at least one region.');
       }
-    } else {
+    } else if (role !== 'super_admin') {
       await sb.from('profile_regions').delete().eq('profile_id', profileId);
     }
     closeModal(); toast('Saved'); renderTeam();
@@ -6206,7 +6214,7 @@ async function generateReport(){
     queryError = error;
     rows = (data||[]).map(p => ({
       'Full Name': p.full_name, 'Employee ID': p.employee_id||'', Role: designationLabel(p),
-      'Mobile Number': toLocalPhone(p.phone)||'', Email: p.email||'', Region: p.regions?.name||'', 'Bike Number': p.bike_number||'',
+      'Mobile Number': toLocalPhone(p.phone)||'', Email: p.email||'', Region: p.role === 'super_admin' ? 'All regions' : (p.regions?.name||''), 'Bike Number': p.bike_number||'',
       'Joined On': p.created_at ? p.created_at.slice(0,10) : ''
     }));
   }
