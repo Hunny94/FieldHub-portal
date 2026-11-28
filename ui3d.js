@@ -85,6 +85,9 @@
   let entranceUntil = 0, lastView = null;
   function entrance() {
     if (!active || performance.now() > entranceUntil) return;
+    // while the rider loading screen still covers the page, wait: the cards fly in the moment it lifts, so you see them arrive
+    const ld = document.getElementById('fh-load');
+    if (ld && ld.classList.contains('show')) { entranceUntil = performance.now() + 2500; clearTimeout(entT); entT = setTimeout(entrance, 80); return; }
     const vh = window.innerHeight;
     const list = [...document.querySelectorAll('#main-content .fh-hero, ' + CARDQ)].filter((el) => !seen.has(el) && !el.parentElement.closest(CARD.join(',')));
     const vw = window.innerWidth, cx = vw / 2, cy = vh / 2, small = vw < 700;
@@ -196,7 +199,8 @@
     const c = document.createElement('div'); c.className = 'card'; c.id = 'fh3d-prof';
     const opt = (v, t, d) => '<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer"><input type="radio" name="fh3d-m" value="' + v + '" style="width:auto;margin-top:3px"><span><b>' + t + '</b><br><small style="opacity:.75">' + d + '</small></span></label>';
     c.innerHTML = '<h3 style="margin-top:0">Display: 3D look</h3><p style="margin:0 0 6px;opacity:.8">Raised 3D cards and a 3D floor on every page, in light and dark mode. Saved on this device only.</p>' +
-      opt('auto', 'Auto (recommended)', 'On, but off by itself on weak phones, data saver or "reduce motion"') + opt('on', 'On', 'Always on') + opt('off', 'Off', 'Plain look, no 3D');
+      opt('auto', 'Auto (recommended)', 'On, but off by itself on weak phones, data saver or "reduce motion"') + opt('on', 'On', 'Always on') + opt('off', 'Off', 'Plain look, no 3D') +
+      '<p style="margin:8px 0 0;font-size:12px;opacity:.6">Look version 114' + (window.fhLoader && window.fhLoader.version ? ' · loader ' + window.fhLoader.version : ' · loader not loaded') + '</p>';
     main.insertBefore(c, main.firstElementChild);
     c.querySelectorAll('input').forEach((i) => { i.checked = i.value === mode(); i.onchange = () => setMode(i.value); });
   }
