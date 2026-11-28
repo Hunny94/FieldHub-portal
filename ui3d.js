@@ -1,15 +1,14 @@
-// FieldHub — immersive 3D look for the WHOLE portal (option C, "lite": no 3D engine, about 15 KB).
-// While it is on, every page uses the night colours of option C: deep navy space, a gold 3D floor, dark glass cards with gold edges.
-// Turning it Off gives back each person's own light or dark choice.
-// LOOK ONLY. It reads nothing from the database and changes nothing: no data, no buttons, no layout sizes.
-//   - every page: a moving 3D floor, light and particles drawn BEHIND the content
-//   - every page: cards rise into place in 3D when the page opens, with deeper shadows
-//   - clickable tiles tilt toward the mouse (phones: a small press); forms and tables never tilt
-//   - every pop-up window opens with a short 3D swing
+// FieldHub — 3D look for the whole portal (light AND dark mode, website AND phone app). About 9 KB, no 3D engine.
+// LOOK ONLY. It reads nothing from the database and changes nothing: no data, no buttons, no layout sizes, no colours of
+// notices or status badges. Light and dark mode both keep working as before; the 3D look follows whichever is chosen.
+//   - every page: a still 3D floor and soft light behind the content (a picture, so it costs nothing while you work)
+//   - every card: raised, with an edge light and layered shadows; cards that open something lift when pointed at
+//   - number tiles and the welcome panel tilt toward the mouse; on phones they press in when tapped
+//   - cards rise into place from depth when a page opens; pop-up windows swing open
 // The sign-in page is not touched (it stays plain and light).
 //
-// Each person can switch it with the "3D" button at the top, or on My Profile: Auto / On / Off (saved on that device only).
-//   Auto = on, except on weak phones, battery/data saver, or when the phone asks for less motion.
+// Each person can switch it: the "3D" button at the top, or My Profile → Display: 3D look (Auto / On / Off), saved on that device.
+//   Auto = on, except on weak phones, data saver, or when the phone asks for less motion.
 // TO REMOVE IT FOR EVERYONE: delete this file (ui3d.js) on GitHub. The portal works exactly as before without it.
 (function () {
   'use strict';
@@ -27,123 +26,75 @@
     return false;
   }
   const enabled = () => mode() === 'on' || (mode() === 'auto' && !weakDevice());
-  const isDark = () => document.documentElement.classList.contains('fh-dark');
   const inApp = () => { try { return document.body.classList.contains('fh-app') && typeof state !== 'undefined' && !!state.user && !!document.querySelector('.main-area #main-content'); } catch (_e) { return false; } };
   const curView = () => { try { return (typeof state !== 'undefined' && state.view) || ''; } catch (_e) { return ''; } };
 
-  // ---------------------------------------------------------------- styles (only while the effect is on)
+  // ---------------------------------------------------------------- the 3D floor: one still picture per theme
+  function floor(line, op) {
+    let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" preserveAspectRatio="none"><defs><linearGradient id="f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".55" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient><mask id="m"><rect width="1200" height="400" fill="url(#f)"/></mask></defs><g mask="url(#m)" stroke="' + line + '" stroke-opacity="' + op + '" stroke-width="1.2" fill="none" vector-effect="non-scaling-stroke">';
+    for (let i = -18; i <= 18; i++) s += '<path d="M600 0 L' + (600 + i * 95) + ' 400" vector-effect="non-scaling-stroke"/>';
+    for (let k = 1; k <= 11; k++) { const y = (400 * (k / 11) * (k / 11)).toFixed(1); s += '<path d="M0 ' + y + ' H1200" vector-effect="non-scaling-stroke"/>'; }
+    return 'url("data:image/svg+xml,' + encodeURIComponent(s + '</g></svg>') + '")';
+  }
+  const FLOOR_LIGHT = floor('#1E2A6E', 0.16), FLOOR_DARK = floor('#E0B23B', 0.42);
+
+  // ---------------------------------------------------------------- styles (only while the 3D look is on)
+  const CARD = ['.card', '.stat-card', '.fv-card2', '.fv-panel', '.ft-card', '.fr-card', '.fh-rowcard'];
+  const sel = (pre, suf) => CARD.map((c) => pre + ' #main-content ' + c + (suf || '')).join(',');
+  const CLICK = ['.stat-card', '.card[onclick]', '.fv-card2[onclick]', '.fh-quick button', '.fh-rowcard'];
+  const clickSel = (pre, suf) => CLICK.map((c) => pre + ' #main-content ' + c + (suf || '')).join(',');
   const css = document.createElement('style'); css.id = 'fh3d-css';
-  const CARDS = '#main-content .card,#main-content .fv-card2,#main-content .fv-panel,#main-content .ft-card,#main-content .fr-card';
-  const DEEP = CARDS.split(',').map((s) => 'body.fh3d-on ' + s).join(',');
-  const DEEPD = CARDS.split(',').map((s) => 'html.fh-dark body.fh3d-on ' + s).join(',');
   css.textContent = `
-    #fh3d-wrap{position:sticky;top:0;height:0;z-index:0;pointer-events:none;display:none}
-    #fh3d-wrap canvas{position:absolute;left:0;top:0;display:block}
-    body.fh3d-on #fh3d-wrap{display:block}
-    body.fh3d-on #main-content{position:relative;z-index:1}
-    ${DEEP}{box-shadow:0 1px 2px rgba(30,42,110,.06),0 12px 30px rgba(30,42,110,.12)}
-    ${DEEPD}{box-shadow:0 0 0 1px rgba(224,178,59,.14),0 16px 40px rgba(0,0,0,.42)}
-    body.fh3d-on .main-area{background:radial-gradient(120% 80% at 50% 0%, #1d2766, #0a0f2e 72%) fixed!important}
-    html.fh-dark body.fh3d-on #main-content .card,html.fh-dark body.fh3d-on #main-content .stat-card,html.fh-dark body.fh3d-on #main-content .fv-card2,html.fh-dark body.fh3d-on #main-content .fv-panel,html.fh-dark body.fh3d-on #main-content .ft-card,html.fh-dark body.fh3d-on #main-content .fr-card,html.fh-dark body.fh3d-on #main-content .fh-rowcard,html.fh-dark body.fh3d-on #main-content .rq-bar,html.fh-dark body.fh3d-on #main-content .fh-qf{background:linear-gradient(160deg, rgba(34,44,104,.86), rgba(16,21,58,.9))!important;border-color:rgba(224,178,59,.24)!important}
-    html.fh-dark body.fh3d-on .modal{background:linear-gradient(160deg, #222c68, #121844)!important;box-shadow:0 0 0 1px rgba(224,178,59,.25),0 30px 80px rgba(0,0,0,.6)!important}
+    body.fh3d-on .main-area{background:${FLOOR_LIGHT} center bottom/100% 46% no-repeat,radial-gradient(55% 45% at 88% 0%,rgba(30,42,110,.12),rgba(30,42,110,0) 70%),radial-gradient(45% 40% at 0% 100%,rgba(224,178,59,.14),rgba(224,178,59,0) 70%),linear-gradient(180deg,#f5f7fd,#e2e7f5)!important}
+    html.fh-dark body.fh3d-on .main-area{background:${FLOOR_DARK} center bottom/100% 46% no-repeat,radial-gradient(55% 45% at 88% 0%,rgba(224,178,59,.20),rgba(224,178,59,0) 70%),radial-gradient(50% 45% at 0% 100%,rgba(80,110,230,.22),rgba(80,110,230,0) 70%),linear-gradient(180deg,#151c50,#0a0f2e)!important}
+    ${sel('body.fh3d-on')}{box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 1px 1px rgba(30,42,110,.07),0 4px 10px -3px rgba(30,42,110,.12),0 18px 36px -12px rgba(30,42,110,.30)!important}
+    ${sel('html.fh-dark body.fh3d-on')}{background:linear-gradient(165deg,#242e6e,#141a4c)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 1px rgba(224,178,59,.10),0 6px 14px -4px rgba(0,0,0,.45),0 22px 44px -14px rgba(0,0,0,.65)!important}
+    html.fh-dark body.fh3d-on .modal{background:linear-gradient(165deg,#242e6e,#121844)!important;box-shadow:0 0 0 1px rgba(224,178,59,.25),0 30px 80px rgba(0,0,0,.6)!important}
+    ${clickSel('body.fh3d-on')}{transition:transform .18s ease,box-shadow .18s ease}
+    @media (hover:hover) and (pointer:fine){
+      ${clickSel('body.fh3d-on', ':hover')}{transform:translateY(-4px)}
+    }
     #fh3d-btn{font-weight:700;letter-spacing:.3px;min-width:44px}
     #fh3d-btn[data-m="off"]{opacity:.6}
-    @media print{#fh3d-wrap{display:none!important}}
   `;
   document.head.appendChild(css);
 
-  // ---------------------------------------------------------------- the moving backdrop (plain 2D canvas, 30 frames a second at most)
-  let wrap = null, cv = null, ctx = null, raf = 0, last = 0, t0 = performance.now(), W = 0, H = 0, dpr = 1, area = null, busyUntil = 0;
-  const rnd = (s) => () => ((s = (s * 16807) % 2147483647) - 1) / 2147483646;
-  const r = rnd(20261128);
-  const dots = Array.from({ length: 46 }, () => ({ x: r(), y: r(), s: 1 + r() * 2.4, v: 0.012 + r() * 0.03, p: r() * 6.28 }));
-  function build() {
-    area = document.querySelector('.main-area'); if (!area) return false;
-    if (!wrap || !wrap.isConnected) {
-      wrap = document.createElement('div'); wrap.id = 'fh3d-wrap'; wrap.setAttribute('aria-hidden', 'true');
-      cv = document.createElement('canvas'); wrap.appendChild(cv); area.insertBefore(wrap, area.firstChild);
-      ctx = cv.getContext('2d');
-    }
-    size(); return !!ctx;
-  }
-  function size() {
-    if (!area || !cv) return;
-    dpr = Math.min(1.5, window.devicePixelRatio || 1);
-    const w = area.clientWidth, h = area.clientHeight;
-    if (w === W && h === H && cv.width) return;
-    W = w; H = h; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + 'px'; cv.style.height = H + 'px';
-  }
-  function draw(now) {
-    const t = (now - t0) / 1000, dark = isDark(), sc = area ? area.scrollTop : 0;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
-    const glow = (x, y, rad, col) => { const g = ctx.createRadialGradient(x, y, 0, x, y, rad); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2); };
-    glow(W * (0.78 + 0.05 * Math.sin(t * 0.21)), H * (0.18 + 0.04 * Math.cos(t * 0.17)), Math.max(W, H) * 0.45, dark ? 'rgba(224,178,59,.22)' : 'rgba(30,42,110,.07)');
-    glow(W * (0.15 + 0.04 * Math.cos(t * 0.19)), H * (0.75 + 0.05 * Math.sin(t * 0.23)), Math.max(W, H) * 0.5, dark ? 'rgba(80,110,230,.18)' : 'rgba(224,178,59,.08)');
-    // the 3D floor: lines run to a vanishing point and slide toward you; scrolling tips the horizon a little
-    const hz = H * 0.52 - Math.min(sc * 0.15, H * 0.2), vx = W / 2 + Math.sin(t * 0.15) * W * 0.04, line = dark ? '224,178,59' : '30,42,110', a0 = dark ? 0.42 : 0.13;
-    ctx.lineWidth = 1;
-    for (let i = -14; i <= 14; i++) {
-      const xb = vx + i * W * 0.11, a = a0 * (1 - Math.abs(i) / 16);
-      const g = ctx.createLinearGradient(0, hz, 0, H); g.addColorStop(0, `rgba(${line},0)`); g.addColorStop(1, `rgba(${line},${a})`);
-      ctx.strokeStyle = g; ctx.beginPath(); ctx.moveTo(vx, hz); ctx.lineTo(xb, H); ctx.stroke();
-    }
-    const sp = (t * 0.18) % 1;
-    for (let k = 0; k < 12; k++) {
-      const z = (k + sp) / 12, y = hz + (H - hz) * z * z;
-      ctx.strokeStyle = `rgba(${line},${(a0 * z).toFixed(3)})`; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
-    ctx.fillStyle = dark ? 'rgba(224,178,59,1)' : 'rgba(30,42,110,1)';
-    for (const d of dots) {
-      const y = (((d.y - t * d.v) % 1) + 1) % 1, x = d.x + 0.01 * Math.sin(t * 0.6 + d.p);
-      ctx.globalAlpha = (dark ? 0.55 : 0.18) * (0.5 + 0.5 * Math.sin(t * 1.3 + d.p)) * Math.min(1, y * 4);
-      ctx.beginPath(); ctx.arc(x * W, y * H, d.s, 0, 6.283); ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-  // while someone types or scrolls, the backdrop holds still, so typing and scrolling stay smooth
-  const typing = () => { const a = document.activeElement; return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable); };
-  function loop(now) {
-    raf = 0;
-    if (!active || document.hidden) return;
-    if (!inApp()) { leave(); return; }
-    if (now - last > 33 && now > busyUntil && !typing()) { last = now; try { size(); draw(now); } catch (_e) { leave(); return; } }
-    raf = requestAnimationFrame(loop);
-  }
-
-  // ---------------------------------------------------------------- cards rise into place when a page opens
+  // ---------------------------------------------------------------- cards rise into place from depth when a page opens
+  const CARDQ = CARD.map((c) => '#main-content ' + c).join(',');
   const seen = new WeakSet();
   let entranceUntil = 0, lastView = null;
   function entrance() {
     if (!active || performance.now() > entranceUntil) return;
-    const list = [...document.querySelectorAll('#main-content .fh-hero, ' + CARDS)].filter((el) => !seen.has(el) && !el.parentElement.closest('.card,.fv-card2,.fv-panel,.ft-card,.fr-card'));
+    const vh = window.innerHeight;
+    const list = [...document.querySelectorAll('#main-content .fh-hero, ' + CARDQ)].filter((el) => !seen.has(el) && !el.parentElement.closest(CARD.join(',')));
     let i = 0;
     for (const el of list) {
       seen.add(el);
-      if (i >= 14 || !el.animate) continue;
-      const b = el.getBoundingClientRect(); if (b.top > window.innerHeight) continue;   // only what is on screen
-      try { el.animate([{ transform: 'perspective(1200px) translateZ(-180px) rotateX(16deg) translateY(34px)', opacity: 0.001 }, { transform: 'perspective(1200px) translateZ(0) rotateX(0deg) translateY(0)', opacity: 1 }],
-        { duration: 700, delay: i * 60, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' }); } catch (_e) {}
+      if (i >= 10 || !el.animate) continue;
+      const b = el.getBoundingClientRect(); if (b.top > vh || b.height > vh * 0.7) continue;   // only what is on screen, and not huge tables
+      try { el.animate([{ transform: 'perspective(1200px) translateZ(-120px) rotateX(12deg) translateY(26px)', opacity: 0.25 }, { transform: 'perspective(1200px) translateZ(0) rotateX(0) translateY(0)', opacity: 1 }],
+        { duration: 520, delay: i * 55, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' }); } catch (_e) {}
       i++;
     }
   }
   let entT = null;
   const mo = new MutationObserver(() => {
     const v = curView();
-    if (v !== lastView) { lastView = v; entranceUntil = performance.now() + 1800; if (tiltEl) untilt(); }
-    clearTimeout(entT); entT = setTimeout(entrance, 40);
+    if (v !== lastView) { lastView = v; entranceUntil = performance.now() + 1800; untilt(); }
+    else if (performance.now() > entranceUntil) return;               // nothing to do between page changes
+    clearTimeout(entT); entT = setTimeout(entrance, 60);
   });
-  // pop-up windows swing open
-  const mo2 = new MutationObserver((recs) => {
+  const mo2 = new MutationObserver((recs) => {   // pop-up windows swing open
     if (!active) return;
     for (const rc of recs) for (const n of rc.addedNodes) {
       if (n.nodeType !== 1 || !n.classList || !n.classList.contains('modal-overlay')) continue;
       const m = n.querySelector('.modal'); if (!m || !m.animate) continue;
-      try { m.animate([{ transform: 'perspective(1200px) rotateX(-10deg) translateY(18px) scale(.96)', opacity: 0.001 }, { transform: 'none', opacity: 1 }], { duration: 320, easing: 'cubic-bezier(.2,.8,.2,1)' }); } catch (_e) {}
+      try { m.animate([{ transform: 'perspective(1200px) rotateX(-10deg) translateY(18px) scale(.96)', opacity: 0.2 }, { transform: 'none', opacity: 1 }], { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' }); } catch (_e) {}
     }
   });
 
-  // ---------------------------------------------------------------- tiles that open something tilt toward the mouse (phones: a small press)
-  const TILT = '#main-content .stat-card, #main-content .fh-hero, #main-content .card[onclick], #main-content .fv-card2[onclick]';
+  // ---------------------------------------------------------------- number tiles and the welcome panel tilt toward the mouse (phones: press in)
+  const TILT = '#main-content .stat-card, #main-content .fh-hero';
   const fine = () => window.matchMedia && matchMedia('(hover: hover) and (pointer: fine)').matches;
   let tiltEl = null;
   function untilt() { if (tiltEl) { tiltEl.style.transform = ''; tiltEl.style.transition = ''; tiltEl = null; } }
@@ -152,108 +103,72 @@
     const el = e.target && e.target.closest ? e.target.closest(TILT) : null;
     if (tiltEl && tiltEl !== el) untilt();
     if (!el) return;
-    const b = el.getBoundingClientRect(); if (b.width > 900) return;       // wide panels stay flat
-    const px = (e.clientX - b.left) / b.width - 0.5, py = (e.clientY - b.top) / b.height - 0.5;
-    const big = el.classList.contains('fh-hero') ? 0.35 : 1;
+    const b = el.getBoundingClientRect(), px = (e.clientX - b.left) / b.width - 0.5, py = (e.clientY - b.top) / b.height - 0.5;
+    const k = el.classList.contains('fh-hero') ? 0.35 : 1;
     el.style.transition = 'transform .12s ease-out';
-    el.style.transform = `perspective(900px) rotateX(${(-py * 9 * big).toFixed(2)}deg) rotateY(${(px * 11 * big).toFixed(2)}deg) translateY(${(-4 * big).toFixed(1)}px)`;
+    el.style.transform = `perspective(900px) rotateX(${(-py * 10 * k).toFixed(2)}deg) rotateY(${(px * 12 * k).toFixed(2)}deg) translateY(${(-5 * k).toFixed(1)}px)`;
     tiltEl = el;
   }
   function onDown(e) {
     if (!active || fine()) return;
-    const el = e.target && e.target.closest ? e.target.closest('#main-content .stat-card, #main-content .card[onclick]') : null;
+    const el = e.target && e.target.closest ? e.target.closest(CLICK.map((c) => '#main-content ' + c).join(',')) : null;
     if (!el || !el.animate) return;
-    try { el.animate([{ transform: 'perspective(700px) scale(1)' }, { transform: 'perspective(700px) translateZ(-24px) scale(.98)' }, { transform: 'perspective(700px) scale(1)' }], { duration: 260, easing: 'ease-out' }); } catch (_e) {}
-  }
-
-  // ---------------------------------------------------------------- night colours while the 3D look is on
-  // The portal asks fhTheme() which colours to use; while 3D is on the answer is "dark". The person's own choice is kept and comes back when 3D is turned off.
-  const night = () => enabled() && document.body.classList.contains('fh-app');
-  function hookTheme() {
-    if (typeof window.fhTheme === 'function' && !window.fhTheme.__fh3d) {
-      const o = window.fhTheme; const w = function () { return night() ? 'dark' : o.apply(this, arguments); }; w.__fh3d = true; window.fhTheme = w;
-    }
-    if (typeof window.fhToggleTheme === 'function' && !window.fhToggleTheme.__fh3d) {
-      const o = window.fhToggleTheme;
-      const w = function () { if (night()) { try { toast('The 3D look uses night colours. Turn 3D Off (top 3D button or My Profile) to use light mode.'); } catch (_e) {} return; } return o.apply(this, arguments); };
-      w.__fh3d = true; window.fhToggleTheme = w;
-    }
-  }
-  hookTheme();
-  let themed = null;
-  function applyTheme() {
-    const want = night();
-    if (themed === want) return; themed = want;
-    try { if (typeof window.fhApplyTheme === 'function') window.fhApplyTheme(); } catch (_e) {}
-    // charts paint their own colours, so a page with charts is drawn again
-    try { if (document.querySelector('#main-content .js-plotly-plot') && typeof state !== 'undefined' && state.view && typeof navigateTo === 'function') navigateTo(state.view); } catch (_e) {}
+    try { el.animate([{ transform: 'perspective(700px) translateZ(0)' }, { transform: 'perspective(700px) translateZ(-26px)' }, { transform: 'perspective(700px) translateZ(0)' }], { duration: 240, easing: 'ease-out' }); } catch (_e) {}
   }
 
   // ---------------------------------------------------------------- switching on and off
   let active = false;
   function enter() {
     if (!enabled() || !inApp()) { leave(); return; }
-    if (!build()) return;
-    applyTheme();
     document.body.classList.add('fh3d-on');
     if (!active) {
-      active = true; t0 = performance.now() - 8000;
+      active = true;
       const mc = document.getElementById('main-content'); if (mc) mo.observe(mc, { childList: true, subtree: true });
       mo2.observe(document.body, { childList: true });
       lastView = curView(); entranceUntil = performance.now() + 1800; entrance();
     }
-    size();
-    if (!raf) raf = requestAnimationFrame(loop);
   }
   function leave() {
     if (active) { mo.disconnect(); mo2.disconnect(); }
     active = false;
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
     document.body.classList.remove('fh3d-on');
     untilt();
-    applyTheme();
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && active && !raf) raf = requestAnimationFrame(loop); });
-  window.addEventListener('resize', () => { if (active) size(); });
-  document.addEventListener('scroll', () => { busyUntil = performance.now() + 180; }, { passive: true, capture: true });
   document.addEventListener('pointermove', onMove, { passive: true });
   document.addEventListener('pointerdown', onDown, { passive: true });
   document.addEventListener('mouseleave', untilt);
-  // signs in and out, and the 3D button, are noticed here
-  setInterval(() => { try { hookTheme(); if (inApp() && enabled()) { if (!active) enter(); } else if (active) leave(); else applyTheme(); } catch (_e) {} }, 1200);
+  // signs in and out are noticed here (a cheap check, no drawing)
+  setInterval(() => { try { if (inApp() && enabled()) { if (!active) enter(); } else if (active) leave(); } catch (_e) {} }, 1200);
 
   // ---------------------------------------------------------------- the 3D button at the top (Auto / On / Off)
   const LABEL = { auto: '3D Auto', on: '3D On', off: '3D Off' };
+  function setMode(next) {
+    try { localStorage.setItem(KEY, next); } catch (_e) {}
+    const b = document.getElementById('fh3d-btn'); if (b) { b.dataset.m = next; b.title = LABEL[next] + ' — tap to change'; b.setAttribute('aria-label', b.title); }
+    document.querySelectorAll('#fh3d-prof input').forEach((x) => { x.checked = x.value === next; });
+    leave(); if (next !== 'off') enter();
+    try { toast(next === 'auto' ? '3D look: Auto (off on weak phones)' : next === 'on' ? '3D look: On' : '3D look: Off'); } catch (_e) {}
+  }
   function button() {
     if (document.getElementById('fh3d-btn')) return;
     const ref = document.getElementById('ribbon-theme'); if (!ref || !ref.parentNode) return;
     const b = document.createElement('button'); b.id = 'fh3d-btn'; b.type = 'button'; b.className = ref.className; b.textContent = '3D';
-    const paint = () => { const m = mode(); b.dataset.m = m; b.title = LABEL[m] + ' — tap to change'; b.setAttribute('aria-label', b.title); };
-    b.onclick = () => {
-      const next = { auto: 'on', on: 'off', off: 'auto' }[mode()];
-      try { localStorage.setItem(KEY, next); } catch (_e) {}
-      paint(); leave(); if (next !== 'off') enter();
-      document.querySelectorAll('#fh3d-prof input').forEach((x) => { x.checked = x.value === next; });
-      const msg = next === 'auto' ? '3D look: Auto (off on weak phones)' : next === 'on' ? '3D look: On' : '3D look: Off';
-      try { toast(msg); } catch (_e) {}
-    };
-    paint(); ref.parentNode.insertBefore(b, ref);
+    const m = mode(); b.dataset.m = m; b.title = LABEL[m] + ' — tap to change'; b.setAttribute('aria-label', b.title);
+    b.onclick = () => setMode({ auto: 'on', on: 'off', off: 'auto' }[mode()]);
+    ref.parentNode.insertBefore(b, ref);
   }
   setInterval(button, 2000); button();
 
-  // ---------------------------------------------------------------- the same switch on the My Profile page ("Display" card)
+  // ---------------------------------------------------------------- the same switch on My Profile ("Display" card)
   function profileCard() {
     if (curView() !== 'myprofile' || document.getElementById('fh3d-prof')) return;
     const main = document.getElementById('main-content'); if (!main || !main.firstElementChild) return;
     const c = document.createElement('div'); c.className = 'card'; c.id = 'fh3d-prof';
     const opt = (v, t, d) => '<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer"><input type="radio" name="fh3d-m" value="' + v + '" style="width:auto;margin-top:3px"><span><b>' + t + '</b><br><small style="opacity:.75">' + d + '</small></span></label>';
-    c.innerHTML = '<h3 style="margin-top:0">Display: 3D look</h3><p style="margin:0 0 6px;opacity:.8">Night colours, a moving 3D floor and 3D cards on every page. Saved on this device only.</p>' +
-      opt('auto', 'Auto (recommended)', 'On, but off by itself on weak phones, data saver or "reduce motion"') + opt('on', 'On', 'Always on') + opt('off', 'Off', 'Your normal light or dark look, no 3D');
+    c.innerHTML = '<h3 style="margin-top:0">Display: 3D look</h3><p style="margin:0 0 6px;opacity:.8">Raised 3D cards and a 3D floor on every page, in light and dark mode. Saved on this device only.</p>' +
+      opt('auto', 'Auto (recommended)', 'On, but off by itself on weak phones, data saver or "reduce motion"') + opt('on', 'On', 'Always on') + opt('off', 'Off', 'Plain look, no 3D');
     main.insertBefore(c, main.firstElementChild);
-    c.querySelectorAll('input').forEach((i) => {
-      i.checked = i.value === mode();
-      i.onchange = () => { try { localStorage.setItem(KEY, i.value); } catch (_e) {} const b = document.getElementById('fh3d-btn'); if (b) { b.dataset.m = i.value; b.title = LABEL[i.value] + ' — tap to change'; } leave(); if (i.value !== 'off') enter(); try { toast('3D look: ' + LABEL[i.value].slice(3)); } catch (_e) {} };
-    });
+    c.querySelectorAll('input').forEach((i) => { i.checked = i.value === mode(); i.onchange = () => setMode(i.value); });
   }
   setInterval(profileCard, 800);
 })();
