@@ -1,4 +1,4 @@
-// FieldHub — page loading screen: the page blurs and a delivery rider rides with a trail of dots behind him.
+// FieldHub — page loading screen: the page blurs and a delivery rider rides round and round a circle, with a trail of dots behind him.
 // LOOK ONLY: it reads and changes no data. It shows only when a page takes longer than a moment to load,
 // covers only the page area (the menu and top bar stay usable), and always goes away by itself after 8 seconds.
 // At sign-in it says "Logging you in" until the first page is ready (or the sign-in shows an error).
@@ -25,8 +25,11 @@
     <g class="fhl-wheel" style="transform-origin:104px 66px"><circle cx="104" cy="66" r="11" class="fhl-tyre"/><path d="M104 57v18M95 66h18" class="fhl-spoke"/></g>
     <path d="M14 80h104" class="fhl-road"/>
   </svg>`;
-  // the trail of dots rises behind the rider, like the trail behind a plane
-  const DOTS = [[60, 104, 3], [44, 96, 3.6], [31, 83, 4.2], [22, 66, 4.8], [18, 47, 5.4], [18, 26, 6]];
+  // the rider rides round a circle (centre 90,90, radius R); the dots follow behind him on the same circle, getting smaller
+  const R = 62, C = 118;   // the box is big enough that the rider never leaves it, even upside down at the bottom
+  const DOTS = [[-34, 6, 1], [-48, 5.2, .85], [-62, 4.4, .7], [-76, 3.7, .55], [-90, 3.1, .42], [-104, 2.6, .3]].map(([a, r, o]) => {
+    const t = a * Math.PI / 180; return [C + R * Math.sin(t), C - R * Math.cos(t), r, o];
+  });
 
   const css = document.createElement('style'); css.id = 'fhl-css';
   css.textContent = `
@@ -34,8 +37,11 @@
       background:rgba(243,245,251,.62);-webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px);opacity:0;transition:opacity .22s ease}
     #fh-load.show{opacity:1}
     html.fh-dark #fh-load:not(.fhl-login){background:rgba(13,18,48,.62)}
-    #fh-load .fhl-art{position:relative;width:200px;height:120px}
-    #fh-load .fhl-rider{position:absolute;left:66px;top:30px;width:130px;height:86px;animation:fhlBob .45s ease-in-out infinite alternate;overflow:visible}
+    #fh-load .fhl-art{position:relative;width:236px;height:236px;margin:-20px 0 0}
+    #fh-load .fhl-track{position:absolute;left:56px;top:56px;width:124px;height:124px;border-radius:50%;border:2px dashed rgba(30,42,110,.18);box-sizing:border-box}
+    #fh-load .fhl-orbit{position:absolute;inset:0;animation:fhlSpin 1.9s linear infinite}
+    #fh-load .fhl-rider{position:absolute;left:79px;top:8px;width:78px;height:52px;overflow:visible}
+    #fh-load .fhl-road{display:none}
     #fh-load .fhl-fill{fill:#1E2A6E}
     #fh-load .fhl-stroke{fill:none;stroke:#1E2A6E;stroke-width:6;stroke-linecap:round;stroke-linejoin:round}
     #fh-load .fhl-cut{stroke:rgba(255,255,255,.55);stroke-width:2.5;fill:none}
@@ -44,15 +50,13 @@
     #fh-load .fhl-spoke{stroke:#1E2A6E;stroke-width:2.5}
     #fh-load .fhl-wheel{animation:fhlSpin .5s linear infinite}
     #fh-load .fhl-road{stroke:#1E2A6E;stroke-width:2;stroke-dasharray:10 9;opacity:.35;animation:fhlRoad .4s linear infinite}
-    #fh-load .fhl-dot{position:absolute;border-radius:50%;background:#1E2A6E;animation:fhlDot 1.2s ease-in-out infinite}
+    #fh-load .fhl-dot{position:absolute;border-radius:50%;background:#1E2A6E}
     html.fh-dark #fh-load:not(.fhl-login) .fhl-fill,html.fh-dark #fh-load:not(.fhl-login) .fhl-dot{fill:#E0B23B;background:#E0B23B}
     html.fh-dark #fh-load:not(.fhl-login) .fhl-stroke,html.fh-dark #fh-load:not(.fhl-login) .fhl-tyre,html.fh-dark #fh-load:not(.fhl-login) .fhl-spoke,html.fh-dark #fh-load:not(.fhl-login) .fhl-road{stroke:#E0B23B}
-    #fh-load b{font-size:17px;color:#151C3F;margin-top:6px} #fh-load span{font-size:13px;color:#5d6688}
-    html.fh-dark #fh-load:not(.fhl-login) b{color:#eef1ff} html.fh-dark #fh-load:not(.fhl-login) span{color:#a9b3dc}
-    @keyframes fhlBob{from{transform:translateY(0)}to{transform:translateY(-3px)}}
+    #fh-load b{font-size:17px;color:#151C3F;margin-top:10px}
+    html.fh-dark #fh-load:not(.fhl-login) b{color:#eef1ff} html.fh-dark #fh-load:not(.fhl-login) .fhl-track{border-color:rgba(224,178,59,.25)}
     @keyframes fhlSpin{to{transform:rotate(360deg)}}
     @keyframes fhlRoad{to{stroke-dashoffset:-19}}
-    @keyframes fhlDot{0%,100%{opacity:.2;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
     @media (prefers-reduced-motion:reduce){#fh-load *{animation:none!important}}
   `;
   document.head.appendChild(css);
@@ -61,7 +65,7 @@
   function build() {
     if (el && el.isConnected) return el;
     el = document.createElement('div'); el.id = 'fh-load'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
-    el.innerHTML = '<div class="fhl-art">' + RIDER + DOTS.map((d, i) => '<i class="fhl-dot" style="left:' + (d[0] - d[2]) + 'px;top:' + (d[1] - d[2]) + 'px;width:' + (d[2] * 2) + 'px;height:' + (d[2] * 2) + 'px;animation-delay:' + (i * 0.14).toFixed(2) + 's"></i>').join('') + '</div><b></b><span></span>';
+    el.innerHTML = '<div class="fhl-art"><div class="fhl-track"></div><div class="fhl-orbit">' + RIDER + DOTS.map((d) => '<i class="fhl-dot" style="left:' + (d[0] - d[2]).toFixed(1) + 'px;top:' + (d[1] - d[2]).toFixed(1) + 'px;width:' + (d[2] * 2) + 'px;height:' + (d[2] * 2) + 'px;opacity:' + d[3] + '"></i>').join('') + '</div></div><b></b>';
     document.body.appendChild(el); return el;
   }
   let showT = null, hideT = null, maxT = null, shownAt = 0, kind = '';
@@ -77,7 +81,7 @@
     const go = () => {
       build(); kind = opts.kind || 'page';
       el.classList.toggle('fhl-login', kind === 'login');
-      el.querySelector('b').textContent = title; el.querySelector('span').textContent = sub;
+      el.querySelector('b').textContent = title;
       place(kind === 'login');
       el.style.display = 'flex'; void el.offsetWidth; el.classList.add('show'); shownAt = performance.now();
       maxT = setTimeout(hideNow, opts.max || 8000);
@@ -106,7 +110,7 @@
       try { orig.apply(this, arguments); } finally {
         try {
           if (kind === 'login') { if (!on && document.body.classList.contains('fh-app')) hide(); }
-          else if (on) show('Loading ' + label(), 'Your rider is on the way…', { delay: 300 });
+          else if (on) show('Loading ' + label(), '', { delay: 300 });
           else hide();
         } catch (_e) {}
       }
@@ -117,7 +121,7 @@
 
   // sign-in: "Logging you in" until the first page is ready; an error message takes it away at once
   document.addEventListener('submit', (e) => {
-    if (e.target && e.target.id === 'login-form') show('Logging you in', 'Getting your dashboard ready', { kind: 'login', max: 25000 });
+    if (e.target && e.target.id === 'login-form') show('Logging you in', '', { kind: 'login', max: 25000 });
   }, true);
   function hookAuth() {
     if (typeof window.showAuthMessage !== 'function' || window.showAuthMessage.__fhl) return;
