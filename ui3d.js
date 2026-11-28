@@ -3,8 +3,9 @@
 // notices or status badges. Light and dark mode both keep working as before; the 3D look follows whichever is chosen.
 //   - every page: a still 3D floor and soft light behind the content (a picture, so it costs nothing while you work)
 //   - every card: raised, with an edge light and layered shadows; cards that open something lift when pointed at
-//   - number tiles and the welcome panel tilt toward the mouse; on phones they press in when tapped
-//   - cards rise into place from depth when a page opens; pop-up windows swing open
+//   - cards tilt toward the mouse (wide panels and tables stay still); on phones tiles press in when tapped
+//   - when a page opens, its cards fly in from 3D space into place (like option C); pop-up windows swing open
+//   - buttons are raised and press in, typing boxes are set into the page, big numbers and the page title have depth
 // The sign-in page is not touched (it stays plain and light).
 //
 // Each person can switch it: the "3D" button at the top, or My Profile → Display: 3D look (Auto / On / Off), saved on that device.
@@ -54,6 +55,25 @@
     @media (hover:hover) and (pointer:fine){
       ${clickSel('body.fh3d-on', ':hover')}{transform:translateY(-4px)}
     }
+    /* buttons are raised and press in */
+    body.fh3d-on .main-area :is(.btn,.fv-btn,.btn-primary,.btn-secondary),body.fh3d-on .modal :is(.btn,.fv-btn,.btn-primary,.btn-secondary){box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 3px 0 rgba(20,28,80,.22),0 6px 14px -4px rgba(20,28,80,.35);transition:transform .12s ease,box-shadow .12s ease}
+    body.fh3d-on .main-area :is(.btn,.fv-btn,.btn-primary,.btn-secondary):active,body.fh3d-on .modal :is(.btn,.fv-btn,.btn-primary,.btn-secondary):active{transform:translateY(2px);box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 1px 0 rgba(20,28,80,.22),0 2px 6px -2px rgba(20,28,80,.3)}
+    @media (hover:hover) and (pointer:fine){body.fh3d-on .main-area :is(.btn,.fv-btn,.btn-primary,.btn-secondary):hover,body.fh3d-on .modal :is(.btn,.fv-btn,.btn-primary,.btn-secondary):hover{transform:translateY(-1px)}}
+    /* boxes you type in are pressed into the page */
+    body.fh3d-on .main-area :is(input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea),body.fh3d-on .modal :is(input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea){box-shadow:inset 0 2px 4px rgba(20,28,80,.10),inset 0 1px 1px rgba(20,28,80,.08)}
+    /* big numbers stand out, small icons float */
+    body.fh3d-on #main-content :is(.stat-number,.fh-num,.fr-big){text-shadow:0 1px 0 rgba(255,255,255,.6),0 3px 6px rgba(20,28,80,.22)}
+    html.fh-dark body.fh3d-on #main-content :is(.stat-number,.fh-num,.fr-big){text-shadow:0 2px 0 rgba(0,0,0,.35),0 6px 14px rgba(0,0,0,.45)}
+    body.fh3d-on #main-content .stat-card .sico{animation:fh3dFloat 3.2s ease-in-out infinite;box-shadow:0 6px 12px -4px rgba(20,28,80,.35)}
+    body.fh3d-on #main-content .stat-card:nth-child(2) .sico{animation-delay:-.8s} body.fh3d-on #main-content .stat-card:nth-child(3) .sico{animation-delay:-1.6s} body.fh3d-on #main-content .stat-card:nth-child(4) .sico{animation-delay:-2.4s}
+    @keyframes fh3dFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+    /* table headers and the page title get depth */
+    body.fh3d-on #main-content thead th{box-shadow:inset 0 -2px 0 rgba(20,28,80,.10)}
+    body.fh3d-on #view-title{text-shadow:0 2px 0 rgba(255,255,255,.7),0 4px 10px rgba(20,28,80,.18)}
+    html.fh-dark body.fh3d-on #view-title{text-shadow:0 2px 0 rgba(0,0,0,.35),0 6px 14px rgba(0,0,0,.4)}
+    /* the open menu item is raised */
+    body.fh3d-on .sidebar :is(.active,.nav-link.active,[aria-current]){box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 4px 12px -2px rgba(0,0,0,.35)}
+    @media (prefers-reduced-motion:reduce){body.fh3d-on #main-content .stat-card .sico{animation:none}}
     #fh3d-btn{font-weight:700;letter-spacing:.3px;min-width:44px}
     #fh3d-btn[data-m="off"]{opacity:.6}
   `;
@@ -67,13 +87,22 @@
     if (!active || performance.now() > entranceUntil) return;
     const vh = window.innerHeight;
     const list = [...document.querySelectorAll('#main-content .fh-hero, ' + CARDQ)].filter((el) => !seen.has(el) && !el.parentElement.closest(CARD.join(',')));
+    const vw = window.innerWidth, cx = vw / 2, cy = vh / 2, small = vw < 700;
     let i = 0;
     for (const el of list) {
       seen.add(el);
-      if (i >= 10 || !el.animate) continue;
-      const b = el.getBoundingClientRect(); if (b.top > vh || b.height > vh * 0.7) continue;   // only what is on screen, and not huge tables
-      try { el.animate([{ transform: 'perspective(1200px) translateZ(-120px) rotateX(12deg) translateY(26px)', opacity: 0.25 }, { transform: 'perspective(1200px) translateZ(0) rotateX(0) translateY(0)', opacity: 1 }],
-        { duration: 520, delay: i * 55, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' }); } catch (_e) {}
+      if (i >= 14 || !el.animate) continue;
+      const b = el.getBoundingClientRect(); if (b.top > vh) continue;          // only what is on screen
+      let from;
+      if (b.height > vh * 0.7) from = 'perspective(1400px) translateZ(-160px) rotateX(10deg) translateY(30px)';   // big tables: a calm rise
+      else {
+        // like option C: each panel starts out in space, away from the middle and tipped, then flies into its place
+        const dx = ((b.left + b.width / 2) - cx) * (small ? 0.25 : 0.45), dy = ((b.top + b.height / 2) - cy) * 0.35;
+        const ry = Math.max(-28, Math.min(28, -dx / 14)), rx = Math.max(-20, Math.min(20, dy / 12));
+        from = 'perspective(1400px) translate3d(' + dx.toFixed(0) + 'px,' + (dy + 40).toFixed(0) + 'px,-' + (small ? 260 : 420) + 'px) rotateY(' + ry.toFixed(1) + 'deg) rotateX(' + rx.toFixed(1) + 'deg)';
+      }
+      try { el.animate([{ transform: from, opacity: 0.15 }, { transform: 'perspective(1400px) translate3d(0,0,0) rotateY(0) rotateX(0)', opacity: 1 }],
+        { duration: 850, delay: i * 70, easing: 'cubic-bezier(.16,1,.3,1)', fill: 'backwards' }); } catch (_e) {}
       i++;
     }
   }
@@ -94,7 +123,7 @@
   });
 
   // ---------------------------------------------------------------- number tiles and the welcome panel tilt toward the mouse (phones: press in)
-  const TILT = '#main-content .stat-card, #main-content .fh-hero';
+  const TILT = '#main-content .stat-card, #main-content .fh-hero, ' + CARD.map((c) => '#main-content ' + c).join(', ');
   const fine = () => window.matchMedia && matchMedia('(hover: hover) and (pointer: fine)').matches;
   let tiltEl = null;
   function untilt() { if (tiltEl) { tiltEl.style.transform = ''; tiltEl.style.transition = ''; tiltEl = null; } }
@@ -103,8 +132,9 @@
     const el = e.target && e.target.closest ? e.target.closest(TILT) : null;
     if (tiltEl && tiltEl !== el) untilt();
     if (!el) return;
-    const b = el.getBoundingClientRect(), px = (e.clientX - b.left) / b.width - 0.5, py = (e.clientY - b.top) / b.height - 0.5;
-    const k = el.classList.contains('fh-hero') ? 0.35 : 1;
+    const b = el.getBoundingClientRect(); if (b.width > 760 || b.height > 520) { return; }   // wide panels and tables stay still
+    const px = (e.clientX - b.left) / b.width - 0.5, py = (e.clientY - b.top) / b.height - 0.5;
+    const k = el.classList.contains('fh-hero') ? 0.35 : el.classList.contains('stat-card') ? 1 : 0.6;
     el.style.transition = 'transform .12s ease-out';
     el.style.transform = `perspective(900px) rotateX(${(-py * 10 * k).toFixed(2)}deg) rotateY(${(px * 12 * k).toFixed(2)}deg) translateY(${(-5 * k).toFixed(1)}px)`;
     tiltEl = el;
@@ -112,7 +142,7 @@
   function onDown(e) {
     if (!active || fine()) return;
     const el = e.target && e.target.closest ? e.target.closest(CLICK.map((c) => '#main-content ' + c).join(',')) : null;
-    if (!el || !el.animate) return;
+    if (!el || !el.animate || e.target.closest('input,select,textarea')) return;
     try { el.animate([{ transform: 'perspective(700px) translateZ(0)' }, { transform: 'perspective(700px) translateZ(-26px)' }, { transform: 'perspective(700px) translateZ(0)' }], { duration: 240, easing: 'ease-out' }); } catch (_e) {}
   }
 
