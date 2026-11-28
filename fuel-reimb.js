@@ -75,8 +75,8 @@
   window.frNavViews = function () {
     if (typeof state === 'undefined' || !state.profile) return [];
     const v = [];
-    if (state.profile.role === 'super_admin') v.push('fr_daily', 'fr_monthly', 'fr_people', 'fr_bikes', 'fr_settings');
-    else if (window.__frAcc) { v.push('fr_daily', 'fr_people'); if (window.__frAcc.can_enter) v.push('fr_monthly'); }
+    if (state.profile.role === 'super_admin') v.push('fr_daily', 'fr_monthly', 'fr_review', 'fr_people', 'fr_bikes', 'fr_settings');
+    else if (window.__frAcc) { v.push('fr_daily'); if (window.__frAcc.can_enter) v.push('fr_monthly'); if (window.__frAcc.can_review || window.__frAcc.can_approve) v.push('fr_review'); v.push('fr_people'); }
     if (window.__frMe) v.unshift('fr_my');
     return v;
   };
@@ -178,6 +178,7 @@
     if (view === 'fr_daily') return pageDaily(main);
     if (view === 'fr_monthly') return pageMonthly(main);
     if (view === 'fr_bikes') return pageBikes(main);
+    if (view === 'fr_review') return pageReview(main);
   };
 
   // =====================================================================================
@@ -312,18 +313,19 @@
     const ROLE = { team_lead: 'Area Incharge', regional_poc: 'Regional POC', admin: 'Admin', coordinator: 'Coordinator', super_admin: 'Super Admin', inventory_coordinator: 'Inventory Coordinator' };
     const yes = (b) => b ? '✓' : '–';
     body.innerHTML = `<div class="fr-tb"><button class="fv-btn" id="ac-add" type="button">+ Give access</button><button class="fv-btn ghost" id="ac-new" type="button">+ Create Fuel login (new person)</button><span class="fv-note">Area Incharges, Regional Leads, Admin Officers and the courier manager only see the regions and groups you tick here.</span></div>
-      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Title</th><th>Regions</th><th>Groups</th><th>Review</th><th>Enter for others</th><th>Request people</th><th></th></tr></thead><tbody>
-      ${acc.map(a => { const s = byId[a.user_id] || {}; return `<tr><td>${h(s.full_name || '(not active)')}</td><td>${h(a.title || ROLE[s.role] || s.role || '')}</td><td>${h(a.regions.map(r => nm(FR.d.regions, r)).filter(Boolean).join(', ') || '–')}</td><td>${h(a.groups.length ? a.groups.map(g => nm(FR.d.groups, g)).filter(Boolean).join(', ') : 'All')}</td><td>${yes(a.can_review)}</td><td>${yes(a.can_enter)}</td><td>${yes(a.can_request)}</td><td style="text-align:right"><button class="fv-btn ghost" data-ed="${h(a.user_id)}" type="button">Edit</button></td></tr>`; }).join('') || '<tr><td colspan="8" class="fr-empty">Nobody has access yet.</td></tr>'}
+      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Title</th><th>Regions</th><th>Groups</th><th>Review</th><th>Approve</th><th>Enter for others</th><th>Request people</th><th></th></tr></thead><tbody>
+      ${acc.map(a => { const s = byId[a.user_id] || {}; return `<tr><td>${h(s.full_name || '(not active)')}</td><td>${h(a.title || ROLE[s.role] || s.role || '')}</td><td>${h(a.regions.map(r => nm(FR.d.regions, r)).filter(Boolean).join(', ') || '–')}</td><td>${h(a.groups.length ? a.groups.map(g => nm(FR.d.groups, g)).filter(Boolean).join(', ') : 'All')}</td><td>${yes(a.can_review)}</td><td>${yes(a.can_approve)}</td><td>${yes(a.can_enter)}</td><td>${yes(a.can_request)}</td><td style="text-align:right"><button class="fv-btn ghost" data-ed="${h(a.user_id)}" type="button">Edit</button></td></tr>`; }).join('') || '<tr><td colspan="9" class="fr-empty">Nobody has access yet.</td></tr>'}
       </tbody></table></div>`;
     const modal = (a) => {
-      a = a || { user_id: '', regions: [], groups: [], can_review: true, can_enter: false, can_request: true, title: '' };
+      a = a || { user_id: '', regions: [], groups: [], can_review: true, can_approve: false, can_enter: false, can_request: true, title: '' };
       const chk = (list, sel, nmKey) => list.map(o => `<label><input type="checkbox" data-${nmKey}="${h(o.id)}"${sel.includes(o.id) ? ' checked' : ''}> ${h(o.name)}</label>`).join('');
       openModal(`<h2>${a.user_id ? 'Edit access' : 'Give access'}</h2>
         <div class="fr-f" style="margin:10px 0"><label>Staff member *</label>${a.user_id ? `<input value="${h((byId[a.user_id] || {}).full_name || 'New login')}" disabled>` : `<input id="m-q" placeholder="Type to search name or ID…" style="margin-bottom:6px"><select id="m-u" size="6">${staff.filter(s => s.role !== 'super_admin').map(s => `<option value="${h(s.id)}">${h(s.full_name || '')}${s.employee_id ? ' (' + h(s.employee_id) + ')' : ''} — ${h(ROLE[s.role] || s.role)}</option>`).join('')}</select>`}</div>
         <div class="fr-f" style="margin:10px 0"><label>Title shown in Fuel pages</label><input id="m-t" list="fr-titles" value="${h(a.title || '')}" placeholder="e.g. Area Lead, Regional Lead, Admin Officer, Courier Manager"><datalist id="fr-titles"><option>Area Lead</option><option>Regional Lead</option><option>Admin Officer</option><option>Area Incharge</option><option>Courier Manager</option><option>Maintenance Manager</option></datalist></div>
         <div class="fr-f" style="margin:10px 0"><label>Regions *</label><div class="fr-checks">${chk(FR.d.regions, a.regions, 'r')}</div></div>
         <div class="fr-f" style="margin:10px 0"><label>Groups (tick none = all groups)</label><div class="fr-checks">${chk(FR.d.groups.filter(g => g.active), a.groups, 'g')}</div></div>
-        <div class="fr-f" style="margin:10px 0"><label><input type="checkbox" id="m-rv"${a.can_review ? ' checked' : ''}> Month-end review (HOD deduction, approved by region)</label>
+        <div class="fr-f" style="margin:10px 0"><label><input type="checkbox" id="m-rv"${a.can_review ? ' checked' : ''}> Month-end review: enter HOD deduction and approved KM, then Submit (Area Incharge / Admin Officer)</label>
+          <label><input type="checkbox" id="m-ap"${a.can_approve ? ' checked' : ''}> Approve or Send back the month-end review (Regional Lead)</label>
           <label><input type="checkbox" id="m-en"${a.can_enter ? ' checked' : ''}> Enter readings for people without a login (e.g. courier manager)</label>
           <label><input type="checkbox" id="m-rq"${a.can_request ? ' checked' : ''}> Request new people (you approve)</label></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-primary" id="m-s" type="button">Save</button>${a.user_id ? '<button class="btn outline" id="m-x" type="button" style="color:#c0392b">Remove access</button>' : ''}</div>`);
@@ -334,7 +336,7 @@
         const uid = a.user_id || (document.getElementById('m-u') || {}).value;
         if (!uid) { say('Please choose the staff member'); return; }
         const regions = ticks('r'); if (!regions.length) { say('Please tick at least one region'); return; }
-        const p = { title: document.getElementById('m-t').value, regions, groups: ticks('g'), can_review: document.getElementById('m-rv').checked, can_enter: document.getElementById('m-en').checked, can_request: document.getElementById('m-rq').checked };
+        const p = { title: document.getElementById('m-t').value, regions, groups: ticks('g'), can_review: document.getElementById('m-rv').checked, can_approve: document.getElementById('m-ap').checked, can_enter: document.getElementById('m-en').checked, can_request: document.getElementById('m-rq').checked };
         if ((await rpc('fr_save_access', { p_user: uid, p }, 'Access saved')).ok) { closeModal(); again(); }
       };
       const x = document.getElementById('m-x');
@@ -1155,5 +1157,124 @@
     };
     wrapped.__frb = true; window.renderMyProfile = wrapped;
   })();
+
+
+  // =====================================================================================
+  // PHASE 5: Month-end review (HOD deduction, approved by region, Submit / Approve / Send back — all in bulk)
+  // =====================================================================================
+  const RV = { cycle: '', region: '', group: '', status: '', q: '', sel: new Set(), edits: {} };
+  const RV_ST = { none: ['x', 'Not started'], draft: ['', 'Saved (not submitted)'], submitted: ['o', 'Submitted — waiting approval'], approved: ['g', 'Approved'], sent_back: ['r', 'Sent back'] };
+  async function pageReview(main) {
+    const today = pkToday(), cur = cycleStart(today), prev = cycleStart(addDays(cur, -1)), prev2 = cycleStart(addDays(prev, -1));
+    if (!RV.cycle) RV.cycle = prev;
+    main.innerHTML = '<p class="fr-hint">Loading…</p>';
+    const { data, error } = await sb.rpc('fr_review_list', { p_cycle: RV.cycle });
+    if (error) { main.innerHTML = `<div class="fr-card fr-empty">${/fr_review|function|schema cache/i.test(em(error)) ? 'Please run <b>migration_75.sql</b> first.' : h(em(error))}</div>`; return; }
+    const all = (data && data.rows) || [];
+    const regions = [...new Map(all.filter(r => r.region_id).map(r => [r.region_id, r.region_name])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+    const groups = [...new Map(all.filter(r => r.group_id).map(r => [r.group_id, r.group_name])).entries()];
+    const rows = all.filter(r => (!RV.region || r.region_id === RV.region) && (!RV.group || r.group_id === RV.group) && (!RV.status || r.status === RV.status)
+      && (!RV.q || (r.full_name + ' ' + (r.employee_id || '')).toLowerCase().includes(RV.q.toLowerCase())));
+    const ids = new Set(all.map(r => r.person_id)); [...RV.sel].forEach(i => { if (!ids.has(i)) RV.sel.delete(i); });
+    const canEditAny = all.some(r => r.rights && r.rights.edit), canApproveAny = all.some(r => r.rights && r.rights.approve);
+    // status board per region
+    const board = {}; all.forEach(r => { const k = r.region_name || '—'; board[k] = board[k] || { none: 0, draft: 0, submitted: 0, approved: 0, sent_back: 0, n: 0 }; board[k][r.status]++; board[k].n++; });
+    const ded = (r) => RV.edits[r.person_id] && RV.edits[r.person_id].hod != null ? RV.edits[r.person_id].hod : (r.hod_deduction_km == null ? '' : r.hod_deduction_km);
+    const apr = (r) => RV.edits[r.person_id] && RV.edits[r.person_id].apr != null ? RV.edits[r.person_id].apr : (r.approved_km == null ? '' : r.approved_km);
+    const rem = (r) => RV.edits[r.person_id] && RV.edits[r.person_id].rem != null ? RV.edits[r.person_id].rem : (r.remark || '');
+    const open = (r) => r.rights && r.rights.edit && (r.status === 'none' || r.status === 'draft' || r.status === 'sent_back' || r.rights.super);
+    const inp = 'width:84px;padding:6px;border:1px solid #d6daec;border-radius:8px;text-align:right';
+    main.innerHTML = `<p class="fv-sub">Cycle ${h(cycLabel(RV.cycle))}. Covered KM comes from the daily readings (or the monthly entry). Enter the HOD deduction; "Approved by region" fills itself (covered − deduction) and can be lowered. Then <b>Submit</b> → the Regional Lead <b>Approves</b> or <b>Sends back</b>.</p>
+      <div class="fr-grid" style="margin-bottom:12px">${Object.keys(board).sort().map(k => { const b = board[k]; return `<div class="fr-card" style="margin:0;padding:12px"><b style="color:#1E2A6E">${h(k)}</b><div class="fr-hint" style="margin-top:4px">${b.n} ${b.n === 1 ? 'person' : 'people'}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">${b.approved ? `<span class="fr-pill g">${b.approved} approved</span>` : ''}${b.submitted ? `<span class="fr-pill o">${b.submitted} submitted</span>` : ''}${b.draft ? `<span class="fr-pill">${b.draft} saved</span>` : ''}${b.sent_back ? `<span class="fr-pill r">${b.sent_back} sent back</span>` : ''}${b.none ? `<span class="fr-pill x">${b.none} not started</span>` : ''}</div></div>`; }).join('') || '<div class="fr-card fr-empty">Nobody in your regions for this cycle.</div>'}</div>
+      <div class="fr-tb">
+        <select id="rv-c">${[cur, prev, prev2].map(c => `<option value="${c}"${c === RV.cycle ? ' selected' : ''}>${h(cycLabel(c))}${c === cur ? ' (running)' : ''}</option>`).join('')}</select>
+        <select id="rv-r"><option value="">All regions</option>${regions.map(([id, n]) => `<option value="${h(id)}"${id === RV.region ? ' selected' : ''}>${h(n)}</option>`).join('')}</select>
+        <select id="rv-g"><option value="">All groups</option>${groups.map(([id, n]) => `<option value="${h(id)}"${id === RV.group ? ' selected' : ''}>${h(n)}</option>`).join('')}</select>
+        <select id="rv-s"><option value="">Any status</option>${Object.keys(RV_ST).map(k => `<option value="${k}"${RV.status === k ? ' selected' : ''}>${RV_ST[k][1]}</option>`).join('')}</select>
+        <input id="rv-q" placeholder="Search name / ID" value="${h(RV.q)}">
+        <span style="flex:1"></span><button class="fv-btn ghost" id="rv-csv" type="button">Download (CSV)</button>
+      </div>
+      <div class="fr-tb" style="background:#eef0fb;border-radius:10px;padding:8px 10px">
+        <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="rv-all"> Select all shown</label><b id="rv-n" style="font-size:13px">${RV.sel.size} selected</b>
+        ${canEditAny ? `<button class="fv-btn ghost" id="rv-fill" type="button" title="Put the same HOD deduction on every selected person">Same deduction for selected…</button>` : ''}
+        <span style="flex:1"></span>
+        ${canEditAny ? `<button class="fv-btn" id="rv-save" type="button">💾 Save changes</button><button class="fv-btn" id="rv-sub" type="button">Submit selected</button>` : ''}
+        ${canApproveAny ? `<button class="fv-btn" id="rv-ok" type="button" style="background:#2e7d4f">✓ Approve selected</button><button class="fv-btn ghost" id="rv-back" type="button" style="color:#c0392b">↩ Send back selected</button>` : ''}
+      </div>
+      <div class="fr-wrap"><table class="fv-table" style="font-size:13px"><thead><tr><th style="width:28px"></th><th>Name</th><th>Region / Group</th><th class="fr-n">Covered KM</th><th class="fr-n" title="KM between one day's Closing and the next day's Opening (information for the HOD deduction)">Overnight KM</th><th class="fr-n">Days</th><th class="fr-n">HOD deduction</th><th class="fr-n">Approved by region</th><th>Remark</th><th>Status</th></tr></thead><tbody>
+      ${rows.slice(0, 800).map(r => `<tr data-p="${h(r.person_id)}">
+        <td><input type="checkbox" data-sel="${h(r.person_id)}"${RV.sel.has(r.person_id) ? ' checked' : ''}></td>
+        <td>${h(r.full_name)}<div class="fr-hint" style="margin:0">${h(r.employee_id || '')}${r.reviewer === 'super_admin' ? ' · reviewed by Super Admin' : ''}</div></td>
+        <td>${h(r.region_name || '–')}<div class="fr-hint" style="margin:0">${h(r.group_name || '–')}</div></td>
+        <td class="fr-n"><b>${r.covered == null ? '<span class="fr-pill r">no readings</span>' : num(r.covered)}</b></td>
+        <td class="fr-n">${r.source === 'monthly' ? '<span class="fr-hint">monthly</span>' : num(r.gap)}</td>
+        <td class="fr-n">${r.source === 'monthly' ? '–' : `${r.days_full}${r.days_missing ? ` <span class="fr-pill r" title="days with no complete reading">${r.days_missing} missing</span>` : ''}`}</td>
+        <td class="fr-n">${open(r) && r.covered != null ? `<input type="number" min="0" step="0.1" data-hod="${h(r.person_id)}" value="${h(ded(r))}" style="${inp}">` : num(r.hod_deduction_km)}</td>
+        <td class="fr-n">${open(r) && r.covered != null ? `<input type="number" min="0" step="0.1" data-apr="${h(r.person_id)}" value="${h(apr(r))}" placeholder="${h(r.covered == null ? '' : Math.round((r.covered - (+ded(r) || 0)) * 10) / 10)}" style="${inp}">` : `<b>${num(r.approved_km)}</b>`}</td>
+        <td>${open(r) ? `<input data-rem="${h(r.person_id)}" value="${h(rem(r))}" style="width:130px;padding:6px;border:1px solid #d6daec;border-radius:8px">` : h(r.remark || '')}</td>
+        <td><span class="fr-pill ${RV_ST[r.status][0]}">${RV_ST[r.status][1]}</span>${r.back_comment ? `<div class="fr-hint" style="margin:2px 0 0;color:#c0392b">"${h(r.back_comment)}"</div>` : ''}${r.approved_by_name ? `<div class="fr-hint" style="margin:2px 0 0">by ${h(r.approved_by_name)}</div>` : (r.submitted_by_name && r.status === 'submitted' ? `<div class="fr-hint" style="margin:2px 0 0">by ${h(r.submitted_by_name)}</div>` : '')}</td></tr>`).join('') || '<tr><td colspan="10" class="fr-empty">Nobody matches.</td></tr>'}
+      </tbody></table></div>
+      ${Object.keys(RV.edits).length ? `<p class="fr-hint" style="color:#a0672b">You have ${Object.keys(RV.edits).length} unsaved change(s) — press Save changes.</p>` : ''}`;
+    const redraw = () => pageReview(main);
+    const keepEdits = () => {
+      main.querySelectorAll('[data-hod]').forEach(i => { const id = i.dataset.hod, r = all.find(x => x.person_id === id); const v = i.value.trim(); if (v !== String(r.hod_deduction_km == null ? '' : r.hod_deduction_km)) { (RV.edits[id] = RV.edits[id] || {}).hod = v; } });
+      main.querySelectorAll('[data-apr]').forEach(i => { const id = i.dataset.apr, r = all.find(x => x.person_id === id); const v = i.value.trim(); if (v !== String(r.approved_km == null ? '' : r.approved_km)) { (RV.edits[id] = RV.edits[id] || {}).apr = v; } });
+      main.querySelectorAll('[data-rem]').forEach(i => { const id = i.dataset.rem, r = all.find(x => x.person_id === id); const v = i.value; if (v !== (r.remark || '')) { (RV.edits[id] = RV.edits[id] || {}).rem = v; } });
+    };
+    const leave = (fn) => () => { keepEdits(); fn(); redraw(); };
+    main.querySelector('#rv-c').onchange = (e) => { if (Object.keys(RV.edits).length && !confirm('You have unsaved changes. Change cycle anyway?')) { e.target.value = RV.cycle; return; } RV.edits = {}; RV.sel.clear(); RV.cycle = e.target.value; redraw(); };
+    main.querySelector('#rv-r').onchange = (e) => leave(() => { RV.region = e.target.value; })();
+    main.querySelector('#rv-g').onchange = (e) => leave(() => { RV.group = e.target.value; })();
+    main.querySelector('#rv-s').onchange = (e) => leave(() => { RV.status = e.target.value; })();
+    let tq; main.querySelector('#rv-q').oninput = (e) => { clearTimeout(tq); tq = setTimeout(leave(() => { RV.q = e.target.value; }), 450); };
+    // deduction typed → suggest approved = covered − deduction
+    main.querySelectorAll('[data-hod]').forEach(i => i.oninput = () => { const r = all.find(x => x.person_id === i.dataset.hod), a = main.querySelector(`[data-apr="${i.dataset.hod}"]`); if (a && r.covered != null) { a.placeholder = String(Math.max(0, Math.round((r.covered - (+i.value || 0)) * 10) / 10)); if (!RV.edits[r.person_id] || RV.edits[r.person_id].apr == null) a.value = ''; } });
+    const n = main.querySelector('#rv-n'), upd = () => { n.textContent = RV.sel.size + ' selected'; };
+    main.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { c.checked ? RV.sel.add(c.dataset.sel) : RV.sel.delete(c.dataset.sel); upd(); });
+    main.querySelector('#rv-all').onchange = (e) => { main.querySelectorAll('[data-sel]').forEach(c => { c.checked = e.target.checked; c.checked ? RV.sel.add(c.dataset.sel) : RV.sel.delete(c.dataset.sel); }); upd(); };
+    main.querySelector('#rv-csv').onclick = () => downloadCSV('fuel-review-' + RV.cycle + '.csv', toCSV(rows.map(r => ({ Name: r.full_name, 'Employee ID': r.employee_id || '', Region: r.region_name || '', Group: r.group_name || '', 'Covered KM': r.covered == null ? '' : r.covered, 'Overnight KM': r.source === 'monthly' ? '' : r.gap, 'Days complete': r.source === 'monthly' ? 'monthly' : r.days_full, 'Days missing': r.source === 'monthly' ? '' : r.days_missing, 'HOD deduction': r.hod_deduction_km == null ? '' : r.hod_deduction_km, 'Approved by region': r.approved_km == null ? '' : r.approved_km, Remark: r.remark || '', Status: RV_ST[r.status][1], 'Sent back because': r.back_comment || '' }))));
+    const report = (d, verb) => { const w = (d && d.warnings) || []; say(`${(d && (d.saved != null ? d.saved : d.done)) || 0} ${verb}${w.length ? ', ' + w.length + ' not done' : ''}`); if (w.length) alert('Not done:\n' + w.map(x => (x.row ? 'Row ' + x.row + ': ' : '') + x.msg).join('\n')); };
+    const save = async (quiet) => {
+      keepEdits();
+      const list = Object.keys(RV.edits).map(id => ({ person_id: id, hod_deduction: RV.edits[id].hod != null ? RV.edits[id].hod : (all.find(x => x.person_id === id).hod_deduction_km || 0), approved_km: RV.edits[id].apr != null ? RV.edits[id].apr : '', remark: RV.edits[id].rem != null ? RV.edits[id].rem : (all.find(x => x.person_id === id).remark || '') }));
+      if (!list.length) { if (!quiet) say('Nothing changed'); return true; }
+      const { data: d, error: e } = await sb.rpc('fr_review_save', { p_cycle: RV.cycle, p_rows: list });
+      if (e) { say('Could not save: ' + errText(e)); return false; }
+      RV.edits = {}; if (!quiet) report(d, 'saved'); else if ((d.warnings || []).length) report(d, 'saved');
+      return true;
+    };
+    const b = (id) => main.querySelector('#' + id);
+    if (b('rv-save')) b('rv-save').onclick = async () => { if (await save(false)) redraw(); };
+    if (b('rv-fill')) b('rv-fill').onclick = () => {
+      if (!RV.sel.size) { say('Tick the people first'); return; }
+      const v = prompt(`HOD deduction (KM) for the ${RV.sel.size} selected people:`, '0'); if (v === null || v.trim() === '' || isNaN(+v)) return;
+      keepEdits(); RV.sel.forEach(id => { const r = all.find(x => x.person_id === id); if (r && open(r) && r.covered != null) { (RV.edits[id] = RV.edits[id] || {}).hod = v.trim(); delete RV.edits[id].apr; } }); redraw();
+    };
+    const act = async (action, verb) => {
+      if (!RV.sel.size) { say('Tick the people first'); return; }
+      let comment = null;
+      if (action === 'send_back') { comment = prompt(`Why are these ${RV.sel.size} sent back? (they will see this)`, ''); if (!comment || !comment.trim()) return; }
+      else if (!confirm(`${verb[0].toUpperCase() + verb.slice(1)} ${RV.sel.size} selected?`)) return;
+      if (action === 'submit' || (action === 'approve' && sup())) { if (!(await save(true))) return; }
+      const { data: d, error: e } = await sb.rpc('fr_review_act', { p_cycle: RV.cycle, p_person_ids: [...RV.sel], p_action: action, p_comment: comment });
+      if (e) { say(errText(e)); return; }
+      report(d, verb); RV.sel.clear(); redraw(); if (window.frTodoBadge) frTodoBadge(true);
+    };
+    if (b('rv-sub')) b('rv-sub').onclick = () => act('submit', 'submitted');
+    if (b('rv-ok')) b('rv-ok').onclick = () => act('approve', 'approved');
+    if (b('rv-back')) b('rv-back').onclick = () => act('send_back', 'sent back');
+  }
+
+  // menu badge: reviews waiting for me (submitted → approver, sent back → enterer)
+  const TB = { at: 0 };
+  async function todoBadge(force) {
+    if (typeof state === 'undefined' || !state.profile || typeof FH_BADGES === 'undefined' || !(window.frNavViews() || []).includes('fr_review')) return;
+    if (!force && Date.now() - TB.at < 120000) { if (typeof fhApplyNavBadges === 'function') fhApplyNavBadges(); return; }
+    TB.at = Date.now();
+    try { const { data, error } = await sb.rpc('fr_review_todo'); if (error) return; FH_BADGES.fr_review = data || 0; if (typeof fhApplyNavBadges === 'function') fhApplyNavBadges(); } catch (_e) {}
+  }
+  window.frTodoBadge = todoBadge;
+  setInterval(() => todoBadge(false), 30000);
 
 })();
