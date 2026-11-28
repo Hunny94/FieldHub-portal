@@ -13,6 +13,10 @@
 
   // ---------------------------------------------------------------- styles
   const CSS = `
+/* ---------- dark mode: navy text written straight into a page would be invisible on navy; make it light (v114) ---------- */
+html.fh-dark :is(#main-content,.modal) :is([style*="color:var(--ink)"],[style*="color: var(--ink)"],[style*="color:#1E2A6E" i],[style*="color: #1E2A6E" i],[style*="color:#151C3F" i],[style*="color:#17204d" i]):not([style*="background"]){color:#dfe5ff!important}
+html.fh-dark #main-content .team-group-header{color:#dfe5ff!important}
+html.fh-dark #main-content .team-group-header:hover{background:#1b2350}
 /* ---------- phone top bar: brand + bell + More (Option A) ---------- */
 #fh-more-btn{display:none}
 #fh-more-menu{position:fixed;z-index:5001;min-width:230px;max-width:calc(100vw - 16px);background:#fff;border:1px solid #dfe4f1;border-radius:14px;box-shadow:0 14px 36px rgba(15,23,60,.24);padding:6px;transform-origin:top right;animation:fhMenuIn .18s ease-out both}
