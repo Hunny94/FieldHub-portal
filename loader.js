@@ -16,7 +16,7 @@
 
   // the rider stays in the middle with his wheels turning; a ring of dots runs round him
   function art(S) {
-    const C = S / 2, R = S * 0.44, w = Math.round(S * 0.5), h = Math.round(w * 116 / 150), wd = w * 0.195;
+    const C = S / 2, R = S * 0.44, w = Math.round(S * 0.5), h = Math.round(w * 116 / 150);
     let dots = '';
     const N = 16;
     for (let k = 0; k < N; k++) {
@@ -24,9 +24,13 @@
        r = Math.max(1.3, S * (0.03 - k * 0.0016)), x = C + R * Math.sin(a), y = C - R * Math.cos(a);
       dots += '<i class="fhl-dot" style="left:' + (x - r).toFixed(1) + 'px;top:' + (y - r).toFixed(1) + 'px;width:' + (2 * r).toFixed(1) + 'px;height:' + (2 * r).toFixed(1) + 'px;opacity:' + Math.max(0.12, 1 - k * 0.06).toFixed(2) + '"></i>';
     }
+    return '<div class="fhl-art" style="width:' + S + 'px;height:' + S + 'px"><div class="fhl-ring">' + dots + '</div>' + bike(w, C - w / 2, C - h / 2) + '</div>';
+  }
+  // the rider picture with two turning wheels, w pixels wide, placed at (x, y)
+  function bike(w, x, y) {
+    const h = w * 116 / 150, wd = w * 0.195;
     const wheel = (cx) => '<i class="fhl-wheel" style="left:' + (cx * w - wd / 2).toFixed(1) + 'px;top:' + (0.824 * h - wd / 2).toFixed(1) + 'px;width:' + wd.toFixed(1) + 'px;height:' + wd.toFixed(1) + 'px">' + WHEEL + '</i>';
-    return '<div class="fhl-art" style="width:' + S + 'px;height:' + S + 'px"><div class="fhl-ring">' + dots + '</div>' +
-      '<div class="fhl-bike" style="left:' + (C - w / 2).toFixed(1) + 'px;top:' + (C - h / 2).toFixed(1) + 'px;width:' + w + 'px;height:' + h + 'px"><i class="fhl-rider"></i>' + wheel(0.25) + wheel(0.7548) + '</div></div>';
+    return '<div class="fhl-bike" style="left:' + x.toFixed(1) + 'px;top:' + y.toFixed(1) + 'px;width:' + w.toFixed(1) + 'px;height:' + h.toFixed(1) + 'px"><i class="fhl-rider"></i>' + wheel(0.25) + wheel(0.7548) + '</div>';
   }
 
   const css = document.createElement('style'); css.id = 'fhl-css';
@@ -39,6 +43,8 @@
     .fhl-wheel{position:absolute;display:block;animation:fhlSpin .45s linear infinite}
     .fhl-wheel svg{display:block;width:100%;height:100%}
     @keyframes fhlSpin{to{transform:rotate(360deg)}}
+    #fhl-mini{position:fixed;top:2px;left:0;width:34px;height:27px;z-index:10002;pointer-events:none;opacity:0;transition:opacity .25s ease;--fhl-c:#f5b82e;color:#f5b82e;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))}
+    #fhl-mini .fhl-bike{animation-duration:.25s}
     @keyframes fhlBob{from{transform:translateY(0)}to{transform:translateY(-2px)}}
     #fh-load{position:fixed;z-index:9000;display:none;flex-direction:column;align-items:center;justify-content:center;
       background:rgba(243,245,251,.7);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);opacity:0;transition:opacity .2s ease}
@@ -101,7 +107,7 @@
   function hide() {
     clearTimeout(showT);
     if (!el || el.style.display !== 'flex') { kind = ''; return; }
-    const left = 600 - (performance.now() - shownAt);   // once up, it stays long enough to see the rider move, without flicker
+    const left = 400 - (performance.now() - shownAt);   // once up, it stays long enough to see the rider move, without flicker
     if (left > 0) { clearTimeout(hideT); hideT = setTimeout(hideNow, left); } else hideNow();
   }
 
@@ -113,6 +119,7 @@
     const orig = window.fhProgress;
     const w = function (on) {
       try { orig.apply(this, arguments); } finally {
+        try { if (on) miniStart(); else miniStop(); } catch (_e) {}
         try {
           if (kind === 'login') { if (!on && document.body.classList.contains('fh-app')) hide(); }
           else if (on) show('Loading ' + label(), { delay: 250 });
@@ -123,6 +130,26 @@
     w.__fhl = true; window.fhProgress = w;
   }
   hook(); setTimeout(hook, 0); window.addEventListener('load', hook);
+
+  // ---------------------------------------------------------------- a tiny rider rides along the thin loading line at the top
+  let mini = null, miniRaf = 0, miniOn = false, miniUntil = 0;
+  function miniEl() {
+    if (mini && mini.isConnected) return mini;
+    mini = document.createElement('div'); mini.id = 'fhl-mini'; mini.setAttribute('aria-hidden', 'true');
+    mini.innerHTML = bike(34, 0, 0); document.body.appendChild(mini); return mini;
+  }
+  function miniFrame() {
+    miniRaf = 0;
+    const bar = document.getElementById('fh-progress'); if (!bar || !mini) return;
+    const cs = getComputedStyle(bar), m = /matrix\(([^,]+)/.exec(cs.transform), sx = m ? parseFloat(m[1]) : 0, op = parseFloat(cs.opacity) || 0;
+    const W = bar.getBoundingClientRect().width || window.innerWidth;
+    mini.style.transform = 'translateX(' + Math.max(0, Math.min(W - 34, sx * W - 26)).toFixed(1) + 'px)';
+    mini.style.opacity = String(Math.min(1, op));
+    if (miniOn || performance.now() < miniUntil) miniRaf = requestAnimationFrame(miniFrame);
+    else mini.style.opacity = '0';
+  }
+  function miniStart() { miniEl(); miniOn = true; if (!miniRaf) miniRaf = requestAnimationFrame(miniFrame); }
+  function miniStop() { miniOn = false; miniUntil = performance.now() + 900; if (!miniRaf && mini) miniRaf = requestAnimationFrame(miniFrame); }
 
   // sign-in
   document.addEventListener('submit', (e) => {
@@ -136,5 +163,5 @@
   }
   hookAuth(); window.addEventListener('load', hookAuth);
   window.addEventListener('resize', () => { if (el && el.style.display === 'flex') place(kind === 'login'); });
-  window.fhLoader = { show: (t, o) => show(t, o), hide: hideNow, art };
+  window.fhLoader = { show: (t, o) => show(t, o), hide: hideNow, art, version: 114 };
 })();
