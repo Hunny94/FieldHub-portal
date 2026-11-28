@@ -34,7 +34,7 @@ function ensureXLSX(){
   if (window.XLSX) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';   // v116: 0.20.3 from SheetJS's own site (0.18.5 had two known security flaws)
     s.onload = resolve;
     s.onerror = () => reject(new Error('Could not load the Excel reader. Please check your internet connection.'));
     document.head.appendChild(s);
@@ -1202,6 +1202,13 @@ function paintBranding(data){
   }catch(_e){ /* keep the defaults already in the HTML */ }
 }
 
+// v116: waits for fuel-sec.js, then shows the code screen if this sign-in still needs it (true = carry on)
+async function fhLoginCodeGate(){
+  for (let i = 0; i < 100 && !(window.fhFuel2fa && fhFuel2fa.loginGate); i++) await new Promise(r => setTimeout(r, 50));
+  if (!(window.fhFuel2fa && fhFuel2fa.loginGate)) return true;   // screen part missing: the database still refuses Super Admin powers without the code
+  try { return await fhFuel2fa.loginGate(); } catch (_e) { return true; }
+}
+
 function showAuthScreen(){
   document.body.classList.remove('fh-app');
   fhApplyTheme();   // the sign-in page is always light
@@ -1237,6 +1244,8 @@ async function afterLogin(user){
   }
 
   fhWatchAccount(); fhKeepSession();
+  // v116: the Super Admin types the 2-step code at every sign-in (migration_76). Nothing else loads until then.
+  if (profile.role === 'super_admin' && !(await fhLoginCodeGate())) return;
   if (profile.must_change_password){
     showForcedPasswordChange();
     return;
@@ -2050,7 +2059,7 @@ function fhRequireEmail(){
   const o = document.createElement('div'); o.id = 'fh-email-gate'; o.className = 'modal-overlay';
   o.style.zIndex = 99999;
   o.innerHTML = `<div class="modal"><h2>Add your e-mail address</h2>
-    <p class="hint">Please add your own e-mail address. It is used to send you a code if you ever forget your password. <b>Once saved it is locked</b> and only an admin can change it, so please type it carefully.</p>
+    <p class="hint">Please add your own e-mail address. It is used to send you a code or a temporary password if you ever forget your password. <b>Once saved it is locked</b> and only the Super Admin can change it, so please type it carefully.</p>
     <form id="fh-gate-form"><div class="form-row"><label>E-mail</label><input type="email" id="fh-gate-e1" required autocomplete="email" placeholder="name@gmail.com"></div>
     <div class="form-row"><label>Type it again</label><input type="email" id="fh-gate-e2" required autocomplete="off" placeholder="name@gmail.com"></div>
     <button class="btn-primary" type="submit" id="fh-gate-save">Save e-mail</button>
@@ -2085,73 +2094,55 @@ function bindForgotPasswordLink(){
     if (st && st.ok && (st.whatsapp || st.email)) fhForgotCode(st); else fhForgotRequest();   // code reset not switched on yet: the old "ask my supervisor" form
   };
 }
-// Step 1: mobile number. Step 2: type the saved e-mail (or, if none is saved, add one). Step 3: enter the code + new password
+// v116: one form (mobile + Employee ID + e-mail). The server gives the SAME answer for every number,
+// so this page cannot be used to find out which numbers are registered or have an e-mail.
 function fhForgotCode(st){
   const body = document.getElementById('fp-body'); if (!body) return;
   const lp = (document.getElementById('login-phone') || {}).value || '';
+  const wa = !!st.whatsapp;
   body.innerHTML = `
-    <p class="hint">Enter your registered mobile number to get a <b>6-digit code</b> and choose a new password. No need to wait for approval.</p>
+    <p class="hint">Get a <b>6-digit code</b> and choose a new password — no need to wait for approval.<br>
+      Type your <b>e-mail</b>: if an e-mail is already saved on your account, type that same one. If not, this e-mail will be saved on your account (locked) once you enter the code.</p>
     <form id="fp-send-form">
       <div class="form-row"><label>Mobile Number</label><input type="tel" id="fp-phone" required maxlength="11" placeholder="03124244131" inputmode="numeric" value="${escapeHtml(lp)}"></div>
-      <button class="btn-primary" type="submit" id="fp-send-btn">Continue</button>
+      <div class="form-row"><label>Your Employee ID</label><input type="text" id="fp-eid" autocomplete="off" placeholder="as shown on your ID card"></div>
+      ${wa ? `<div class="form-row"><label>Send the code to</label><select id="fp-channel"><option value="email">My e-mail</option><option value="whatsapp">My mobile (WhatsApp)</option></select></div>` : ''}
+      <div id="fp-mail-box">
+        <div class="form-row"><label>Your e-mail</label><input type="email" id="fp-email" autocomplete="email" placeholder="name@gmail.com"></div>
+        <div class="form-row"><label>Type the e-mail again</label><input type="email" id="fp-email2" autocomplete="off" placeholder="name@gmail.com"></div>
+      </div>
+      <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
     </form>
     <p class="hint" style="margin-top:14px"><a href="#" id="fp-old">I cannot get the code — ask my supervisor to reset it</a></p>`;
   document.getElementById('fp-phone').addEventListener('input', function(){ this.value = this.value.replace(/[^0-9]/g,'').slice(0,11); });
   document.getElementById('fp-old').onclick = (ev) => { ev.preventDefault(); fhForgotRequest(); };
+  const ch = () => (wa ? document.getElementById('fp-channel').value : 'email');
+  const sync = () => { document.getElementById('fp-mail-box').style.display = ch() === 'email' ? '' : 'none'; };
+  if (wa) document.getElementById('fp-channel').onchange = sync; sync();
   document.getElementById('fp-send-form').onsubmit = async (ev) => {
     ev.preventDefault();
     const phone = document.getElementById('fp-phone').value.trim(), btn = document.getElementById('fp-send-btn');
     if (phone.length < 10){ toast('Please enter your 11-digit mobile number.'); return; }
-    btn.disabled = true; btn.textContent = 'Checking…';
-    const r = await fhOtp('lookup', { phone });
-    btn.disabled = false; btn.textContent = 'Continue';
-    if (!r.ok){ toast(r.error || 'Could not check the number. Please try again.'); return; }
-    fhForgotStep2(phone, !!r.has_email, st);
-  };
-}
-function fhForgotStep2(phone, hasEmail, st){
-  const body = document.getElementById('fp-body'); if (!body) return;
-  const wa = !!st.whatsapp;
-  body.innerHTML = `
-    <p class="hint">${hasEmail ? 'An e-mail is saved on this account. <b>Type that e-mail</b> and we will send the code to it.' : 'No e-mail is saved on this account yet. <b>Add your own e-mail</b> now; the code is sent there and the e-mail is saved (locked) once you enter the code.'}</p>
-    <form id="fp-s2-form">
-      ${wa ? `<div class="form-row"><label>Send the code to</label><select id="fp-channel"><option value="whatsapp">My mobile (WhatsApp)</option><option value="email">${hasEmail ? 'My saved e-mail' : 'A new e-mail'}</option></select></div>` : ''}
-      <div id="fp-mail-box">
-        ${hasEmail ? '' : '<div class="form-row"><label>Your Employee ID</label><input type="text" id="fp-eid" autocomplete="off" placeholder="as shown on your ID card"></div>'}
-        <div class="form-row"><label>${hasEmail ? 'Your saved e-mail' : 'Your e-mail'}</label><input type="email" id="fp-email" autocomplete="email" placeholder="name@gmail.com"></div>
-        ${hasEmail ? '' : '<div class="form-row"><label>Type the e-mail again</label><input type="email" id="fp-email2" autocomplete="off" placeholder="name@gmail.com"></div>'}
-      </div>
-      <button class="btn-primary" type="submit" id="fp-send-btn">Send code</button>
-    </form>
-    <p class="hint" style="margin-top:14px"><a href="#" id="fp-s2-back">Change number</a></p>`;
-  const ch = () => (wa ? document.getElementById('fp-channel').value : 'email');
-  const sync = () => { document.getElementById('fp-mail-box').style.display = ch() === 'email' ? '' : 'none'; };
-  if (wa) document.getElementById('fp-channel').onchange = sync; sync();
-  document.getElementById('fp-s2-back').onclick = (ev) => { ev.preventDefault(); fhForgotCode(st); };
-  document.getElementById('fp-s2-form').onsubmit = async (ev) => {
-    ev.preventDefault();
-    const channel = ch(), btn = document.getElementById('fp-send-btn'), payload = { phone, channel };
+    const channel = ch(), payload = { phone, channel, employee_id: document.getElementById('fp-eid').value.trim() };
+    if (!payload.employee_id){ toast('Please type your Employee ID.'); return; }
     if (channel === 'email'){
       payload.email = document.getElementById('fp-email').value.trim().toLowerCase();
-      if (!payload.email){ toast('Please type the e-mail address.'); return; }
-      if (!hasEmail){
-        if (payload.email !== document.getElementById('fp-email2').value.trim().toLowerCase()){ toast('The two e-mail addresses do not match.'); return; }
-        payload.employee_id = document.getElementById('fp-eid').value.trim();
-        if (!payload.employee_id){ toast('Please type your Employee ID.'); return; }
-        if (!confirm('The code will be sent to ' + payload.email + ' and this e-mail will be saved on your account. You will not be able to change it yourself later.\n\nContinue?')) return;
-      }
+      if (!payload.email){ toast('Please type your e-mail address.'); return; }
+      if (payload.email !== document.getElementById('fp-email2').value.trim().toLowerCase()){ toast('The two e-mail addresses do not match.'); return; }
     }
     btn.disabled = true; btn.textContent = 'Sending…';
     const r = await fhOtp('request_code', payload);
     btn.disabled = false; btn.textContent = 'Send code';
     if (!r.ok){ toast(r.error || 'Could not send the code.'); return; }
-    fhForgotVerify(phone, channel, r.hint, st, payload);
+    fhForgotVerify(phone, channel, r.hint, st, payload, !!r.uniform);
   };
 }
-function fhForgotVerify(phone, channel, hint, st, sendPayload){
+function fhForgotVerify(phone, channel, hint, st, sendPayload, uniform){
   const body = document.getElementById('fp-body'); if (!body) return;
   body.innerHTML = `
-    <p class="hint">A code was sent to <b>${escapeHtml(hint || 'you')}</b> ${channel === 'email' ? 'by e-mail' : 'on WhatsApp'}. It works for 10 minutes.</p>
+    <p class="hint">${uniform
+      ? `If these details match an account, a 6-digit code has been sent to <b>${escapeHtml(hint || 'you')}</b> ${channel === 'email' ? 'by e-mail' : 'on WhatsApp'}. It can take up to 2 minutes (check Spam too) and works for 10 minutes.<br>No code? Check the mobile number, Employee ID and e-mail and try again, or ask your supervisor.`
+      : `A code was sent to <b>${escapeHtml(hint || 'you')}</b> ${channel === 'email' ? 'by e-mail' : 'on WhatsApp'}. It works for 10 minutes.`}</p>
     <form id="fp-verify-form">
       <div class="form-row"><label>6-digit code</label><input type="text" id="fp-code" required maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
       <div class="form-row"><label>New password</label><div class="password-field"><input type="password" id="fp-pw1" required minlength="8" autocomplete="new-password"><button type="button" class="password-toggle" id="fp-tg">Show</button></div>
@@ -2163,7 +2154,7 @@ function fhForgotVerify(phone, channel, hint, st, sendPayload){
   document.getElementById('fp-code').addEventListener('input', function(){ this.value = this.value.replace(/\D/g,'').slice(0,6); });
   document.getElementById('fp-tg').onclick = () => { const i = document.getElementById('fp-pw1'), h = i.type === 'password'; i.type = h ? 'text' : 'password'; document.getElementById('fp-pw2').type = i.type; document.getElementById('fp-tg').textContent = h ? 'Hide' : 'Show'; };
   document.getElementById('fp-back').onclick = (ev) => { ev.preventDefault(); fhForgotCode(st); };
-  document.getElementById('fp-resend').onclick = async (ev) => { ev.preventDefault(); const r = await fhOtp('request_code', sendPayload || { phone, channel }); toast(r.ok ? 'A new code was sent.' : (r.error || 'Could not send a new code.')); };
+  document.getElementById('fp-resend').onclick = async (ev) => { ev.preventDefault(); const r = await fhOtp('request_code', sendPayload || { phone, channel }); toast(r.ok ? (r.uniform ? 'If the details match, a new code has been sent.' : 'A new code was sent.') : (r.error || 'Could not send a new code.')); };
   document.getElementById('fp-verify-form').onsubmit = async (ev) => {
     ev.preventDefault();
     const pw = document.getElementById('fp-pw1').value;
@@ -2178,11 +2169,11 @@ function fhForgotVerify(phone, channel, hint, st, sendPayload){
     toast('Password changed. Please sign in with your new password.');
   };
 }
-// The older way: send a request; a supervisor approves it and the temporary password is Test@123
+// The older way: send a request; when approved, a temporary password is e-mailed to the recovery e-mail (v116)
 function fhForgotRequest(){
   const body = document.getElementById('fp-body'); if (!body) return;
   body.innerHTML = `
-      <p class="hint">Enter your registered mobile number. When your request is approved your temporary password will be <b>Test@123</b>. Sign in with it and the portal will ask you to choose your own new password. One request at a time.</p>
+      <p class="hint">Enter your registered mobile number. When your request is approved, a <b>temporary password is e-mailed</b> to the recovery e-mail saved on your account. Sign in with it and the portal will ask you to choose your own new password.<br>No e-mail saved yet? Go back and use the code option with your Employee ID instead.</p>
       <form id="forgot-form">
         <div class="form-row"><label>Mobile Number</label><input type="tel" id="forgot-phone" required maxlength="11" placeholder="03124244131"></div>
         <div class="form-row"><label>Note (optional)</label><textarea id="forgot-note" placeholder="Anything that helps us find your account"></textarea></div>
@@ -2192,16 +2183,10 @@ function fhForgotRequest(){
   document.getElementById('forgot-form').onsubmit = async (ev) => {
     ev.preventDefault();
     const phone = toE164(document.getElementById('forgot-phone').value.trim());
-    try {
-      const ex = await sb.rpc('fh_phone_exists', { p_phone: phone });
-      if (!ex.error && ex.data === false){ toast('No account was found with this mobile number. Please check the number.'); return; }
-    } catch (_) {}
+    // v116: no "does this number exist?" check, and the same answer when a request is already waiting
     const { error } = await sb.from('password_reset_requests').insert({ phone, note: document.getElementById('forgot-note').value.trim() });
-    if (error){
-      if (error.code === '23505' || /duplicate|unique/i.test(error.message)){ toast('Your reset request is already waiting for approval. Please wait — you cannot send another one until it is done.'); return; }
-      toast('Could not submit: ' + error.message); return;
-    }
-    closeModal(); toast('Request received. Once it is approved your password becomes Test@123 — sign in with it and you will be asked to choose a new password.');
+    if (error && !(error.code === '23505' || /duplicate|unique/i.test(error.message))){ toast('Could not submit. Please check your internet and try again.'); return; }
+    closeModal(); toast('Request received. If it is approved, a temporary password will be e-mailed to the recovery e-mail on your account.');
   };
 }
 
@@ -4233,7 +4218,7 @@ async function renderTeam(){
     const { data: resetRequests } = await sb.from('password_reset_requests').select('*').eq('status','pending').order('created_at', {ascending:false});
     if (resetRequests && resetRequests.length){
       html += `<div class="card"><h3>Password reset requests (${resetRequests.length})</h3>
-      ${isSuperAdmin() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="btn small outline" id="rr-all" type="button">Select all</button><button class="btn small" id="rr-bulk" type="button">Reset selected to Test@123</button><span class="hint" id="rr-st"></span></div>` : ''}
+      ${isSuperAdmin() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="btn small outline" id="rr-all" type="button">Select all</button><button class="btn small" id="rr-bulk" type="button">E-mail temporary passwords to selected</button><span class="hint" id="rr-st"></span></div>` : ''}
       <table><thead><tr>${isSuperAdmin() ? '<th></th>' : ''}<th>Phone</th><th>Note</th><th>Submitted</th><th></th></tr></thead><tbody>
       ${resetRequests.map(r => {
         const match = state.profilesInScope.find(p => toE164(p.phone) === toE164(r.phone));
@@ -4335,19 +4320,19 @@ async function renderTeam(){
     if (all) all.onclick = () => { const cs = [...main.querySelectorAll('.rr-chk')], on = cs.some(c => !c.checked); cs.forEach(c => { c.checked = on; }); all.textContent = on ? 'Clear selection' : 'Select all'; };
     if (bulk) bulk.onclick = async () => {
       const sel = [...main.querySelectorAll('.rr-chk:checked')]; if (!sel.length) { toast('Tick the requests you want to reset'); return; }
-      if (!confirm(`Reset the password of ${sel.length} person(s) to Test@123? Each will be asked to choose a new password at their next sign-in.`)) return;
+      if (!confirm(`E-mail a new temporary password to ${sel.length} person(s)?\n\nEach one gets their own random password at their recovery e-mail and must choose a new password at the next sign-in. People with no recovery e-mail are skipped.`)) return;
       const st = document.getElementById('rr-st'); let ok = 0, bad = [];
       for (let i = 0; i < sel.length; i++) {
         const c = sel[i]; st.textContent = `Working… ${i + 1} of ${sel.length}`;
         try {
-          const resp = await callEdgeFunction('reset_password', { user_id: c.dataset.rp, new_password: 'Test@123' });
-          if (resp.skipped || resp.error) { bad.push(c.dataset.rn + ' — ' + (resp.error || 'not configured')); continue; }
+          const resp = await callEdgeFunction('reset_password', { user_id: c.dataset.rp });
+          if (resp.skipped || resp.error || !resp.success) { bad.push(c.dataset.rn + ' — ' + (resp.no_email ? 'no recovery e-mail' : (resp.error || 'not configured'))); continue; }
           await sb.from('password_reset_requests').update({ status: 'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', c.dataset.rr);
-          await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'reset password for', entity_type: 'Team Member', entity_label: c.dataset.rn });
+          await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'e-mailed a temporary password to', entity_type: 'Team Member', entity_label: c.dataset.rn });
           ok++;
         } catch (e) { bad.push(c.dataset.rn + ' — ' + (e.message || e)); }
       }
-      toast(`${ok} password(s) reset to Test@123` + (bad.length ? `. Not done: ${bad.join('; ')}` : '')); renderTeam();
+      toast(`${ok} temporary password(s) e-mailed` + (bad.length ? `. Not done: ${bad.join('; ')}` : '')); renderTeam();
     };
   }
   main.querySelectorAll('[data-dismiss-reset]').forEach(btn => {
@@ -4478,29 +4463,47 @@ async function toggleMemberStatus(profileId){
   renderTeam();
 }
 
+// v116: a random temporary password is e-mailed to the person's recovery e-mail (fieldhub-actions). No more Test@123.
+function fhMaskMail(e){ const [a, d] = String(e || '').split('@'); return d ? (a[0] || '') + '•••@' + d : ''; }
 function openResetPasswordModal(profileId, resetRequestId){
   const p = state.profilesInScope.find(x=>x.id===profileId);
+  const sup = isSuperAdmin(), mail = p.recovery_email ? fhMaskMail(p.recovery_email) : '';
   openModal(`
     <h2>Reset password</h2>
     <p class="mono">${escapeHtml(p.full_name)} · ${escapeHtml(toLocalPhone(p.phone)||'')}</p>
-    <form id="reset-pw-form">
-      <div class="form-row"><label>New temporary password</label><input type="text" id="reset-pw-value" value="Test@123" required></div>
-      <p class="hint">They'll be required to set their own password the next time they log in.</p>
-      <button class="btn-primary" type="submit">Reset password</button>
-    </form>
+    <div id="reset-pw-body">
+      <p class="hint">${mail ? `A new random <b>temporary password</b> will be e-mailed to <b>${escapeHtml(mail)}</b>. They sign in with it and must choose their own password straight away. They are signed out of every device now.`
+        : `<b>No recovery e-mail is saved</b> for this person, so a temporary password cannot be e-mailed. Ask them to use <b>Forgot password</b> on the sign-in page with their Employee ID — it adds their e-mail and lets them set a new password themselves.`}</p>
+      <button class="btn-primary" type="button" id="reset-pw-mail">E-mail a temporary password</button>
+      ${sup ? '<button class="btn outline" type="button" id="reset-pw-show" style="margin-top:8px;width:100%">Show a temporary password on screen instead</button><p class="hint" style="margin-top:6px">Only for someone who cannot get e-mail. Give it to them privately.</p>' : ''}
+    </div>
   `);
-  document.getElementById('reset-pw-form').onsubmit = async (e) => {
-    e.preventDefault();
-    if (!confirm(`Reset ${p.full_name}'s password? They'll need this new password to log in, then will be required to set their own.`)) return;
-    const resp = await callEdgeFunction('reset_password', { user_id: profileId, new_password: document.getElementById('reset-pw-value').value });
-    if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
-    if (resp.error){ toast(resp.error); return; }
+  const finish = async (what) => {
     if (resetRequestId){
       await sb.from('password_reset_requests').update({ status:'resolved', resolved_by: state.user.id, resolved_at: new Date().toISOString() }).eq('id', resetRequestId);
     }
-    await sb.from('activity_log').insert({ actor_id: state.user.id, action: 'reset password for', entity_type: 'Team Member', entity_label: p.full_name });
-    closeModal(); toast('Password reset'); renderTeam();
+    await sb.from('activity_log').insert({ actor_id: state.user.id, action: what, entity_type: 'Team Member', entity_label: p.full_name });
   };
+  const run = async (show) => {
+    if (!confirm(show ? `Show a new temporary password for ${p.full_name} on this screen?` : `E-mail a new temporary password to ${p.full_name}?`)) return;
+    const btns = document.querySelectorAll('#reset-pw-body button'); btns.forEach(b => { b.disabled = true; });
+    const resp = await callEdgeFunction('reset_password', { user_id: profileId, show_password: !!show });
+    btns.forEach(b => { b.disabled = false; });
+    if (resp.skipped){ toast('Edge Function not configured yet.'); return; }
+    if (resp.error || !resp.success){ toast(resp.error || 'Could not reset the password.'); return; }
+    if (resp.shown){
+      await finish('reset password (shown on screen) for');
+      document.getElementById('reset-pw-body').innerHTML = `<p class="hint">Temporary password for <b>${escapeHtml(p.full_name)}</b> — shown only now. Give it to them privately; they must choose a new password at sign-in.</p>
+        <div class="mono" style="font-size:22px;letter-spacing:2px;text-align:center;padding:12px;border:1px dashed #cfd4ea;border-radius:10px;margin:8px 0">${escapeHtml(resp.temp_password)}</div>
+        <button class="btn outline" type="button" id="reset-pw-copy" style="width:100%">Copy</button>`;
+      document.getElementById('reset-pw-copy').onclick = async () => { try { await navigator.clipboard.writeText(resp.temp_password); toast('Copied'); } catch (_) { toast('Press and hold the password to copy it'); } };
+      renderTeam(); return;
+    }
+    await finish('e-mailed a temporary password to');
+    closeModal(); toast('Temporary password e-mailed to ' + (resp.emailed || 'their recovery e-mail')); renderTeam();
+  };
+  document.getElementById('reset-pw-mail').onclick = () => run(false);
+  if (sup) document.getElementById('reset-pw-show').onclick = () => run(true);
 }
 
 async function openApproveModal(profileId){
@@ -4530,7 +4533,8 @@ async function openApproveModal(profileId){
       <div class="two-col">
         <div class="form-row"><label>Mobile number</label><input type="text" id="ap-phone" value="${escapeHtml(toLocalPhone(p.phone)||'')}" maxlength="11" placeholder="03XXXXXXXXX"></div>
         <div class="form-row"><label>Email (optional)</label><input type="email" id="ap-email" value="${escapeHtml(p.email||'')}"></div>
-        <div class="form-row"><label>Recovery e-mail (locked for the user; only you can change it)</label><input type="email" id="ap-rec-email" value="${escapeHtml(p.recovery_email||'')}"></div>
+        ${isSuperAdmin() ? `<div class="form-row"><label>Recovery e-mail (locked for the user; only you can change it)</label><input type="email" id="ap-rec-email" value="${escapeHtml(p.recovery_email||'')}"></div>`
+          : `<div class="form-row"><label>Recovery e-mail (only the Super Admin can change it)</label><input type="email" value="${escapeHtml(p.recovery_email||'— not added yet —')}" disabled></div>`}
       </div>` : ''}
       <div class="form-row"><label>Role</label><select id="ap-role">${roleOptions}</select></div>
       <div class="form-row" id="ap-designation-row" style="display:none;"><label>Designation (title shown to everyone)</label><select id="ap-designation"></select></div>
@@ -8702,8 +8706,8 @@ function fhLoadScript(src){
   });
 }
 async function fhEnsurePdf(){
-  if (!(window.jspdf && window.jspdf.jsPDF)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
-  if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js');
+  if (!(window.jspdf && window.jspdf.jsPDF)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf@4.2.1/dist/jspdf.umd.min.js');   // v116: was 2.5.1 (known security flaws)
+  if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await fhLoadScript('https://cdn.jsdelivr.net/npm/jspdf-autotable@5.0.9/dist/jspdf.plugin.autotable.min.js');
 }
 // saves a finished file: a normal download on the web, the phone's Share sheet inside the Android app
 async function fhSaveBlob(blob, filename){
@@ -12502,7 +12506,7 @@ async function renderMyProfile(){
     </div>
     <div class="card">
       <h3>Recovery e-mail</h3>
-      <p class="hint">Used to send you a code if you forget your password. It is locked once saved; to change it please ask an admin.</p>
+      <p class="hint">Used to send you a code or a temporary password if you forget your password. It is locked once saved; only the Super Admin can change it.</p>
       <div class="form-row"><label>E-mail</label><input type="email" id="mp-email" value="${escapeHtml(p.recovery_email||'')}" placeholder="name@gmail.com" autocomplete="email" ${p.recovery_email && p.role!=='super_admin'?'disabled':''}></div>
       ${p.recovery_email && p.role!=='super_admin' ? '<span class="field-hint">🔒 Locked</span>' : `<button class="btn" id="mp-email-btn">${p.recovery_email ? 'Change e-mail' : 'Save e-mail'}</button>${p.recovery_email ? '<span class="field-hint"> As Super Admin you can change your own e-mail. Weekly backups are sent here.</span>' : ''}`}
     </div>
