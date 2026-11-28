@@ -35,7 +35,8 @@
       .fr-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600;background:#eef0fb;color:#1E2A6E}
       .fr-pill.g{background:#e3f4ea;color:#2e7d4f}.fr-pill.o{background:#fff3df;color:#a0672b}.fr-pill.r{background:#fdeceb;color:#c0392b}.fr-pill.x{background:#eef0f3;color:#6b7290}
       .fr-checks{max-height:220px;overflow:auto;border:1px solid #e6e8f2;border-radius:10px;padding:6px 10px;columns:2;column-gap:16px}
-      .fr-checks label{display:block;font-size:13px;padding:3px 0;break-inside:avoid}
+      .fr-checks label{display:flex!important;gap:8px;align-items:center;font-size:13px;font-weight:500;padding:3px 0;break-inside:avoid;margin:0}
+      .fr-checks input{width:auto!important;margin:0;flex:none}
       .fr-empty{padding:18px;text-align:center;color:#6b7290}
       .fr-n{text-align:right;font-variant-numeric:tabular-nums}
       html.fh-dark .fr-card{background:#161c3a;border-color:#2a3260}html.fh-dark .fr-card h4{color:#cdd3ff}
@@ -182,13 +183,13 @@
   // =====================================================================================
   // SETTINGS (Super Admin)
   // =====================================================================================
-  const TABS = [['general', 'General'], ['groups', 'Groups'], ['visit', 'KM per visit'], ['vehicles', 'Vehicle types'], ['regions', 'Regions'], ['pictures', 'Pictures'], ['access', 'Staff access'], ['drive', 'Google Drive'], ['log', 'Change log']];
+  const TABS = [['general', 'General'], ['groups', 'Groups'], ['visit', 'KM per visit'], ['vehicles', 'Vehicle types'], ['regions', 'Regions'], ['pictures', 'Pictures'], ['access', 'Staff access'], ['ftv', 'Fuel Trends access'], ['drive', 'Google Drive'], ['log', 'Change log']];
   function pageSettings(main) {
     main.innerHTML = `<p class="fv-sub">Set everything once. Only the Super Admin can change these, and every change is logged.</p>
       <div class="fr-tabs">${TABS.map(([k, l]) => `<button class="fr-tab${FR.tab === k ? ' on' : ''}" data-tab="${k}" type="button">${l}</button>`).join('')}</div><div id="fr-body"></div>`;
     main.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { FR.tab = b.dataset.tab; pageSettings(main); });
     const body = main.querySelector('#fr-body');
-    ({ general: tGeneral, groups: tGroups, visit: tVisit, vehicles: tVehicles, regions: tRegions, pictures: tPictures, access: tAccess, drive: tDrive, log: tLog })[FR.tab](body);
+    ({ general: tGeneral, groups: tGroups, visit: tVisit, vehicles: tVehicles, regions: tRegions, pictures: tPictures, access: tAccess, ftv: tTrendsAccess, drive: tDrive, log: tLog })[FR.tab](body);
   }
   const again = () => { load(true).then(() => pageSettings(document.getElementById('main-content'))); };
 
@@ -344,6 +345,42 @@
     body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => modal(acc.find(a => a.user_id === b.dataset.ed)));
   }
 
+  // ---------------------------------------------------------------- Fuel Trends access (who may open Fuel Trends, and which categories / regions)
+  async function tTrendsAccess(body) {
+    body.innerHTML = '<p class="fr-hint">Loading…</p>';
+    const { data, error } = await sb.rpc('ft_viewers');
+    if (error) { body.innerHTML = `<div class="fr-card fr-empty">${/ft_viewers|function|schema cache/i.test(em(error)) ? 'Please run <b>migration_74.sql</b> first.' : h(em(error))}</div>`; return; }
+    const D0 = data || {}, V = D0.viewers || [], C = D0.categories || [], R = D0.regions || [], P = D0.people || [];
+    const ROLE = { team_lead: 'Area Incharge', regional_poc: 'Regional POC', admin: 'Admin', coordinator: 'Coordinator', inventory_coordinator: 'Inventory Coordinator' };
+    const list = (a) => a && a.length ? a.map(h).join(', ') : '<span class="fr-hint">All</span>';
+    body.innerHTML = `<div class="fr-tb"><button class="fv-btn" id="tv-add" type="button">+ Give Fuel Trends access</button><span class="fv-note">For general users and staff. Choose the categories and regions they may see — they see <b>only</b> those, in every chart, table and download. They also need the authenticator code.</span></div>
+      <div class="fr-wrap"><table class="fv-table"><thead><tr><th>Name</th><th>Type</th><th>Categories</th><th>Regions</th><th></th></tr></thead><tbody>
+      ${V.map(v => `<tr><td>${h(v.name || '')}<div class="fr-hint" style="margin:0">${h(v.emp || '')}</div></td><td>${v.general ? 'General user' : h(ROLE[v.role] || v.role || '')}${(v.keys || []).includes('ft_upload') ? ' <span class="fr-pill o" title="Can also upload and change Fuel Trends data">+ upload</span>' : ''}</td><td>${list(v.categories)}</td><td>${list(v.regions)}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn ghost" data-ed="${h(v.user_id)}" type="button">Edit</button> <button class="fv-btn ghost" data-rm="${h(v.user_id)}" type="button" style="color:#c0392b">Remove</button></td></tr>`).join('') || '<tr><td colspan="5" class="fr-empty">Only you can see Fuel Trends now.</td></tr>'}
+      </tbody></table></div>`;
+    const modal = (v) => {
+      v = v || { user_id: '', categories: [], regions: [] };
+      const chk = (arr, sel, k) => arr.map(x => `<label><input type="checkbox" data-${k}="${h(x)}"${(sel || []).some(y => y.toLowerCase() === String(x).toLowerCase()) ? ' checked' : ''}> ${h(x)}</label>`).join('') || '<span class="fr-hint">No Fuel Trends data uploaded yet.</span>';
+      openModal(`<h2>${v.user_id ? 'Edit Fuel Trends access' : 'Give Fuel Trends access'}</h2>
+        <div class="fr-f" style="margin:10px 0"><label>Person *</label>${v.user_id ? `<input value="${h(v.name || '')}" disabled>` : `<input id="t-q" placeholder="Type to search…" style="margin-bottom:6px"><select id="t-u" size="6">${P.map(p => `<option value="${h(p.id)}">${h(p.name || '')}${p.emp ? ' (' + h(p.emp) + ')' : ''} — ${h(ROLE[p.role] || p.role)}</option>`).join('')}</select>`}</div>
+        <div class="fr-f" style="margin:10px 0"><label>Categories they may see (tick none = all)</label><div class="fr-checks">${chk(C, v.categories, 'c')}</div></div>
+        <div class="fr-f" style="margin:10px 0"><label>Regions they may see (tick none = all)</label><div class="fr-checks">${chk(R, v.regions, 'r')}</div></div>
+        <button class="btn-primary" id="t-s" type="button">Save</button>`);
+      const q = document.getElementById('t-q');
+      if (q) q.oninput = () => { const t = q.value.toLowerCase(); document.querySelectorAll('#t-u option').forEach(o => { o.hidden = t && !o.textContent.toLowerCase().includes(t); }); };
+      const ticks = (k) => [...document.querySelectorAll(`[data-${k}]`)].filter(i => i.checked).map(i => i.getAttribute('data-' + k));
+      document.getElementById('t-s').onclick = async () => {
+        const uid = v.user_id || (document.getElementById('t-u') || {}).value;
+        if (!uid) { say('Please choose the person'); return; }
+        const { error: e2 } = await sb.rpc('ft_viewer_save', { p_user: uid, p_on: true, p_categories: ticks('c'), p_regions: ticks('r') });
+        if (e2) { say('Could not save: ' + em(e2)); return; }
+        closeModal(); say('Fuel Trends access saved'); tTrendsAccess(body);
+      };
+    };
+    body.querySelector('#tv-add').onclick = () => modal(null);
+    body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => modal(V.find(v => v.user_id === b.dataset.ed)));
+    body.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => { const v = V.find(x => x.user_id === b.dataset.rm); if (!confirm(`Remove Fuel Trends access for ${v.name}?`)) return; const { error: e2 } = await sb.rpc('ft_viewer_save', { p_user: v.user_id, p_on: false, p_categories: null, p_regions: null }); if (e2) { say(em(e2)); return; } say('Removed'); tTrendsAccess(body); });
+  }
+
   // ---------------------------------------------------------------- Phase 3: Google Drive link
   async function drive(action, extra) {
     const url = FR.d && FR.d.settings && FR.d.settings.drive_url;
@@ -417,8 +454,9 @@
     if (S && pend.length) { const ids = [...new Set(pend.map(p => p.requested_by).filter(Boolean))]; if (ids.length) { const { data: rq } = await sb.from('profiles').select('id,full_name').in('id', ids); (rq || []).forEach(x => { reqBy[x.id] = x.full_name; }); } }
     const ST = { active: ['g', 'Active'], pending: ['o', 'Waiting approval'], rejected: ['r', 'Rejected'], inactive: ['x', 'Inactive'] };
     main.innerHTML = `<p class="fv-sub">${S ? 'Everyone who claims fuel. Riders come from the roster; others are added or requested here.' : 'People in your regions. New people you request appear after the Super Admin approves them.'}</p>
-      ${S && pend.length ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⏳ Waiting for your approval (${pend.length})</h4><p class="fr-hint">Requested by Area Leads / Regional Leads / Admin Officers. After you approve, the person appears in the lists and their fuel is processed like everyone else's.</p><div class="fr-wrap"><table class="fv-table"><thead><tr><th>Requested by</th><th>Name</th><th>Employee ID</th><th>Region / City</th><th>Group</th><th>Note</th><th></th></tr></thead><tbody>
-        ${pend.map(p => `<tr><td>${h(reqBy[p.requested_by] || '—')}<div class="fr-hint" style="margin:0">${p.requested_at ? h(new Date(p.requested_at).toLocaleDateString('en-GB')) : ''}</div></td><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, p.region_id))}${p.city_id ? ' / ' + h(nm(FR.d.cities, p.city_id)) : ''}</td><td>${h(nm(FR.d.groups, p.group_id))}</td><td>${h(p.note || '')}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn" data-ap="${h(p.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-rj="${h(p.id)}" type="button" style="color:#c0392b">Reject</button></td></tr>`).join('')}
+      ${S && pend.length ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⏳ Waiting for your approval (${pend.length})</h4><p class="fr-hint">Requested by Area Leads / Regional Leads / Admin Officers. After you approve, the person appears in the lists and their fuel is processed like everyone else's.</p><div class="fr-tb" style="margin:0 0 8px"><label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="pd-all"> Select all</label><span style="flex:1"></span><button class="fv-btn" id="pd-ok" type="button" disabled>Approve selected</button><button class="fv-btn ghost" id="pd-no" type="button" disabled style="color:#c0392b">Reject selected</button></div>
+        <div class="fr-wrap"><table class="fv-table"><thead><tr><th style="width:28px"></th><th>Requested by</th><th>Name</th><th>Employee ID</th><th>Region / City</th><th>Group</th><th>Note</th><th></th></tr></thead><tbody>
+        ${pend.map(p => `<tr><td><input type="checkbox" data-pd="${h(p.id)}"></td><td>${h(reqBy[p.requested_by] || '—')}<div class="fr-hint" style="margin:0">${p.requested_at ? h(new Date(p.requested_at).toLocaleDateString('en-GB')) : ''}</div></td><td>${h(p.full_name)}</td><td>${h(p.employee_id || '–')}</td><td>${h(nm(FR.d.regions, p.region_id))}${p.city_id ? ' / ' + h(nm(FR.d.cities, p.city_id)) : ''}</td><td>${h(nm(FR.d.groups, p.group_id))}</td><td>${h(p.note || '')}</td><td style="text-align:right;white-space:nowrap"><button class="fv-btn" data-ap="${h(p.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-rj="${h(p.id)}" type="button" style="color:#c0392b">Reject</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
       <div class="fr-tb">
         <select id="f-r"><option value="">All regions</option>${opts(myRegions, f.region)}</select>
@@ -457,6 +495,23 @@
     };
     const add = main.querySelector('#pp-add'); if (add) add.onclick = () => personModal(null, myRegions, redraw);
     main.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => personModal(all.find(p => p.id === b.dataset.ed), myRegions, redraw));
+    if (S && pend.length) {
+      const boxes = [...main.querySelectorAll('[data-pd]')], ok = main.querySelector('#pd-ok'), no = main.querySelector('#pd-no');
+      const sel = () => boxes.filter(c => c.checked).map(c => c.dataset.pd);
+      const upd = () => { const n = sel().length; ok.disabled = no.disabled = !n; ok.textContent = `Approve selected${n ? ' (' + n + ')' : ''}`; no.textContent = `Reject selected${n ? ' (' + n + ')' : ''}`; };
+      boxes.forEach(c => c.onchange = upd);
+      main.querySelector('#pd-all').onchange = (e) => { boxes.forEach(c => { c.checked = e.target.checked; }); upd(); };
+      const many = async (approve) => {
+        const ids = sel(); if (!ids.length) return;
+        let note = null;
+        if (!approve) { note = prompt(`Reason for rejecting ${ids.length} request(s) (the requesters will see it):`, ''); if (note === null) return; }
+        else if (!confirm(`Approve ${ids.length} person(s)? They will appear in the fuel lists straight away.`)) return;
+        let done = 0; for (const id of ids) { const { error } = await sb.rpc('fr_decide_person', { p_id: id, p_approve: approve, p_note: note }); if (!error) done++; }
+        say(`${done} ${approve ? 'approved' : 'rejected'}${done < ids.length ? ', ' + (ids.length - done) + ' could not be changed' : ''}`);
+        if (window.frPendingBadge) frPendingBadge(); redraw();
+      };
+      ok.onclick = () => many(true); no.onclick = () => many(false);
+    }
     main.querySelectorAll('[data-ap]').forEach(b => b.onclick = async () => { if ((await rpc('fr_decide_person', { p_id: b.dataset.ap, p_approve: true, p_note: null }, 'Approved')).ok) { redraw(); if (window.frPendingBadge) frPendingBadge(); } });
     main.querySelectorAll('[data-rj]').forEach(b => b.onclick = async () => { const n = prompt('Reason for rejecting (the requester will see it):', ''); if (n === null) return; if ((await rpc('fr_decide_person', { p_id: b.dataset.rj, p_approve: false, p_note: n }, 'Rejected')).ok) { redraw(); if (window.frPendingBadge) frPendingBadge(); } });
     const sy = main.querySelector('#pp-sync');
@@ -852,8 +907,8 @@
     const tot = (p) => shown.reduce((t, d) => { const r = by[p.id + '|' + d]; return t + (r && r.opening != null && r.closing != null ? r.closing - r.opening : 0); }, 0);
     const miss = (p) => shown.filter(d => d < today && !(by[p.id + '|' + d] && by[p.id + '|' + d].closing != null)).length;
     main.innerHTML = `<p class="fv-sub">Daily KM per rider (Closing − Opening). Red = missing, ½ = no Closing, ⚠ = waiting for a check. Click a day to see the readings${S || A.can_enter ? ' or fix them' : ''}.</p>
-      ${checks.length && canReview ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⚠ Waiting for a check (${checks.length})</h4><div class="fr-wrap"><table class="fv-table"><thead><tr><th>Rider</th><th>Day</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th>Problem and reason</th><th></th></tr></thead><tbody>
-        ${checks.map(r => { const p = pById[r.person_id] || {}; return `<tr><td>${h(p.full_name || '')}</td><td>${h(fmtDay(r.day))}</td><td class="fr-n">${num(r.opening)}</td><td class="fr-n">${num(r.closing)}</td><td style="max-width:360px">${h(r.check_note || '')}${r.open_photo ? ' ' + photoA(r.open_photo, 'picture') : ''}${r.close_photo ? ' ' + photoA(r.close_photo, 'picture') : ''}</td><td style="white-space:nowrap;text-align:right"><button class="fv-btn" data-ok="${h(r.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-no="${h(r.id)}" type="button" style="color:#c0392b">Clear</button></td></tr>`; }).join('')}
+      ${checks.length && canReview ? `<div class="fr-card" style="border-color:#f3d9a8"><h4>⚠ Waiting for a check (${checks.length})</h4><div class="fr-tb" style="margin:0 0 8px"><label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="ck-all"> Select all</label><span style="flex:1"></span><button class="fv-btn" id="ck-ok" type="button" disabled>Approve selected</button></div><div class="fr-wrap"><table class="fv-table"><thead><tr><th style="width:28px"></th><th>Rider</th><th>Day</th><th class="fr-n">Opening</th><th class="fr-n">Closing</th><th>Problem and reason</th><th></th></tr></thead><tbody>
+        ${checks.map(r => { const p = pById[r.person_id] || {}; return `<tr><td><input type="checkbox" data-ck="${h(r.id)}"></td><td>${h(p.full_name || '')}</td><td>${h(fmtDay(r.day))}</td><td class="fr-n">${num(r.opening)}</td><td class="fr-n">${num(r.closing)}</td><td style="max-width:360px">${h(r.check_note || '')}${r.open_photo ? ' ' + photoA(r.open_photo, 'picture') : ''}${r.close_photo ? ' ' + photoA(r.close_photo, 'picture') : ''}</td><td style="white-space:nowrap;text-align:right"><button class="fv-btn" data-ok="${h(r.id)}" type="button">Approve</button> <button class="fv-btn ghost" data-no="${h(r.id)}" type="button" style="color:#c0392b">Clear</button></td></tr>`; }).join('')}
         </tbody></table></div></div>` : ''}
       <div class="fr-tb">
         <select id="d-c">${cycles.map(c => `<option value="${c}"${c === f.cycle ? ' selected' : ''}>${h(cycLabel(c))}</option>`).join('')}</select>
@@ -880,6 +935,19 @@
       if (canEnter(p)) readingModal(pid, d, Object.assign({}, r), redraw, p.full_name + ' · ' + (p.employee_id || ''));
       else openModal(`<h2>${h(p.full_name)} — ${h(fmtDay(d))}</h2><p>Opening: <b>${num(r.opening) || '–'}</b><br>Closing: <b>${num(r.closing) || '–'}</b>${r.opening != null && r.closing != null ? `<br>KM: <b>${num(r.closing - r.opening)}</b>` : ''}</p>${r.open_photo ? `<p>${photoA(r.open_photo, 'Opening picture')}</p>` : ''}${r.close_photo ? `<p>${photoA(r.close_photo, 'Closing picture')}</p>` : ''}${r.check_note ? `<p class="hint">${h(r.check_note)}</p>` : ''}`);
     });
+    if (checks.length && canReview) {
+      const boxes = [...main.querySelectorAll('[data-ck]')], ok = main.querySelector('#ck-ok');
+      const sel = () => boxes.filter(c => c.checked).map(c => c.dataset.ck);
+      const upd = () => { const n = sel().length; ok.disabled = !n; ok.textContent = `Approve selected${n ? ' (' + n + ')' : ''}`; };
+      boxes.forEach(c => c.onchange = upd);
+      main.querySelector('#ck-all').onchange = (e) => { boxes.forEach(c => { c.checked = e.target.checked; }); upd(); };
+      ok.onclick = async () => {
+        const ids = sel(); if (!ids.length) return;
+        const n = prompt(`Approve ${ids.length} reading(s)? Optional note:`, ''); if (n === null) return;
+        let done = 0; for (const id of ids) { const { error } = await sb.rpc('fr_check_decide', { p_id: id, p_approve: true, p_note: n }); if (!error) done++; }
+        say(`${done} approved${done < ids.length ? ', ' + (ids.length - done) + ' could not be changed' : ''}`); redraw();
+      };
+    }
     main.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => { const n = prompt('Note (optional):', ''); if (n === null) return; if ((await rpc('fr_check_decide', { p_id: b.dataset.ok, p_approve: true, p_note: n }, 'Approved')).ok) redraw(); });
     main.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => { const n = prompt('Why is it cleared? The rider will type it again.', ''); if (n === null) return; if ((await rpc('fr_check_decide', { p_id: b.dataset.no, p_approve: false, p_note: n }, 'Cleared')).ok) redraw(); });
   }
