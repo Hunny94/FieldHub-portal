@@ -1608,7 +1608,9 @@ async function fhExpiryPopup(){
   if (!state.user || document.getElementById('exp-pop')) return;
   let rows = [];
   try {
-    const r = await sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).is('read_at', null).not('title', 'like', 'Please acknowledge%').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString()).order('created_at', { ascending: false }).limit(10);
+    let q0 = sb.from('expiry_notices').select('id, kind, title, body, created_at').eq('user_id', state.user.id).is('read_at', null).not('title', 'like', 'Please acknowledge%');
+    if (fhIsGeneralUser()) q0 = q0.neq('kind', 'circ_remind');   // v105: no circular reminders for general users
+    const r = await q0.gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString()).order('created_at', { ascending: false }).limit(10);
     if (r.error) return; rows = r.data || [];
   } catch (_e) { return; }
   if (!rows.length) return;
@@ -1620,11 +1622,13 @@ async function fhExpiryPopup(){
     closeModal();
   };
 }
+function fhIsGeneralUser(){ try { return !isAdmin() && state.myPermissions.has('viewer_only') && hasPermission('viewer_only'); } catch (_e) { return false; } }
 async function showLatestUnackedCircularPopup(){
   const { data: circulars } = await sb.from('circulars').select('*').is('deleted_at', null).order('created_at', {ascending:false}).limit(1);
   if (!circulars || !circulars.length) return;
   const c = circulars[0];
   if (c.created_by === state.user.id || isSuperAdmin()) return;
+  if (fhIsGeneralUser()) return;   // v105: general (view-only) users made for one purpose do not get circular pop-ups
   const { data: ack } = await sb.from('circular_acks').select('id').eq('circular_id', c.id).eq('user_id', state.user.id).maybeSingle();
   if (ack) return;
   // Once acknowledged it never shows again (handled above); until then,
